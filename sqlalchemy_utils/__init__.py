@@ -100,5 +100,6 @@ from .view import (  # noqa
     create_view,
     refresh_materialized_view,
 )
+from .alembic import include_view_comparator  # noqa
 
 __version__ = '0.42.0'

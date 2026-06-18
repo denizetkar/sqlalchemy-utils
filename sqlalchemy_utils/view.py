@@ -4,6 +4,7 @@ from sqlalchemy.schema import DDLElement, PrimaryKeyConstraint
 from sqlalchemy.sql.expression import ClauseElement, Executable
 
 from sqlalchemy_utils.functions import get_columns
+from sqlalchemy_utils.alembic.view_record import ViewRecord
 
 
 class CreateView(DDLElement):
@@ -101,6 +102,16 @@ def create_materialized_view(name, selectable, metadata, indexes=None, aliases=N
             idx.create(connection)
 
     sa.event.listen(metadata, 'before_drop', DropView(name, materialized=True))
+
+    view_records = metadata.info.setdefault('sqlalchemy_utils_views', [])
+    view_records.append(ViewRecord(
+        name=name,
+        selectable=selectable,
+        schema=None,
+        materialized=True,
+        replace=False,
+        cascade_on_drop=True,
+    ))
     return table
 
 
@@ -161,6 +172,16 @@ def create_view(
             idx.create(connection)
 
     sa.event.listen(metadata, 'before_drop', DropView(name, cascade=cascade_on_drop))
+
+    view_records = metadata.info.setdefault('sqlalchemy_utils_views', [])
+    view_records.append(ViewRecord(
+        name=name,
+        selectable=selectable,
+        schema=None,
+        materialized=False,
+        replace=replace,
+        cascade_on_drop=cascade_on_drop,
+    ))
     return table
 
 
