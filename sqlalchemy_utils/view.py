@@ -8,43 +8,49 @@ from sqlalchemy_utils.alembic.view_record import ViewRecord
 
 
 class CreateView(DDLElement):
-    def __init__(self, name, selectable, materialized=False, replace=False):
+    def __init__(self, name, selectable, materialized=False, replace=False, schema=None):
         if materialized and replace:
             raise ValueError('Cannot use CREATE OR REPLACE with materialized views')
         self.name = name
         self.selectable = selectable
         self.materialized = materialized
         self.replace = replace
+        self.schema = schema
 
 
 @compiler.compiles(CreateView)
 def compile_create_materialized_view(element, compiler, **kw):
-    return 'CREATE {}{}VIEW {} AS {}'.format(
+    schema_prefix = f'{compiler.dialect.identifier_preparer.quote(element.schema)}.' if element.schema else ''
+    return 'CREATE {}{}VIEW {}{} AS {}'.format(
         'OR REPLACE ' if element.replace else '',
         'MATERIALIZED ' if element.materialized else '',
+        schema_prefix,
         compiler.dialect.identifier_preparer.quote(element.name),
         compiler.sql_compiler.process(element.selectable, literal_binds=True),
     )
 
 
 class DropView(DDLElement):
-    def __init__(self, name, materialized=False, cascade=True):
+    def __init__(self, name, materialized=False, cascade=True, schema=None):
         self.name = name
         self.materialized = materialized
         self.cascade = cascade
+        self.schema = schema
 
 
 @compiler.compiles(DropView)
 def compile_drop_materialized_view(element, compiler, **kw):
-    return 'DROP {}VIEW IF EXISTS {} {}'.format(
+    schema_prefix = f'{compiler.dialect.identifier_preparer.quote(element.schema)}.' if element.schema else ''
+    return 'DROP {}VIEW IF EXISTS {}{} {}'.format(
         'MATERIALIZED ' if element.materialized else '',
+        schema_prefix,
         compiler.dialect.identifier_preparer.quote(element.name),
         'CASCADE' if element.cascade else '',
     )
 
 
 def create_table_from_selectable(
-    name, selectable, indexes=None, metadata=None, aliases=None, **kwargs
+    name, selectable, indexes=None, metadata=None, aliases=None, schema=None, **kwargs
 ):
     if indexes is None:
         indexes = []
@@ -58,7 +64,7 @@ def create_table_from_selectable(
         )
         for c in get_columns(selectable)
     ] + indexes
-    table = sa.Table(name, metadata, *args, **kwargs)
+    table = sa.Table(name, metadata, *args, schema=schema, **kwargs)
 
     if not any([c.primary_key for c in get_columns(selectable)]):
         table.append_constraint(

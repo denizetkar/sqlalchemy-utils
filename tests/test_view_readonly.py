@@ -97,3 +97,12 @@ def test_non_view_class_unaffected():
 
     # Must NOT raise — non-view class is unaffected
     _view_before_flush(fs, None, None)
+
+
+def test_viewreadonlyerror_catchable_as_invalidrequesterror():
+    """ViewReadonlyError can be caught as sa.exc.InvalidRequestError."""
+    import sqlalchemy as sa
+    try:
+        raise ViewReadonlyError("test")
+    except sa.exc.InvalidRequestError:
+        pass  # expected — caught as InvalidRequestError

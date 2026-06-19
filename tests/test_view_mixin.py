@@ -252,3 +252,54 @@ def test_viewmixn_autogenerate_integration():
     # The selectable must be present and compilable
     compiled = str(vr.selectable.compile(compile_kwargs={"literal_binds": True}))
     assert 'autogen_src' in compiled
+
+
+def test_view_cascade_default():
+    """ViewMixin.__view_cascade__ defaults to True."""
+    assert ViewMixin.__view_cascade__ is True
+
+
+def test_old_cascade_attr_removed():
+    """Old __view_cascade_on_drop__ is no longer a class default."""
+    assert not hasattr(ViewMixin, '__view_cascade_on_drop__')
+
+
+def test_view_schema_default():
+    """ViewMixin.__view_schema__ defaults to None."""
+    assert ViewMixin.__view_schema__ is None
+
+
+def test_view_schema_propagated_to_viewrecord():
+    """Custom __view_schema__ is stored in ViewRecord after __declare_last__."""
+    Base = declarative_base()
+    class SchemaView(ViewMixin, Base):
+        __tablename__ = 'schema_test_view'
+        __view_selectable__ = sa.select(_src(sa.column('id', sa.Integer)))
+        __view_schema__ = 'analytics'
+        id: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
+
+    SchemaView.__declare_last__()
+    records = Base.metadata.info.get('sqlalchemy_utils_views', [])
+    vr = [r for r in records if r.name == 'schema_test_view'][0]
+    assert vr.schema == 'analytics'
+
+
+def test_table_args_schema_fallback():
+    """__table_args__['schema'] used when __view_schema__ not set."""
+    Base = declarative_base()
+    class FallbackView(ViewMixin, Base):
+        __tablename__ = 'fallback_test_view'
+        __view_selectable__ = sa.select(_src(sa.column('id', sa.Integer)))
+        __table_args__ = {'schema': 'reporting'}
+        id: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
+
+    FallbackView.__declare_last__()
+    records = Base.metadata.info.get('sqlalchemy_utils_views', [])
+    vr = [r for r in records if r.name == 'fallback_test_view'][0]
+    assert vr.schema == 'reporting'
+
+
+def test_no_global_listener_flag():
+    """Module-level _VIEW_READONLY_LISTENER_INSTALLED removed."""
+    from sqlalchemy_utils import view_mixin as vm
+    assert not hasattr(vm, '_VIEW_READONLY_LISTENER_INSTALLED')

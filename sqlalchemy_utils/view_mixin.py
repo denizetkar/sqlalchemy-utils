@@ -4,11 +4,14 @@ import sqlalchemy as sa
 
 from sqlalchemy_utils.alembic.view_record import ViewRecord
 from sqlalchemy_utils.exceptions import ViewReadonlyError
-from sqlalchemy_utils.view import create_table_from_selectable, CreateView, DropView
+from sqlalchemy_utils.view import (
+    create_table_from_selectable,
+    CreateView,
+    DropView,
+    refresh_materialized_view,
+)
 
 logger = logging.getLogger(__name__)
-
-_VIEW_READONLY_LISTENER_INSTALLED = False
 
 
 def _view_before_flush(session, flush_context, instances):
@@ -21,11 +24,55 @@ def _view_before_flush(session, flush_context, instances):
 
 
 class ViewMixin:
+    """Declarative mixin for SQLAlchemy ORM view classes.
+
+    Provides automatic DDL generation (CREATE/DROP VIEW) and read-only
+    enforcement for view-backed ORM models.
+
+    **Class attributes:**
+
+    * ``__view_selectable__`` — SQLAlchemy selectable defining the view query.
+      Maps to ``definition`` in Alembic migrations.
+    * ``__view_materialized__`` — ``True`` for materialized views (default ``False``).
+    * ``__view_schema__`` — Schema name; takes precedence over
+      ``__table_args__['schema']`` (default ``None``).
+    * ``__view_cascade__`` — ``True`` to emit ``DROP ... CASCADE`` (default ``True``).
+    * ``__view_replace__`` — ``True`` to emit ``CREATE OR REPLACE`` (default ``False``).
+
+    **Methods:**
+
+    * ``refresh(session, concurrently=False)`` — Refresh a materialized view.
+      Raises ``sa.exc.InvalidRequestError`` for non-materialized views.
+
+    **Implementation note:** ``cls.__table__.metadata`` is a throwaway
+    ``MetaData()`` instance so that ``create_all()`` does not emit both
+    ``CREATE TABLE`` and ``CREATE VIEW``.  View DDL is handled by event
+    listeners on ``cls.metadata`` (the Base's metadata).
+
+    Example::
+
+        class UserCountView(ViewMixin, Base):
+            __tablename__ = 'user_count_view'
+            __view_selectable__ = sa.select(
+                sa.func.count(User.id).label('count')
+            )
+            count: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
+
+        class TopUsersMV(ViewMixin, Base):
+            __tablename__ = 'top_users_mv'
+            __view_selectable__ = sa.select(User).where(User.score > 100)
+            __view_materialized__ = True
+            id: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
+    """
     __view_selectable__ = None
     __view_materialized__ = False
+    __view_schema__ = None
+    __view_cascade__ = True
 
     @classmethod
     def __declare_last__(cls):
+        if '__declare_last__' in cls.__mro__[1:]:
+            super().__declare_last__()
         selectable = cls.__view_selectable__
 
         if selectable is None:
@@ -41,8 +88,13 @@ class ViewMixin:
 
         metadata = cls.metadata
 
-        indexes = []
+        # Resolve schema: __view_schema__ takes precedence over __table_args__['schema']
+        view_schema = getattr(cls, '__view_schema__', None)
         table_args = getattr(cls, '__table_args__', None)
+        if view_schema is None and isinstance(table_args, dict):
+            view_schema = table_args.get('schema')
+
+        indexes = []
         if table_args:
             if isinstance(table_args, (list, tuple)):
                 items = table_args
@@ -54,7 +106,7 @@ class ViewMixin:
 
         is_materialized = getattr(cls, '__view_materialized__', False)
         replace = getattr(cls, '__view_replace__', False)
-        cascade_on_drop = getattr(cls, '__view_cascade_on_drop__', True)
+        cascade_on_drop = getattr(cls, '__view_cascade__', True)
 
         declared_col_names = set()
         declared_col_types = {}
@@ -73,6 +125,7 @@ class ViewMixin:
             selectable=selectable,
             indexes=indexes if indexes else None,
             metadata=None,
+            schema=view_schema,
         )
         cls.__table__ = table
 
@@ -109,12 +162,12 @@ class ViewMixin:
         sa.event.listen(
             metadata,
             'after_create',
-            CreateView(cls.__tablename__, selectable, materialized=is_materialized),
+            CreateView(cls.__tablename__, selectable, materialized=is_materialized, schema=view_schema),
         )
         sa.event.listen(
             metadata,
             'before_drop',
-            DropView(cls.__tablename__, materialized=is_materialized, cascade=cascade_on_drop),
+            DropView(cls.__tablename__, materialized=is_materialized, cascade=cascade_on_drop, schema=view_schema),
         )
 
         if is_materialized and indexes:
@@ -128,13 +181,26 @@ class ViewMixin:
         view_records.append(ViewRecord(
             name=cls.__tablename__,
             selectable=selectable,
-            schema=None,
+            schema=view_schema,
             materialized=is_materialized,
             replace=replace,
             cascade_on_drop=cascade_on_drop,
         ))
 
-        global _VIEW_READONLY_LISTENER_INSTALLED
-        if not _VIEW_READONLY_LISTENER_INSTALLED:
+        if not sa.event.contains(sa.orm.Session, 'before_flush', _view_before_flush):
             sa.event.listen(sa.orm.Session, 'before_flush', _view_before_flush)
-            _VIEW_READONLY_LISTENER_INSTALLED = True
+
+    @classmethod
+    def refresh(cls, session, concurrently=False):
+        """Refresh a materialized view.
+
+        :param session: An SQLAlchemy Session instance.
+        :param concurrently: If ``True``, refresh with ``CONCURRENTLY``.
+
+        :raises sa.exc.InvalidRequestError: If the view is not materialized.
+        """
+        if not cls.__view_materialized__:
+            raise sa.exc.InvalidRequestError(
+                f"Cannot refresh non-materialized view {cls.__tablename__!r}"
+            )
+        refresh_materialized_view(session, cls.__tablename__, concurrently=concurrently)

@@ -2,6 +2,8 @@
 Global SQLAlchemy-Utils exception classes.
 """
 
+import sqlalchemy as sa
+
 
 class ImproperlyConfigured(Exception):
     """
@@ -10,5 +12,5 @@ class ImproperlyConfigured(Exception):
     """
 
 
-class ViewReadonlyError(Exception):
-    """Raised when attempting to modify a view-backed ORM instance."""
+class ViewReadonlyError(sa.exc.InvalidRequestError):
+    """Raised when attempting to modify a view-backed ORM instance. Catchable as ``sa.exc.InvalidRequestError``."""
