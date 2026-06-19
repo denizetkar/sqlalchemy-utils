@@ -1,0 +1,85 @@
+View Migrations
+===============
+
+Quick start
+-----------
+
+Activate view autogenerate support in your Alembic ``env.py``. This must be
+called **before** ``context.configure()``.
+
+::
+
+    from sqlalchemy_utils.alembic.comparator import include_view_comparator
+    include_view_comparator()
+
+Operations reference
+---------------------
+
+.. autofunction:: sqlalchemy_utils.alembic.operations.CreateViewOp.create_view
+.. autofunction:: sqlalchemy_utils.alembic.operations.DropViewOp.drop_view
+.. autofunction:: sqlalchemy_utils.alembic.operations.ReplaceViewOp.replace_view
+.. autofunction:: sqlalchemy_utils.alembic.operations.CreateMaterializedViewOp.create_materialized_view
+.. autofunction:: sqlalchemy_utils.alembic.operations.DropMaterializedViewOp.drop_materialized_view
+.. autofunction:: sqlalchemy_utils.alembic.operations.ReplaceMaterializedViewOp.replace_materialized_view
+
+Autogenerate
+------------
+
+Alembic's autogenerate mode monitors database changes. SQLAlchemy-Utils provides a
+comparator for view DDL:
+
+* How it works: Each model view is temporarily created inside a savepoint,
+  its definition read from PostgreSQL, then the savepoint is rolled back.
+
+* What it detects:
+
+  - New views that need to be created
+  - Existing views no longer defined in your models
+  - Changed view definitions matching ``CREATE OR REPLACE`` logic
+
+* Known limitations:
+
+  - PostgreSQL does not support ``CREATE OR REPLACE MATERIALIZED VIEW``,
+    so ``replace_materialized_view`` issues a ``DROP`` followed by ``CREATE``.
+  - ``cascade_on_drop`` controls (``CASCADE``/``RESTRICT``) are not yet
+    configurable per-view in autogenerate.
+
+Full example
+------------
+
+.. code-block:: python
+
+    """Migrations config."""
+    from logging.config import fileConfig
+
+    from alembic import context
+    from sqlalchemy import engine_from_config
+    from sqlalchemy import pool
+    from sqlalchemy_utils.alembic.comparator import include_view_comparator
+
+    # Override default ConfigOptions to accommodate savepoint-style canonicalization
+    # context.config_set_main_option('compare_type', True)
+    # context.config_set_main_option('compare_server_default', True)
+
+    # Must call before context.configure()
+    include_view_comparator()
+
+    # Import your models for autogenerate to detect
+    from your_app.models import User, ItemView
+
+    # Interpret the config file for Alembic config.
+    config = context.config
+    if config.config_file_name is not None:
+        fileConfig(config.config_file_name)
+
+    # Add your model's MetaData here for autogenerate to compare against
+    target_metadata = User.metadata.__class__(metadata=ItemView.metadata, schemas={'default': 'public'})
+
+    # ... rest of usual alembic setup ...
+
+
+Dependencies
+------------
+
+* Requires PostgreSQL for ``pg_views``/``pg_matviews`` catalog access
+* Requires ``alembic`` to be installed, or ``sqlalchemy_utils[alembic]`` extra
