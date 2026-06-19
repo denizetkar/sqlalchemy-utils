@@ -58,10 +58,9 @@ class CreateViewOp(MigrateOperation):
         name: str,
         definition: str,
         schema: str | None = None,
-        replace: bool = False,
     ) -> None:
         """Programmatic entry-point for ``op.create_view()``."""
-        op = CreateViewOp(name, definition, schema=schema, replace=replace)
+        op = CreateViewOp(name, definition, schema=schema)
         return operations.invoke(op)
 
     def reverse(self) -> DropViewOp:
@@ -102,7 +101,6 @@ class DropViewOp(MigrateOperation):
         operations: Operations,
         name: str,
         schema: str | None = None,
-        materialized: bool = False,
         cascade: bool = True,
         definition: str | None = None,
     ) -> None:
@@ -110,7 +108,7 @@ class DropViewOp(MigrateOperation):
         op = DropViewOp(
             name,
             schema=schema,
-            materialized=materialized,
+            materialized=False,
             cascade=cascade,
             definition=definition,
         )

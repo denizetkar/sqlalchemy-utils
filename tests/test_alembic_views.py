@@ -412,15 +412,24 @@ class TestOperationsCreateViewOp:
         sqls = _capture_sql(op)
         assert sqls == ["CREATE VIEW v1 AS SELECT 1"]
 
-    def test_sql_with_replace(self):
-        op = CreateViewOp("v1", "SELECT 1", replace=True)
-        sqls = _capture_sql(op)
-        assert sqls == ["CREATE OR REPLACE VIEW v1 AS SELECT 1"]
-
     def test_sql_with_schema(self):
         op = CreateViewOp("v1", "SELECT 1", schema="public")
         sqls = _capture_sql(op)
         assert sqls == ["CREATE VIEW public.v1 AS SELECT 1"]
+
+    def test_create_view_rejects_replace_kwarg(self):
+        from unittest.mock import MagicMock
+        from unittest.mock import patch
+        from alembic.operations import Operations
+        from alembic.runtime.migration import MigrationContext
+        from sqlalchemy import create_engine
+
+        operations = Operations(MigrationContext.configure(
+            create_engine("sqlite:///:memory:").connect()
+        ))
+
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            CreateViewOp.create_view(operations, "test_view", "SELECT 1", replace=True)
 
 
 class TestOperationsDropViewOp:
@@ -429,6 +438,20 @@ class TestOperationsDropViewOp:
         assert op.name == "v1"
         assert op.materialized is False
         assert op.cascade is True
+
+    def test_drop_view_rejects_materialized_kwarg(self):
+        from unittest.mock import MagicMock
+        from unittest.mock import patch
+        from alembic.operations import Operations
+        from alembic.runtime.migration import MigrationContext
+        from sqlalchemy import create_engine
+
+        operations = Operations(MigrationContext.configure(
+            create_engine("sqlite:///:memory:").connect()
+        ))
+
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            DropViewOp.drop_view(operations, "test_view", materialized=True)
 
     def test_reverse_returns_create_view(self):
         op = DropViewOp("v1", definition="SELECT 1")
@@ -1296,11 +1319,13 @@ class TestPublicAPIImportable:
         op = ReplaceMaterializedViewOp("test_mv", "SELECT 2")
         assert op.name == "test_mv"
 
-    def test_import_view_record(self):
-        from sqlalchemy_utils.alembic import ViewRecord
-        record = ViewRecord(name="test_view", selectable="SELECT 1")
-        assert record.name == "test_view"
-        assert record.selectable == "SELECT 1"
+    def test_internal_import_view_record(self):
+        from sqlalchemy_utils.alembic.view_record import ViewRecord
+        assert ViewRecord is not None
+
+    def test_viewrecord_not_in_alembic_all(self):
+        from sqlalchemy_utils.alembic import __all__
+        assert "ViewRecord" not in __all__
 
 
 class TestPublicAPIFromTopLevel:
@@ -1311,24 +1336,8 @@ class TestPublicAPIFromTopLevel:
         from sqlalchemy_utils import include_view_comparator
         assert callable(include_view_comparator)
 
-    def test_import_ops_from_top_level_alembic(self):
-        """Test all operation classes accessible as sqlalchemy_utils.alembic.SomeOp."""
-        from sqlalchemy_utils.alembic import (
-            CreateViewOp,
-            DropViewOp,
-            ReplaceViewOp,
-            CreateMaterializedViewOp,
-            DropMaterializedViewOp,
-            ReplaceMaterializedViewOp,
-            ViewRecord,
-        )
-        # Just verify they imported without errors
-        assert CreateViewOp is not None
-        assert DropViewOp is not None
-        assert ReplaceViewOp is not None
-        assert CreateMaterializedViewOp is not None
-        assert DropMaterializedViewOp is not None
-        assert ReplaceMaterializedViewOp is not None
+    def test_internal_import_ops_from_alembic_view_record(self):
+        from sqlalchemy_utils.alembic.view_record import ViewRecord
         assert ViewRecord is not None
 
 
@@ -1468,12 +1477,20 @@ class TestRendererCreateMaterializedView:
         assert "op.create_materialized_view(" in result
 
     def test_includes_with_data_false(self):
-        """Renderer always includes with_data=False for autogenerate."""
+        """Renderer omits with_data by default."""
         from sqlalchemy_utils.alembic.renderer import render_create_materialized_view
 
         op = CreateMaterializedViewOp("mv_stats", "SELECT 1")
         result = render_create_materialized_view(_make_autogen_context(), op)
-        assert "with_data=False" in result
+        assert "with_data=" not in result
+
+    def test_includes_with_data_true(self):
+        """Renderer includes with_data=True when explicitly set."""
+        from sqlalchemy_utils.alembic.renderer import render_create_materialized_view
+
+        op = CreateMaterializedViewOp("mv_stats", "SELECT 1", with_data=True)
+        result = render_create_materialized_view(_make_autogen_context(), op)
+        assert "with_data=True" in result
 
     def test_schema_included_when_provided(self):
         """Schema parameter is included when schema is provided."""
@@ -1503,21 +1520,21 @@ class TestRendererDropMaterializedView:
         result = render_drop_materialized_view(_make_autogen_context(), op)
         assert "op.drop_materialized_view(" in result
 
-    def test_cascade_included_when_true(self):
-        """Cascade parameter is included when cascade is True."""
+    def test_cascade_omitted_when_true(self):
+        """Cascade parameter is omitted when cascade is True (default)."""
         from sqlalchemy_utils.alembic.renderer import render_drop_materialized_view
 
-        op = DropMaterializedViewOp("mv_stats", cascade=True)
+        op = DropMaterializedViewOp("mv_stats")
         result = render_drop_materialized_view(_make_autogen_context(), op)
-        assert "cascade=True" in result
+        assert "cascade=" not in result
 
-    def test_cascade_omitted_when_false(self):
-        """Cascade parameter is omitted when cascade is False."""
+    def test_cascade_included_when_false(self):
+        """Cascade parameter is included as cascade=False when set."""
         from sqlalchemy_utils.alembic.renderer import render_drop_materialized_view
 
         op = DropMaterializedViewOp("mv_stats", cascade=False)
         result = render_drop_materialized_view(_make_autogen_context(), op)
-        assert "cascade=" not in result
+        assert "cascade=False" in result
 
 
 class TestRendererReplaceMaterializedView:
@@ -1540,12 +1557,20 @@ class TestRendererReplaceMaterializedView:
         assert "op.replace_materialized_view(" in result
 
     def test_includes_with_data_false(self):
-        """Renderer always includes with_data=False for autogenerate."""
+        """Renderer omits with_data by default."""
         from sqlalchemy_utils.alembic.renderer import render_replace_materialized_view
 
         op = ReplaceMaterializedViewOp("mv_stats", "SELECT 2")
         result = render_replace_materialized_view(_make_autogen_context(), op)
-        assert "with_data=False" in result
+        assert "with_data=" not in result
+
+    def test_includes_with_data_true(self):
+        """Renderer includes with_data=True when explicitly set."""
+        from sqlalchemy_utils.alembic.renderer import render_replace_materialized_view
+
+        op = ReplaceMaterializedViewOp("mv_stats", "SELECT 2", with_data=True)
+        result = render_replace_materialized_view(_make_autogen_context(), op)
+        assert "with_data=True" in result
 
     def test_schema_included_when_provided(self):
         """Schema parameter is included when schema is provided."""
