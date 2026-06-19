@@ -6,7 +6,7 @@ from .asserts import (  # noqa
     assert_non_nullable,
     assert_nullable,
 )
-from .exceptions import ImproperlyConfigured  # noqa
+from .exceptions import ImproperlyConfigured, ViewReadonlyError  # noqa
 from .expressions import Asterisk, row_to_json  # noqa
 from .functions import (  # noqa
     cast_if,
@@ -100,6 +100,7 @@ from .view import (  # noqa
     create_view,
     refresh_materialized_view,
 )
+from .view_mixin import ViewMixin  # noqa
 from .alembic import include_view_comparator  # noqa
 
 __version__ = '0.42.0'
