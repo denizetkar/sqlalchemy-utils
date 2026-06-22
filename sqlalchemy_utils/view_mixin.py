@@ -203,4 +203,9 @@ class ViewMixin:
             raise sa.exc.InvalidRequestError(
                 f"Cannot refresh non-materialized view {cls.__tablename__!r}"
             )
-        refresh_materialized_view(session, cls.__tablename__, concurrently=concurrently)
+        refresh_materialized_view(
+            session,
+            cls.__tablename__,
+            concurrently=concurrently,
+            schema=cls.__view_schema__,
+        )

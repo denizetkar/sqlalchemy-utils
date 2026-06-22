@@ -23,7 +23,7 @@ def test_viewreadonlyerror_raisable_catchable():
         assert str(e) == "test"
 
 
-def test_viewmixn_class_creation_with_valid_selectable():
+def test_viewmixin_class_creation_with_valid_selectable():
     Base = declarative_base()
 
     class MyView(ViewMixin, Base):
@@ -38,7 +38,7 @@ def test_viewmixn_class_creation_with_valid_selectable():
     assert 'id' in MyView.__table__.columns
 
 
-def test_viewmixn_none_selectable_raises_typeerror():
+def test_viewmixin_none_selectable_raises_typeerror():
     """__view_selectable__ = None raises TypeError."""
     class NoneView(ViewMixin):
         __tablename__ = 'none_view'
@@ -49,7 +49,7 @@ def test_viewmixn_none_selectable_raises_typeerror():
         NoneView.__declare_last__()
 
 
-def test_viewmixn_string_selectable_raises_typeerror():
+def test_viewmixin_string_selectable_raises_typeerror():
     """String __view_selectable__ raises TypeError."""
     class StringView(ViewMixin):
         __tablename__ = 'string_view'
@@ -60,7 +60,7 @@ def test_viewmixn_string_selectable_raises_typeerror():
         StringView.__declare_last__()
 
 
-def test_viewmixn_column_name_mismatch_raises_valueerror():
+def test_viewmixin_column_name_mismatch_raises_valueerror():
     Base = declarative_base()
 
     class MismatchView(ViewMixin, Base):
@@ -73,7 +73,7 @@ def test_viewmixn_column_name_mismatch_raises_valueerror():
         MismatchView.__declare_last__()
 
 
-def test_viewmixn_type_drift_produces_warning(caplog):
+def test_viewmixin_type_drift_produces_warning(caplog):
     Base = declarative_base()
 
     class DriftView(ViewMixin, Base):
@@ -89,7 +89,7 @@ def test_viewmixn_type_drift_produces_warning(caplog):
     assert any("Type drift" in rec.message for rec in caplog.records)
 
 
-def test_viewmixn_viewrecord_auto_registered():
+def test_viewmixin_viewrecord_auto_registered():
     Base = declarative_base()
 
     class RegView(ViewMixin, Base):
@@ -103,7 +103,7 @@ def test_viewmixn_viewrecord_auto_registered():
     assert any(vr.name == 'reg_view' for vr in records)
 
 
-def test_viewmixn_table_set_on_class():
+def test_viewmixin_table_set_on_class():
     Base = declarative_base()
 
     class TableView(ViewMixin, Base):
@@ -117,7 +117,7 @@ def test_viewmixn_table_set_on_class():
     assert TableView.__table__.name == 'table_view'
 
 
-def test_viewmixn_ddl_listeners_registered():
+def test_viewmixin_ddl_listeners_registered():
     Base = declarative_base()
 
     source = sa.Table(
@@ -141,7 +141,7 @@ def test_viewmixn_ddl_listeners_registered():
         assert result.fetchone() is not None
 
 
-def test_viewmixn_materialized_flag():
+def test_viewmixin_materialized_flag():
     Base = declarative_base()
 
     class MatView(ViewMixin, Base):
@@ -158,7 +158,7 @@ def test_viewmixn_materialized_flag():
     assert mat_record.materialized is True
 
 
-def test_viewmixn_before_flush_raises_for_dirty_instance():
+def test_viewmixin_before_flush_raises_for_dirty_instance():
     Base = declarative_base()
 
     class FlushView(ViewMixin, Base):
@@ -183,7 +183,7 @@ def test_viewmixn_before_flush_raises_for_dirty_instance():
         _view_before_flush(session, None, None)
 
 
-def test_viewmixn_extra_selectable_column_produces_warning(caplog):
+def test_viewmixin_extra_selectable_column_produces_warning(caplog):
     Base = declarative_base()
 
     class ExtraView(ViewMixin, Base):
@@ -202,7 +202,7 @@ def test_viewmixn_extra_selectable_column_produces_warning(caplog):
     assert any("not declared on" in rec.message for rec in caplog.records)
 
 
-def test_viewmixn_importable_from_top_level():
+def test_viewmixin_importable_from_top_level():
     from sqlalchemy_utils import ViewMixin
     assert ViewMixin is not None
 
@@ -212,7 +212,7 @@ def test_viewreadonlyerror_importable_from_top_level():
     assert ViewReadonlyError is not None
 
 
-def test_viewmixn_autogenerate_integration():
+def test_viewmixin_autogenerate_integration():
     """End-to-end: ViewMixin class registers ViewRecord in metadata.info
     so that the Alembic comparator can detect views for autogenerate.
 

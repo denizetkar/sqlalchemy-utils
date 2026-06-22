@@ -628,7 +628,6 @@ _ENV_PY_TEMPLATE = textwrap.dedent("""\
 
     target_metadata = config.attributes.get("target_metadata")
 
-    # TODO: Task 9 will add include_view_comparator() here.
     # include_object = include_view_comparator()
 
     def run_migrations_offline() -> None:

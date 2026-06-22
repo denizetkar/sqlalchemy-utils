@@ -73,7 +73,9 @@ Full example
         fileConfig(config.config_file_name)
 
     # Add your model's MetaData here for autogenerate to compare against
-    target_metadata = User.metadata.__class__(metadata=ItemView.metadata, schemas={'default': 'public'})
+    # Use the declarative Base's ``MetaData``; view/table schemas are configured
+    # per-table via ``__table_args__ = {'schema': 'public'}`` or ``__view_schema__``.
+    target_metadata = Base.metadata
 
     # ... rest of usual alembic setup ...
 

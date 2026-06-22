@@ -73,7 +73,15 @@ def create_table_from_selectable(
     return table
 
 
-def create_materialized_view(name, selectable, metadata, indexes=None, aliases=None):
+def create_materialized_view(
+    name,
+    selectable,
+    metadata,
+    indexes=None,
+    aliases=None,
+    cascade_on_drop=True,
+    schema=None,
+):
     """Create a view on a given metadata
 
     :param name: The name of the view to create.
@@ -85,6 +93,12 @@ def create_materialized_view(name, selectable, metadata, indexes=None, aliases=N
     :param aliases:
         An optional dictionary containing with keys as column names and values
         as column aliases.
+    :param cascade_on_drop: If ``True`` the view will be dropped with
+        ``CASCADE``, deleting all dependent objects as well.
+    :param schema:
+        An optional string specifying the schema (database) in which the view
+        should be created. When supplied, the view name is qualified with the
+        schema in the emitted ``CREATE``/``DROP``/``REFRESH`` DDL.
 
     Same as for ``create_view`` except that a ``CREATE MATERIALIZED VIEW``
     statement is emitted instead of a ``CREATE VIEW``.
@@ -96,10 +110,13 @@ def create_materialized_view(name, selectable, metadata, indexes=None, aliases=N
         indexes=indexes,
         metadata=None,
         aliases=aliases,
+        schema=schema,
     )
 
     sa.event.listen(
-        metadata, 'after_create', CreateView(name, selectable, materialized=True)
+        metadata,
+        'after_create',
+        CreateView(name, selectable, materialized=True, schema=schema),
     )
 
     @sa.event.listens_for(metadata, 'after_create')
@@ -107,16 +124,22 @@ def create_materialized_view(name, selectable, metadata, indexes=None, aliases=N
         for idx in table.indexes:
             idx.create(connection)
 
-    sa.event.listen(metadata, 'before_drop', DropView(name, materialized=True))
+    sa.event.listen(
+        metadata,
+        'before_drop',
+        DropView(
+            name, materialized=True, cascade=cascade_on_drop, schema=schema
+        ),
+    )
 
     view_records = metadata.info.setdefault('sqlalchemy_utils_views', [])
     view_records.append(ViewRecord(
         name=name,
         selectable=selectable,
-        schema=None,
+        schema=schema,
         materialized=True,
         replace=False,
-        cascade_on_drop=True,
+        cascade_on_drop=cascade_on_drop,
     ))
     return table
 
@@ -127,6 +150,7 @@ def create_view(
     metadata,
     cascade_on_drop=True,
     replace=False,
+    schema=None,
 ):
     """Create a view on a given metadata
 
@@ -139,10 +163,14 @@ def create_view(
         ``CASCADE``, deleting all dependent objects as well.
     :param replace: If ``True`` the view will be created with ``OR REPLACE``,
         replacing an existing view with the same name.
+    :param schema:
+        An optional string specifying the schema (database) in which the view
+        should be created. When supplied, the view name is qualified with the
+        schema in the emitted ``CREATE``/``DROP`` DDL.
 
     The process for creating a view is similar to the standard way that a
-    table is constructed, except that a selectable is provided instead of
-    a set of columns. The view is created once a ``CREATE`` statement is
+    table is constructed, except that a selectable is provided instead of a
+    set of columns. The view is created once a ``CREATE`` statement is
     executed against the supplied metadata (e.g. ``metadata.create_all(..)``),
     and dropped when a ``DROP`` is executed against the metadata.
 
@@ -163,13 +191,13 @@ def create_view(
 
     """
     table = create_table_from_selectable(
-        name=name, selectable=selectable, metadata=None
+        name=name, selectable=selectable, metadata=None, schema=schema
     )
 
     sa.event.listen(
         metadata,
         'after_create',
-        CreateView(name, selectable, replace=replace),
+        CreateView(name, selectable, replace=replace, schema=schema),
     )
 
     @sa.event.listens_for(metadata, 'after_create')
@@ -177,13 +205,15 @@ def create_view(
         for idx in table.indexes:
             idx.create(connection)
 
-    sa.event.listen(metadata, 'before_drop', DropView(name, cascade=cascade_on_drop))
+    sa.event.listen(
+        metadata, 'before_drop', DropView(name, cascade=cascade_on_drop, schema=schema)
+    )
 
     view_records = metadata.info.setdefault('sqlalchemy_utils_views', [])
     view_records.append(ViewRecord(
         name=name,
         selectable=selectable,
-        schema=None,
+        schema=schema,
         materialized=False,
         replace=replace,
         cascade_on_drop=cascade_on_drop,
@@ -194,20 +224,23 @@ def create_view(
 class RefreshMaterializedView(Executable, ClauseElement):
     inherit_cache = True
 
-    def __init__(self, name, concurrently):
+    def __init__(self, name, concurrently, schema=None):
         self.name = name
         self.concurrently = concurrently
+        self.schema = schema
 
 
 @compiler.compiles(RefreshMaterializedView)
-def compile_refresh_materialized_view(element, compiler):
-    return 'REFRESH MATERIALIZED VIEW {concurrently}{name}'.format(
+def compile_refresh_materialized_view(element, compiler, **kw):
+    schema_prefix = f'{compiler.dialect.identifier_preparer.quote(element.schema)}.' if element.schema else ''
+    return 'REFRESH MATERIALIZED VIEW {concurrently}{schema_prefix}{name}'.format(
         concurrently='CONCURRENTLY ' if element.concurrently else '',
+        schema_prefix=schema_prefix,
         name=compiler.dialect.identifier_preparer.quote(element.name),
     )
 
 
-def refresh_materialized_view(session, name, concurrently=False):
+def refresh_materialized_view(session, name, concurrently=False, schema=None):
     """Refreshes an already existing materialized view
 
     :param session: An SQLAlchemy Session instance.
@@ -215,8 +248,12 @@ def refresh_materialized_view(session, name, concurrently=False):
     :param concurrently:
         Optional flag that causes the ``CONCURRENTLY`` parameter
         to be specified when the materialized view is refreshed.
+    :param schema:
+        An optional string specifying the schema (database) in which the
+        materialized view resides. When supplied, the view name is qualified
+        with the schema in the emitted ``REFRESH MATERIALIZED VIEW`` DDL.
     """
     # Since session.execute() bypasses autoflush, we must manually flush in
     # order to include newly-created/modified objects in the refresh.
     session.flush()
-    session.execute(RefreshMaterializedView(name, concurrently))
+    session.execute(RefreshMaterializedView(name, concurrently, schema=schema))
