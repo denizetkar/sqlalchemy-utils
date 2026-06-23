@@ -37,6 +37,8 @@ class ViewMixin:
     * ``__view_schema__`` — Schema name; takes precedence over
       ``__table_args__['schema']`` (default ``None``).
     * ``__view_cascade__`` — ``True`` to emit ``DROP ... CASCADE`` (default ``True``).
+      See also ``cascade_on_drop`` in :func:`sqlalchemy_utils.view.create_view`
+      (the runtime equivalent used by ``create_materialized_view``).
     * ``__view_replace__`` — ``True`` to emit ``CREATE OR REPLACE`` (default ``False``).
 
     **Methods:**
@@ -68,6 +70,7 @@ class ViewMixin:
     __view_materialized__ = False
     __view_schema__ = None
     __view_cascade__ = True
+    __view_replace__ = False
 
     @classmethod
     def __declare_last__(cls):
@@ -93,6 +96,9 @@ class ViewMixin:
         table_args = getattr(cls, '__table_args__', None)
         if view_schema is None and isinstance(table_args, dict):
             view_schema = table_args.get('schema')
+        # Store the resolved schema so refresh() (and other runtime callers)
+        # can use it without re-resolving from __table_args__ each time.
+        cls._resolved_view_schema = view_schema
 
         indexes = []
         if table_args:
@@ -174,6 +180,13 @@ class ViewMixin:
 
             @sa.event.listens_for(metadata, 'after_create')
             def create_indexes(target, connection, **kw):
+                # The backing table is built with metadata=None (see
+                # create_table_from_selectable above), so it is NOT registered
+                # on this metadata and a table-scoped listener would never
+                # fire during metadata.create_all(). We therefore listen on
+                # the metadata and filter to only act for this view's table.
+                if target is not table:
+                    return
                 for idx in table.indexes:
                     idx.create(connection)
 
@@ -207,5 +220,9 @@ class ViewMixin:
             session,
             cls.__tablename__,
             concurrently=concurrently,
-            schema=cls.__view_schema__,
+            schema=getattr(
+                cls,
+                '_resolved_view_schema',
+                getattr(cls, '__view_schema__', None),
+            ) or getattr(getattr(cls, '__table_args__', None), 'get', lambda _: None)('schema'),
         )

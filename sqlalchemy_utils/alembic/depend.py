@@ -21,6 +21,24 @@ from sqlalchemy_utils.alembic.view_record import ViewRecord
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+# Common SQL keywords / identifiers skipped during view-name dependency
+# matching to avoid false positives (e.g. a view named ``user`` matching the
+# column alias ``AS user`` in another view's definition).
+_SQL_KEYWORDS = frozenset({
+    'select', 'from', 'where', 'as', 'and', 'or', 'not', 'in', 'is',
+    'join', 'on', 'group', 'order', 'by', 'having', 'limit', 'offset',
+    'user', 'id', 'name', 'data', 'table', 'column', 'view', 'create',
+    'drop', 'insert', 'update', 'delete', 'set', 'values', 'into',
+    'with', 'case', 'when', 'then', 'else', 'end', 'null', 'true', 'false',
+    'count', 'sum', 'avg', 'min', 'max', 'distinct', 'all', 'any',
+    'asc', 'desc', 'union', 'intersect', 'except', 'exists', 'between',
+    'like', 'inner', 'left', 'right', 'outer', 'cross', 'using', 'natural',
+    'cast', 'coalesce', 'nullif', 'over', 'partition', 'row', 'rows',
+    'schema', 'index', 'sequence', 'function', 'procedure', 'trigger',
+    'foreign', 'primary', 'key', 'unique', 'check', 'default', 'constraint',
+})
+
+
 def _definition_str(view_record: ViewRecord) -> str:
     """Return the SQL definition string for *view_record*.
 
@@ -57,6 +75,8 @@ def _build_dependency_graph(
         for other_name in all_known:
             if other_name == vr.name:
                 continue  # skip self-reference
+            if other_name.lower() in _SQL_KEYWORDS:
+                continue  # skip SQL keywords / common words
             if re.search(rf"\b{re.escape(other_name)}\b", definition):
                 deps.add(other_name)
         graph[vr.name] = deps

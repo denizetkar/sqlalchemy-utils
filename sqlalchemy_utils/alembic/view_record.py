@@ -24,26 +24,14 @@ class ViewRecord:
     replace: bool = False
     cascade_on_drop: bool = True
 
-    @classmethod
-    def from_create_view(cls, create_view: 'CreateView', schema: str | None = None, cascade_on_drop: bool = True) -> 'ViewRecord':
-        """
-        Create a ViewRecord from a CreateView instance.
-
-        CreateView only stores name, selectable, materialized, and replace.
-        The schema and cascade_on_drop must be passed separately since they
-        are parameters of the create_view() function, not the CreateView DDLElement.
-        """
-        return cls(
-            name=create_view.name,
-            selectable=create_view.selectable,
-            schema=schema,
-            materialized=create_view.materialized,
-            replace=create_view.replace,
-            cascade_on_drop=cascade_on_drop,
-        )
-
     def __eq__(self, other: object) -> bool:
-        """Compare two ViewRecords for equality."""
+        """Compare two ViewRecords for equality.
+
+        Intentionally name-based (name/schema/materialized only) so that
+        ViewRecords can serve as stable dict/set keys even when the
+        underlying selectable SQL changes. Use :meth:`definition_matches`
+        to detect actual definition (selectable) changes.
+        """
         if not isinstance(other, ViewRecord):
             return NotImplemented
         return (
@@ -55,6 +43,23 @@ class ViewRecord:
     def __hash__(self) -> int:
         """Hash the ViewRecord for use in sets and dicts."""
         return hash((self.name, self.schema, self.materialized))
+
+    def definition_matches(self, other: 'ViewRecord') -> bool:
+        """Compare view definitions (selectable SQL) for equality.
+
+        Unlike __eq__ (which is name-based for dict/set key usage), this method
+        compares the actual SQL of the selectables to detect definition changes.
+        """
+        if not isinstance(other, ViewRecord):
+            return NotImplemented
+        return self._selectable_key() == other._selectable_key()
+
+    def _selectable_key(self) -> str:
+        """Render the selectable to a stable string for comparison."""
+        sel = self.selectable
+        if isinstance(sel, str):
+            return sel
+        return str(sel.compile(compile_kwargs={"literal_binds": True}))
 
     def __repr__(self) -> str:
         """Pretty string representation."""

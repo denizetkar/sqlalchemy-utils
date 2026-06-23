@@ -160,18 +160,27 @@ def test_viewrecord_eq_ignores_selectable():
 
 
 # ---------------------------------------------------------------------------
-# Bug 6: _schema_matches treats None and 'public' as equivalent
+# Bug 6: _schema_matches treats None and 'public' as equivalent (FIXED)
 # ---------------------------------------------------------------------------
 def test_schema_matches_none_public_equivalence():
-    """Documents that _schema_matches(None, 'public') is True, which masks
-    views that are genuinely in a non-default schema from autogenerate diff
-    loops scoped to 'public'."""
-    # None (no schema on view) maps to 'public' loop — treated as match.
-    assert _schema_matches(None, 'public') is True
+    """Verifies _schema_matches uses exact match only (Bug 6 fixed).
 
-    # But a view explicitly in 'analytics' against a None loop is NOT a match,
-    # showing the asymmetry: None is a wildcard for 'public' only.
+    Previously _schema_matches(None, 'public') returned True, masking views
+    that are genuinely in a non-default schema from autogenerate diff loops
+    scoped to 'public'. After the fix, _schema_matches is an exact equality
+    check, so None matches only None.
+    """
+    # None no longer maps to 'public' — exact match only.
+    assert _schema_matches(None, 'public') is False
+
+    # None still matches None (same schema).
+    assert _schema_matches(None, None) is True
+
+    # A view explicitly in 'analytics' against a None loop is NOT a match.
     assert _schema_matches('analytics', None) is False
+
+    # 'public' matches 'public' (exact match).
+    assert _schema_matches('public', 'public') is True
 
 
 # ---------------------------------------------------------------------------

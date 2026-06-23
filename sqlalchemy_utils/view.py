@@ -77,6 +77,7 @@ def create_materialized_view(
     name,
     selectable,
     metadata,
+    *,
     indexes=None,
     aliases=None,
     cascade_on_drop=True,
@@ -89,16 +90,19 @@ def create_materialized_view(
     :param metadata:
         An SQLAlchemy Metadata instance that stores the features of the
         database being described.
-    :param indexes: An optional list of SQLAlchemy Index instances.
+    :param indexes:
+        Keyword-only. An optional list of SQLAlchemy Index instances.
     :param aliases:
-        An optional dictionary containing with keys as column names and values
-        as column aliases.
-    :param cascade_on_drop: If ``True`` the view will be dropped with
-        ``CASCADE``, deleting all dependent objects as well.
+        Keyword-only. An optional dictionary containing with keys as column
+        names and values as column aliases.
+    :param cascade_on_drop:
+        Keyword-only. If ``True`` the view will be dropped with ``CASCADE``,
+        deleting all dependent objects as well.
     :param schema:
-        An optional string specifying the schema (database) in which the view
-        should be created. When supplied, the view name is qualified with the
-        schema in the emitted ``CREATE``/``DROP``/``REFRESH`` DDL.
+        Keyword-only. An optional string specifying the schema (database) in
+        which the view should be created. When supplied, the view name is
+        qualified with the schema in the emitted ``CREATE``/``DROP``/``REFRESH``
+        DDL.
 
     Same as for ``create_view`` except that a ``CREATE MATERIALIZED VIEW``
     statement is emitted instead of a ``CREATE VIEW``.
@@ -121,6 +125,12 @@ def create_materialized_view(
 
     @sa.event.listens_for(metadata, 'after_create')
     def create_indexes(target, connection, **kw):
+        # The table is built with metadata=None (see create_table_from_selectable
+        # above), so it is NOT registered on this metadata and a table-scoped
+        # listener would never fire during metadata.create_all(). We therefore
+        # listen on the metadata and filter to only act for this view's table.
+        if target is not table:
+            return
         for idx in table.indexes:
             idx.create(connection)
 
@@ -148,6 +158,7 @@ def create_view(
     name,
     selectable,
     metadata,
+    *,
     cascade_on_drop=True,
     replace=False,
     schema=None,
@@ -159,14 +170,16 @@ def create_view(
     :param metadata:
         An SQLAlchemy Metadata instance that stores the features of the
         database being described.
-    :param cascade_on_drop: If ``True`` the view will be dropped with
+    :param cascade_on_drop:
+        Keyword-only. If ``True`` the view will be dropped with
         ``CASCADE``, deleting all dependent objects as well.
-    :param replace: If ``True`` the view will be created with ``OR REPLACE``,
+    :param replace:
+        Keyword-only. If ``True`` the view will be created with ``OR REPLACE``,
         replacing an existing view with the same name.
     :param schema:
-        An optional string specifying the schema (database) in which the view
-        should be created. When supplied, the view name is qualified with the
-        schema in the emitted ``CREATE``/``DROP`` DDL.
+        Keyword-only. An optional string specifying the schema (database) in
+        which the view should be created. When supplied, the view name is
+        qualified with the schema in the emitted ``CREATE``/``DROP`` DDL.
 
     The process for creating a view is similar to the standard way that a
     table is constructed, except that a selectable is provided instead of a
@@ -202,6 +215,12 @@ def create_view(
 
     @sa.event.listens_for(metadata, 'after_create')
     def create_indexes(target, connection, **kw):
+        # The table is built with metadata=None (see create_table_from_selectable
+        # above), so it is NOT registered on this metadata and a table-scoped
+        # listener would never fire during metadata.create_all(). We therefore
+        # listen on the metadata and filter to only act for this view's table.
+        if target is not table:
+            return
         for idx in table.indexes:
             idx.create(connection)
 
@@ -224,10 +243,10 @@ def create_view(
 class RefreshMaterializedView(Executable, ClauseElement):
     inherit_cache = True
 
-    def __init__(self, name, concurrently, schema=None):
+    def __init__(self, name, schema=None, concurrently=False):
         self.name = name
-        self.concurrently = concurrently
         self.schema = schema
+        self.concurrently = concurrently
 
 
 @compiler.compiles(RefreshMaterializedView)
@@ -256,4 +275,4 @@ def refresh_materialized_view(session, name, concurrently=False, schema=None):
     # Since session.execute() bypasses autoflush, we must manually flush in
     # order to include newly-created/modified objects in the refresh.
     session.flush()
-    session.execute(RefreshMaterializedView(name, concurrently, schema=schema))
+    session.execute(RefreshMaterializedView(name, schema=schema, concurrently=concurrently))

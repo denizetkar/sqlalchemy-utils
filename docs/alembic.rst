@@ -66,6 +66,7 @@ Full example
 
     # Import your models for autogenerate to detect
     from your_app.models import User, ItemView
+    from your_app.models import Base
 
     # Interpret the config file for Alembic config.
     config = context.config

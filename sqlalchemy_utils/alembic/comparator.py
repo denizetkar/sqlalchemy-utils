@@ -56,25 +56,32 @@ def _canonicalize_view(
 
         sel = view_record.selectable
         if not isinstance(sel, str):
-            definition = str(sel.compile(compile_kwargs={"literal_binds": True}))
+            definition = str(
+                sel.compile(
+                    dialect=connection.dialect,
+                    compile_kwargs={"literal_binds": True},
+                )
+            )
         else:
             definition = sel
 
-        prefix = f"{view_record.schema}." if view_record.schema else ""
+        ip = connection.dialect.identifier_preparer
+        prefix = f"{ip.quote(view_record.schema)}." if view_record.schema else ""
+        name = ip.quote(view_record.name)
         if view_record.materialized:
             # For MVs, if one already exists we must drop it first
             # (PG has no CREATE OR REPLACE MATERIALIZED VIEW)
             connection.execute(sa.text(
-                f"DROP MATERIALIZED VIEW IF EXISTS {prefix}{view_record.name} CASCADE"
+                f"DROP MATERIALIZED VIEW IF EXISTS {prefix}{name} CASCADE"
             ))
             sql = (
-                f"CREATE MATERIALIZED VIEW {prefix}{view_record.name} "
+                f"CREATE MATERIALIZED VIEW {prefix}{name} "
                 f"AS {definition} WITH NO DATA"
             )
         else:
             # Use OR REPLACE to avoid DuplicateTable if view already exists in DB
             sql = (
-                f"CREATE OR REPLACE VIEW {prefix}{view_record.name} "
+                f"CREATE OR REPLACE VIEW {prefix}{name} "
                 f"AS {definition}"
             )
 
@@ -125,6 +132,14 @@ def compare_views(
     model_records: list[ViewRecord] = metadata.info.get(
         "sqlalchemy_utils_views", []
     )
+
+    # Cross-schema dependency resolution requires DB state from all schemas.
+    all_db_views: dict[str, str] = {}
+    all_db_mvs: dict[str, str] = {}
+    for schema in schemas:
+        all_db_views.update(get_database_views(connection, schema))
+        all_db_mvs.update(get_database_materialized_views(connection, schema))
+    all_db = {**all_db_views, **all_db_mvs}
 
     for schema in schemas:
         db_views = get_database_views(connection, schema)
@@ -208,7 +223,6 @@ def compare_views(
         # Order by dependency
         if create_ops:
             create_by_name = {op.name: op for op in create_ops}
-            all_db = {**db_views, **db_mvs}
             try:
                 ordered_records = resolve_create_order(model_records, all_db)
             except ValueError:
@@ -228,7 +242,6 @@ def compare_views(
 
         if drop_ops:
             drop_by_name = {op.name: op for op in drop_ops}
-            all_db = {**db_views, **db_mvs}
             try:
                 ordered_records = resolve_drop_order(model_records, all_db)
             except ValueError:
@@ -247,32 +260,36 @@ def compare_views(
             for op in drop_by_name.values():
                 upgrade_ops.ops.append(op)
 
+    seen: set = set()
+    deduped: list = []
+    for op in upgrade_ops.ops:
+        key = (type(op).__name__, getattr(op, "name", None), getattr(op, "schema", None))
+        if key not in seen:
+            seen.add(key)
+            deduped.append(op)
+    upgrade_ops.ops = deduped
+
 
 def _schema_matches(view_schema: str | None, loop_schema: str | None) -> bool:
-    """Check whether a view's schema matches the current loop schema.
-
-    Both ``None`` and ``'public'`` are treated as the default schema in PG.
-    """
-    if view_schema == loop_schema:
-        return True
-    # In PostgreSQL, schema=None maps to 'public'
-    if view_schema is None and loop_schema == "public":
-        return True
-    if view_schema == "public" and loop_schema is None:
-        return True
-    return False
+    """Check whether a view's schema matches the current loop schema (exact match)."""
+    return view_schema == loop_schema
 
 
 def include_view_comparator() -> None:
-    """Activate view autogenerate support for Alembic.
+    """Register view autogenerate hooks with Alembic.
 
-    Call this in ``env.py`` **before** ``context.configure()``::
+    Registers the ``"schema"`` comparator (``compare_views``) plus the
+    corresponding renderer and operation classes so that
+    ``alembic revision --autogenerate`` detects database view changes
+    (create / drop / replace for both regular and materialized views).
+
+    Must be called in ``env.py`` **before** ``context.configure()``::
 
         from sqlalchemy_utils.alembic.comparator import include_view_comparator
         include_view_comparator()
 
-    Imports the comparator, renderer, and operations modules to trigger
-    ``@dispatch_for`` side-effect registrations.
+    The imports below trigger ``@dispatch_for`` side-effect registrations;
+    the function is idempotent (safe to call more than once).
     """
     from . import comparator, operations  # noqa: F401
     try:
