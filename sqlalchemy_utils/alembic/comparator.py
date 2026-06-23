@@ -295,8 +295,9 @@ def include_view_comparator() -> None:
         from sqlalchemy_utils.alembic.comparator import include_view_comparator
         include_view_comparator()
 
-    The imports below trigger ``@dispatch_for`` side-effect registrations;
-    the function is idempotent (safe to call more than once).
+    This function is idempotent (safe to call more than once).  The
+    comparator is registered lazily — merely importing an Op class from
+    :mod:`sqlalchemy_utils.alembic` does **not** activate autogenerate.
     """
     from . import comparator, operations  # noqa: F401
     comparators.dispatch_for("schema")(compare_views)

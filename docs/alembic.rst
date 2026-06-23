@@ -31,6 +31,10 @@ comparator for view DDL:
 * How it works: Each model view is temporarily created inside a savepoint,
   its definition read from PostgreSQL, then the savepoint is rolled back.
 
+* **PostgreSQL only**: View autogenerate comparison queries
+  ``pg_views``/``pg_matviews`` and uses savepoints.  On non-PostgreSQL
+  dialects the comparator logs a warning and skips view diffing.
+
 * What it detects:
 
   - New views that need to be created
@@ -41,6 +45,9 @@ comparator for view DDL:
 
   - PostgreSQL does not support ``CREATE OR REPLACE MATERIALIZED VIEW``,
     so ``replace_materialized_view`` issues a ``DROP`` followed by ``CREATE``.
+  - ``op.create_materialized_view`` defaults to ``WITH DATA`` (matching
+    PostgreSQL's default).  Pass ``with_data=False`` to create an unpopulated
+    MV (useful for large datasets during migration).
   - ``cascade_on_drop`` controls (``CASCADE``/``RESTRICT``) are not yet
     configurable per-view in autogenerate.
 
