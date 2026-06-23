@@ -45,7 +45,7 @@ def render_create_materialized_view(
     autogen_context: AutogenContext, op: CreateMaterializedViewOp
 ) -> str:
     schema_part = f", schema={op.schema!r}" if op.schema else ""
-    with_data_part = ", with_data=True" if op.with_data else ""
+    with_data_part = "" if op.with_data else ", with_data=False"
     return f"op.create_materialized_view({op.name!r}, {op.definition!r}{schema_part}{with_data_part})"
 
 

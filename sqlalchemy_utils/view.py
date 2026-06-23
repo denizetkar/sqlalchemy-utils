@@ -41,12 +41,14 @@ class DropView(DDLElement):
 @compiler.compiles(DropView)
 def compile_drop_materialized_view(element, compiler, **kw):
     schema_prefix = f'{compiler.dialect.identifier_preparer.quote(element.schema)}.' if element.schema else ''
-    return 'DROP {}VIEW IF EXISTS {}{} {}'.format(
+    sql = 'DROP {}VIEW IF EXISTS {}{}'.format(
         'MATERIALIZED ' if element.materialized else '',
         schema_prefix,
         compiler.dialect.identifier_preparer.quote(element.name),
-        'CASCADE' if element.cascade else '',
     )
+    if element.cascade:
+        sql += ' CASCADE'
+    return sql
 
 
 def create_table_from_selectable(
@@ -259,7 +261,7 @@ def compile_refresh_materialized_view(element, compiler, **kw):
     )
 
 
-def refresh_materialized_view(session, name, concurrently=False, schema=None):
+def refresh_materialized_view(session, name, *, schema=None, concurrently=False):
     """Refreshes an already existing materialized view
 
     :param session: An SQLAlchemy Session instance.

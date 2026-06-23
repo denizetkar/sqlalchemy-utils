@@ -68,10 +68,12 @@ class CreateViewOp(MigrateOperation):
         operations: Operations,
         name: str,
         definition: str,
+        *,
+        replace: bool = False,
         schema: str | None = None,
     ) -> None:
         """Programmatic entry-point for ``op.create_view()``."""
-        op = CreateViewOp(name, definition, schema=schema)
+        op = CreateViewOp(name, definition, schema=schema, replace=replace)
         return operations.invoke(op)
 
     def reverse(self) -> DropViewOp:
@@ -111,6 +113,7 @@ class DropViewOp(MigrateOperation):
         cls,
         operations: Operations,
         name: str,
+        *,
         schema: str | None = None,
         cascade: bool = True,
         definition: str | None = None,
@@ -166,6 +169,7 @@ class ReplaceViewOp(MigrateOperation):
         operations: Operations,
         name: str,
         definition: str,
+        *,
         schema: str | None = None,
         old_definition: str | None = None,
     ) -> None:
@@ -208,7 +212,7 @@ class CreateMaterializedViewOp(MigrateOperation):
         name: str,
         definition: str,
         schema: str | None = None,
-        with_data: bool = False,
+        with_data: bool = True,
     ) -> None:
         self.name = name
         self.definition = definition
@@ -221,8 +225,9 @@ class CreateMaterializedViewOp(MigrateOperation):
         operations: Operations,
         name: str,
         definition: str,
+        *,
         schema: str | None = None,
-        with_data: bool = False,
+        with_data: bool = True,
     ) -> None:
         """Programmatic entry-point for ``op.create_materialized_view()``."""
         op = CreateMaterializedViewOp(
@@ -264,6 +269,7 @@ class DropMaterializedViewOp(MigrateOperation):
         cls,
         operations: Operations,
         name: str,
+        *,
         schema: str | None = None,
         cascade: bool = True,
         definition: str | None = None,
@@ -322,8 +328,9 @@ class ReplaceMaterializedViewOp(MigrateOperation):
         operations: Operations,
         name: str,
         definition: str,
+        *,
         schema: str | None = None,
-        with_data: bool = False,
+        with_data: bool = True,
         old_definition: str | None = None,
     ) -> None:
         """Programmatic entry-point for ``op.replace_materialized_view()``."""

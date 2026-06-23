@@ -110,7 +110,6 @@ def _canonicalize_view(
         return None
 
 
-@comparators.dispatch_for("schema")
 def compare_views(
     autogen_context: AutogenContext,
     upgrade_ops,
@@ -128,6 +127,14 @@ def compare_views(
     """
     connection = autogen_context.connection
     metadata = autogen_context.metadata
+
+    if connection.dialect.name != 'postgresql':
+        log.warning(
+            "View autogenerate comparison is only supported on PostgreSQL; "
+            "skipping view diffing for non-PostgreSQL dialect '%s'.",
+            connection.dialect.name,
+        )
+        return
 
     model_records: list[ViewRecord] = metadata.info.get(
         "sqlalchemy_utils_views", []
@@ -292,6 +299,7 @@ def include_view_comparator() -> None:
     the function is idempotent (safe to call more than once).
     """
     from . import comparator, operations  # noqa: F401
+    comparators.dispatch_for("schema")(compare_views)
     try:
         from . import renderer  # noqa: F401
     except ImportError:

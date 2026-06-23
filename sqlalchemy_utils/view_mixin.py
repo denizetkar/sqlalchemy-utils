@@ -168,7 +168,7 @@ class ViewMixin:
         sa.event.listen(
             metadata,
             'after_create',
-            CreateView(cls.__tablename__, selectable, materialized=is_materialized, schema=view_schema),
+            CreateView(cls.__tablename__, selectable, materialized=is_materialized, replace=replace, schema=view_schema),
         )
         sa.event.listen(
             metadata,

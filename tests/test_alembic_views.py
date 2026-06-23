@@ -417,7 +417,7 @@ class TestOperationsCreateViewOp:
         sqls = _capture_sql(op)
         assert sqls == ["CREATE VIEW public.v1 AS SELECT 1"]
 
-    def test_create_view_rejects_replace_kwarg(self):
+    def test_create_view_accepts_replace_kwarg(self):
         from unittest.mock import MagicMock
         from unittest.mock import patch
         from alembic.operations import Operations
@@ -428,8 +428,17 @@ class TestOperationsCreateViewOp:
             create_engine("sqlite:///:memory:").connect()
         ))
 
-        with pytest.raises(TypeError, match="unexpected keyword argument"):
-            CreateViewOp.create_view(operations, "test_view", "SELECT 1", replace=True)
+        captured_ops: list = []
+
+        def _capture_invoke(op):
+            captured_ops.append(op)
+
+        operations.invoke = _capture_invoke  # type: ignore[assignment]
+        CreateViewOp.create_view(operations, "test_view", "SELECT 1", replace=True)
+
+        assert captured_ops, "create_view did not invoke any op"
+        assert isinstance(captured_ops[0], CreateViewOp)
+        assert captured_ops[0].replace is True
 
 
 class TestOperationsDropViewOp:
@@ -514,7 +523,7 @@ class TestOperationsCreateMaterializedViewOp:
     def test_instantiation(self):
         op = CreateMaterializedViewOp("mv1", "SELECT 1")
         assert op.name == "mv1"
-        assert op.with_data is False
+        assert op.with_data is True
 
     def test_reverse_returns_drop_mv(self):
         op = CreateMaterializedViewOp("mv1", "SELECT 1")
@@ -537,7 +546,7 @@ class TestOperationsCreateMaterializedViewOp:
         op = CreateMaterializedViewOp("mv1", "SELECT 1", schema="analytics")
         sqls = _capture_sql(op)
         assert sqls == [
-            "CREATE MATERIALIZED VIEW analytics.mv1 AS SELECT 1 WITH NO DATA"
+            "CREATE MATERIALIZED VIEW analytics.mv1 AS SELECT 1 WITH DATA"
         ]
 
 
@@ -1484,12 +1493,12 @@ class TestRendererCreateMaterializedView:
         assert "with_data=" not in result
 
     def test_includes_with_data_true(self):
-        """Renderer includes with_data=True when explicitly set."""
+        """Renderer omits with_data when it equals the default (True)."""
         from sqlalchemy_utils.alembic.renderer import render_create_materialized_view
 
         op = CreateMaterializedViewOp("mv_stats", "SELECT 1", with_data=True)
         result = render_create_materialized_view(_make_autogen_context(), op)
-        assert "with_data=True" in result
+        assert "with_data=" not in result
 
     def test_schema_included_when_provided(self):
         """Schema parameter is included when schema is provided."""
