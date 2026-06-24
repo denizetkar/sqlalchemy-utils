@@ -136,6 +136,9 @@ def compare_views(
         )
         return
 
+    if schemas is None:
+        schemas = [None]
+
     model_records: list[ViewRecord] = metadata.info.get(
         "sqlalchemy_utils_views", []
     )

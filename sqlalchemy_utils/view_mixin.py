@@ -95,10 +95,8 @@ class ViewMixin:
         metadata = cls.metadata
 
         # Resolve schema: __view_schema__ takes precedence over __table_args__['schema']
-        view_schema = getattr(cls, '__view_schema__', None)
         table_args = getattr(cls, '__table_args__', None)
-        if view_schema is None and isinstance(table_args, dict):
-            view_schema = table_args.get('schema')
+        view_schema = cls._resolve_schema()
         # Store the resolved schema so refresh() (and other runtime callers)
         # can use it without re-resolving from __table_args__ each time.
         cls._resolved_view_schema = view_schema

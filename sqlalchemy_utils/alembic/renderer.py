@@ -24,7 +24,8 @@ from sqlalchemy_utils.alembic.operations import (
 @renderers.dispatch_for(CreateViewOp)
 def render_create_view(autogen_context: AutogenContext, op: CreateViewOp) -> str:
     schema_part = f", schema={op.schema!r}" if op.schema else ""
-    return f"op.create_view({op.name!r}, {op.definition!r}{schema_part})"
+    replace_part = ", replace=True" if op.replace else ""
+    return f"op.create_view({op.name!r}, {op.definition!r}{schema_part}{replace_part})"
 
 
 @renderers.dispatch_for(DropViewOp)
@@ -37,7 +38,8 @@ def render_drop_view(autogen_context: AutogenContext, op: DropViewOp) -> str:
 @renderers.dispatch_for(ReplaceViewOp)
 def render_replace_view(autogen_context: AutogenContext, op: ReplaceViewOp) -> str:
     schema_part = f", schema={op.schema!r}" if op.schema else ""
-    return f"op.replace_view({op.name!r}, {op.definition!r}{schema_part})"
+    old_def_part = f", old_definition={op.old_definition!r}" if op.old_definition else ""
+    return f"op.replace_view({op.name!r}, {op.definition!r}{schema_part}{old_def_part})"
 
 
 @renderers.dispatch_for(CreateMaterializedViewOp)
@@ -64,4 +66,5 @@ def render_replace_materialized_view(
 ) -> str:
     schema_part = f", schema={op.schema!r}" if op.schema else ""
     with_data_part = "" if op.with_data else ", with_data=False"
-    return f"op.replace_materialized_view({op.name!r}, {op.definition!r}{schema_part}{with_data_part})"
+    old_def_part = f", old_definition={op.old_definition!r}" if op.old_definition else ""
+    return f"op.replace_materialized_view({op.name!r}, {op.definition!r}{schema_part}{with_data_part}{old_def_part})"

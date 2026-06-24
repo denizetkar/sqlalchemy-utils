@@ -21,7 +21,7 @@ def get_database_views(connection, schema: str | None = None) -> dict[str, str]:
         >>> views = get_database_views(connection)  # all non-system schemas
         >>> views = get_database_views(connection, schema="public")
     """
-    if schema is None:
+    if not schema:  # catches None and ""
         sql = sa.text(
             "SELECT viewname, definition FROM pg_views "
             "WHERE schemaname NOT IN ('information_schema', 'pg_catalog')"
@@ -53,7 +53,7 @@ def get_database_materialized_views(connection, schema: str | None = None) -> di
         >>> mvs = get_database_materialized_views(connection)  # all non-system schemas
         >>> mvs = get_database_materialized_views(connection, schema="public")
     """
-    if schema is None:
+    if not schema:  # catches None and ""
         sql = sa.text(
             "SELECT matviewname, definition FROM pg_matviews "
             "WHERE schemaname NOT IN ('information_schema', 'pg_catalog')"

@@ -85,6 +85,7 @@ class CreateViewOp(MigrateOperation):
             materialized=False,
             cascade=True,
             definition=self.definition,
+            replace=self.replace,
         )
 
     def to_diff_tuple(self) -> tuple:
@@ -103,12 +104,14 @@ class DropViewOp(MigrateOperation):
         materialized: bool = False,
         cascade: bool = True,
         definition: str | None = None,
+        replace: bool = False,
     ) -> None:
         self.name = name
         self.schema = schema
         self.materialized = materialized
         self.cascade = cascade
         self.definition = definition
+        self.replace = replace
 
     @classmethod
     def drop_view(
@@ -143,7 +146,7 @@ class DropViewOp(MigrateOperation):
                 "no definition stored. Pass definition= to DropViewOp "
                 "to enable automatic downgrade generation."
             )
-        return CreateViewOp(self.name, self.definition, schema=self.schema)
+        return CreateViewOp(self.name, self.definition, schema=self.schema, replace=self.replace)
 
     def to_diff_tuple(self) -> tuple:
         return ("drop_view", self.name, self.schema, self.definition)
@@ -194,7 +197,8 @@ class ReplaceViewOp(MigrateOperation):
                 "ReplaceViewOp to enable automatic downgrade generation."
             )
         return ReplaceViewOp(
-            self.name, self.old_definition, schema=self.schema
+            self.name, self.old_definition, schema=self.schema,
+            old_definition=self.definition,
         )
 
     def to_diff_tuple(self) -> tuple:
@@ -377,6 +381,7 @@ class ReplaceMaterializedViewOp(MigrateOperation):
             self.old_definition,
             schema=self.schema,
             with_data=self.with_data,
+            old_definition=self.definition,
         )
 
     def to_diff_tuple(self) -> tuple:

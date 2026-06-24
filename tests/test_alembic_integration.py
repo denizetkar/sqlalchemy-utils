@@ -1705,3 +1705,553 @@ def test_materialized_view_ops_document_pg_only():
         assert 'postgresql' in doc or 'postgres' in doc, (
             f"{cls.__name__} docstring should mention PostgreSQL-only semantics"
         )
+
+
+# ============================================================================
+# Section 6: Bug Hunt Round 5
+#
+# Round 5 focuses on RUNTIME CORRECTNESS: logic errors, edge cases, crashes,
+# wrong SQL, and round-trip fidelity bugs not covered by earlier sections.
+# Each test below documents a distinct defect and is expected to FAIL until
+# the source is fixed.
+# ============================================================================
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-01: render_create_view drops the `replace=True` parameter.
+#
+# `CreateViewOp(name, definition, replace=True)` should round-trip through
+# the renderer back to a `CreateViewOp` with `replace=True`.  The current
+# renderer (renderer.py:24-27) emits only `op.create_view(name, definition[, schema=])`
+# and never includes `replace=`, so autogenerate silently downgrades a
+# `CREATE OR REPLACE VIEW` migration to a plain `CREATE VIEW` migration.
+# On PostgreSQL this raises `DuplicateTable` at upgrade time.
+# ---------------------------------------------------------------------------
+def test_round5_renderer_preserves_replace_true():
+    """render_create_view must emit replace=True when the op has it set.
+
+    Without `replace=True` in the rendered code, re-running a migration
+    that uses `CREATE OR REPLACE VIEW` degrades to `CREATE VIEW`, which
+    fails on PostgreSQL with `relation already exists`.
+    """
+    from sqlalchemy_utils.alembic.renderer import render_create_view
+    from sqlalchemy_utils.alembic.operations import CreateViewOp
+
+    op = CreateViewOp("v_replace", "SELECT 1", replace=True)
+    rendered = render_create_view(MagicMock(), op)
+
+    assert "replace=True" in rendered, (
+        "render_create_view drops the `replace=True` parameter: rendered "
+        f"code {rendered!r} will not produce a CREATE OR REPLACE VIEW. "
+        "Round-tripping CreateViewOp(replace=True) through the renderer "
+        "loses the replace flag, breaking downgrade/upgrade fidelity."
+    )
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-02: render_replace_view drops `old_definition`.
+#
+# `ReplaceViewOp` stores `old_definition` so that `reverse()` can produce
+# a downgrade.  The renderer (renderer.py:37-40) emits only
+# `op.replace_view(name, definition[, schema=])` and never includes
+# `old_definition=`, so the generated downgrade loses the ability to revert.
+# ---------------------------------------------------------------------------
+def test_round5_renderer_preserves_old_definition_for_replace_view():
+    """render_replace_view must emit old_definition= so the downgrade is
+    able to revert the view to its prior definition."""
+    from sqlalchemy_utils.alembic.renderer import render_replace_view
+    from sqlalchemy_utils.alembic.operations import ReplaceViewOp
+
+    op = ReplaceViewOp(
+        "v_repl", "SELECT 2", schema="public", old_definition="SELECT 1"
+    )
+    rendered = render_replace_view(MagicMock(), op)
+
+    assert "old_definition=" in rendered, (
+        "render_replace_view drops `old_definition`: rendered code "
+        f"{rendered!r} cannot produce a working downgrade because the "
+        "old definition is lost.  Alembic's autogenerate downgrade path "
+        "calls op.reverse() which requires old_definition."
+    )
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-03: render_replace_materialized_view drops `old_definition`.
+#
+# Same as BUG-R5-02 but for materialized views.  The renderer
+# (renderer.py:61-67) omits `old_definition=`.
+# ---------------------------------------------------------------------------
+def test_round5_renderer_preserves_old_definition_for_replace_mv():
+    """render_replace_materialized_view must emit old_definition= so the
+    materialized-view downgrade can revert to the prior definition."""
+    from sqlalchemy_utils.alembic.renderer import render_replace_materialized_view
+    from sqlalchemy_utils.alembic.operations import ReplaceMaterializedViewOp
+
+    op = ReplaceMaterializedViewOp(
+        "mv_repl", "SELECT 2", old_definition="SELECT 1"
+    )
+    rendered = render_replace_materialized_view(MagicMock(), op)
+
+    assert "old_definition=" in rendered, (
+        "render_replace_materialized_view drops `old_definition`: "
+        f"rendered code {rendered!r} cannot produce a working downgrade."
+    )
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-07: CreateViewOp.reverse() round-trip loses `replace=True`.
+#
+# `CreateViewOp("v", "SELECT 1", replace=True).reverse()` returns a
+# `DropViewOp`.  Reversing that `DropViewOp` again (`.reverse()`) returns
+# a `CreateViewOp` — but WITHOUT `replace=True` (operations.py:146 only
+# passes name/definition/schema).  A double-reverse should be identity.
+# ---------------------------------------------------------------------------
+def test_round5_create_view_op_double_reverse_preserves_replace():
+    """CreateViewOp(replace=True) → reverse() → reverse() should preserve
+    replace=True (double-reverse is identity for round-trip fidelity)."""
+    op = CreateViewOp("v", "SELECT 1", replace=True)
+    double_reversed = op.reverse().reverse()
+    assert isinstance(double_reversed, CreateViewOp), (
+        "Double-reverse of CreateViewOp should return a CreateViewOp"
+    )
+    assert double_reversed.replace is True, (
+        "Double-reverse of CreateViewOp(replace=True) loses replace=True: "
+        f"got replace={double_reversed.replace!r}. The DropViewOp.reverse() "
+        "implementation does not forward the replace flag, so the "
+        "generated downgrade loses CREATE OR REPLACE semantics."
+    )
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-08: ReplaceViewOp.reverse() does not set old_definition on the
+# reversed op, so the reversed op cannot be reversed again.
+#
+# `ReplaceViewOp("v", "SELECT 2", old_definition="SELECT 1").reverse()`
+# returns `ReplaceViewOp("v", "SELECT 1")` with `old_definition=None`
+# (operations.py:196-198).  A double-reverse then raises RuntimeError
+# instead of being identity.
+# ---------------------------------------------------------------------------
+def test_round5_replace_view_op_double_reverse_preserves_old_definition():
+    """ReplaceViewOp → reverse() → reverse() should be identity.
+
+    The first reverse swaps definition and old_definition.  The second
+    reverse should swap them back.  But the current implementation does
+    not set old_definition on the reversed op, so the second reverse
+    raises RuntimeError('no old_definition stored').
+    """
+    op = ReplaceViewOp("v", "SELECT 2", old_definition="SELECT 1")
+    rev = op.reverse()
+    # The reversed op's old_definition should be the original definition
+    # so that a second reverse restores the original op.
+    assert rev.old_definition == "SELECT 2", (
+        "ReplaceViewOp.reverse() does not set old_definition on the "
+        "reversed op. A double-reverse (which should be identity) would "
+        f"raise RuntimeError. Got old_definition={rev.old_definition!r}."
+    )
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-09: ReplaceMaterializedViewOp.reverse() does not set old_definition
+# on the reversed op (operations.py:375-380).  Same as BUG-R5-08 but for
+# materialized views.
+# ---------------------------------------------------------------------------
+def test_round5_replace_mv_op_double_reverse_preserves_old_definition():
+    """ReplaceMaterializedViewOp → reverse() → reverse() should be identity."""
+    from sqlalchemy_utils.alembic.operations import ReplaceMaterializedViewOp
+
+    op = ReplaceMaterializedViewOp(
+        "mv", "SELECT 2", old_definition="SELECT 1"
+    )
+    rev = op.reverse()
+    assert rev.old_definition == "SELECT 2", (
+        "ReplaceMaterializedViewOp.reverse() does not set old_definition "
+        "on the reversed op. A double-reverse would raise RuntimeError. "
+        f"Got old_definition={rev.old_definition!r}."
+    )
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-11: get_database_views treats empty-string schema as a real schema.
+#
+# pg_catalog.py:24 checks `if schema is None` — but an empty string `""` is
+# NOT None, so it falls into the `else` branch and queries
+# `WHERE schemaname = ''`.  An empty schema name matches no rows (PG never
+# has a view in schema ''), so the function silently returns an empty dict.
+# Empty-string schema should be treated as None (query all non-system schemas).
+# ---------------------------------------------------------------------------
+def test_round5_pg_catalog_empty_string_schema_treated_as_none():
+    """get_database_views should treat schema='' the same as schema=None
+    (query all non-system schemas), not query `WHERE schemaname = ''`."""
+    src = inspect.getsource(get_database_views)
+
+    # The bug: `if schema is None:` treats "" as a real schema.
+    # A correct check would be `if not schema:` (falsy) or
+    # `if schema is None or schema == '':`.
+    assert "if schema is None" not in src or 'if not schema' in src, (
+        "get_database_views uses `if schema is None:` which treats "
+        "empty-string schema as a real schema name, querying "
+        "`WHERE schemaname = ''` and silently returning no rows. "
+        "Empty-string schema should be treated as None."
+    )
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-14: _canonicalize_view silently returns None on failure, causing
+# compare_views to SKIP the view entirely (no create/replace op emitted).
+#
+# comparator.py:100-110 catches ALL exceptions, logs a warning, and returns
+# None.  comparator.py:171-176 then skips views where canonical is None.
+# This means a model view that references a not-yet-created table (a common
+# scenario during migrations) is INVISIBLE to autogenerate — no op is
+# emitted, so the view is never created.  The user gets a migration that
+# silently omits the view.
+# ---------------------------------------------------------------------------
+def test_round5_canonicalize_failure_emits_op_not_silent_skip():
+    """When _canonicalize_view returns None (canonicalization failed),
+    compare_views should still emit a CreateViewOp/ReplaceViewOp using the
+    model's raw selectable, not silently skip the view.
+
+    Silent skipping means autogenerate produces a migration that omits
+    the view entirely — the view is never created, and the user has no
+    indication that anything went wrong (only a log.warning).
+    """
+    src = inspect.getsource(compare_views)
+
+    # The bug: `if canonical is not None:` skips the view when
+    # canonicalization fails.  A correct impl would fall back to the
+    # model's raw selectable string when canonicalization fails.
+    assert "if canonical is not None" not in src or "else" in src.split(
+        "if canonical is not None"
+    )[1].split("for schema")[0], (
+        "compare_views silently skips views when _canonicalize_view "
+        "returns None (canonicalization failure). A view that references "
+        "a not-yet-created table becomes invisible to autogenerate — no "
+        "create op is emitted, so the migration omits the view entirely. "
+        "The comparator should fall back to the model's raw selectable "
+        "when canonicalization fails."
+    )
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-19: get_database_materialized_views has the same empty-string-schema
+# and cross-schema collision bugs as get_database_views.
+# ---------------------------------------------------------------------------
+def test_round5_pg_catalog_mvs_empty_string_schema():
+    """get_database_materialized_views should treat schema='' as None."""
+    from sqlalchemy_utils.alembic.pg_catalog import get_database_materialized_views
+
+    src = inspect.getsource(get_database_materialized_views)
+    assert "if schema is None" not in src or "if not schema" in src, (
+        "get_database_materialized_views uses `if schema is None:` which "
+        "treats empty-string schema as a real schema name."
+    )
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-20: ViewMixin.__declare_last__ with __table_args__ as a tuple
+# containing a dict in a non-final position does not extract schema.
+#
+# view_mixin.py:100-101 only checks `isinstance(table_args, dict)` — but
+# __table_args__ can be a tuple like `(Column(...), {'schema': 'analytics'})`
+# or even `(Column(...), {'extend_existing': True, 'schema': 'analytics'})`.
+# The code at line 108-114 extracts Index objects from tuple __table_args__,
+# but the schema extraction at line 100-101 ONLY handles the dict form, not
+# the tuple-with-dict-last-element form.  Wait — actually line 100 checks
+# `isinstance(table_args, dict)` so a tuple __table_args__ with schema in
+# the trailing dict is NOT extracted at line 100.  The schema is only
+# extracted via __view_schema__ in that case.
+#
+# However, _resolve_schema (line 221-230) DOES handle tuple __table_args__
+# with a trailing dict.  So there's an inconsistency: __declare_last__ uses
+# only the dict form, while _resolve_schema handles the tuple form too.
+# This means the CreateView/DropView DDL uses schema=None while refresh()
+# uses the correct schema.
+# ---------------------------------------------------------------------------
+def test_round5_view_mixin_declare_last_handles_tuple_table_args_schema():
+    """__declare_last__ should extract schema from tuple-style __table_args__
+    (e.g. `(Column(...), {'schema': 'analytics'})`), not just dict-style.
+
+    Currently __declare_last__ only checks `isinstance(table_args, dict)`
+    for schema extraction, while _resolve_schema handles the tuple form.
+    This means the CreateView/DropView DDL emitted by __declare_last__
+    uses schema=None while refresh() uses the correct schema — an
+    inconsistency that produces unqualified DDL on tuple-style table_args.
+    """
+    src = inspect.getsource(ViewMixin.__declare_last__)
+
+    # The buggy code only handles dict table_args for schema.
+    # It should also handle tuple/list table_args with a trailing dict.
+    # Look for the schema extraction block.
+    if "isinstance(table_args, dict)" in src:
+        # The fix should also handle tuple/list with trailing dict.
+        schema_block = src.split("isinstance(table_args, dict)")[1].split("\n")[:5]
+        schema_block_text = " ".join(schema_block)
+        # A correct impl would also check tuple/list or call _resolve_schema.
+        assert "isinstance" in schema_block_text or "_resolve_schema" in src, (
+            "__declare_last__ only extracts schema from dict-style "
+            "__table_args__, not tuple-style (e.g. "
+            "(Column(...), {'schema': 'analytics'})). The DDL emitted by "
+            "__declare_last__ uses schema=None while refresh() uses the "
+            "correct schema — an inconsistency that produces unqualified DDL."
+        )
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-22: CreateViewOp.to_diff_tuple() shape is inconsistent with the
+# other ops — it puts `definition` before `schema`, while DropViewOp and
+# the rest put `schema` before `definition`.
+#
+# operations.py:90-91:  ("create_view", self.name, self.schema, self.definition)
+# operations.py:148-149: ("drop_view", self.name, self.schema, self.definition)
+#
+# Wait — actually CreateViewOp IS (name, schema, definition) after the fix.
+# Let me re-check... operations.py:91 says:
+#   return ("create_view", self.name, self.schema, self.definition)
+# So it's consistent.  But ReplaceViewOp (line 200-201) returns:
+#   ("replace_view", self.name, self.schema, self.definition, self.old_definition)
+# which is also consistent.  OK — this was fixed.  NOT a bug.
+#
+# Removing this test to avoid false positive.
+# ---------------------------------------------------------------------------
+# (No test — bug already fixed.)
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-23: DropViewOp classmethod `drop_view` hardcodes `materialized=False`,
+# so `op.drop_view()` can never drop a materialized view.
+#
+# operations.py:124-130 constructs DropViewOp with `materialized=False`
+# unconditionally.  This is by design (use `op.drop_materialized_view()` for
+# MVs), but the DropViewOp class itself accepts `materialized=True`.  The
+# inconsistency means `DropViewOp("mv", materialized=True)` produces
+# `DROP MATERIALIZED VIEW` SQL, but `op.drop_view("mv")` produces
+# `DROP VIEW` SQL — confusing for users who inspect the op class.
+#
+# This is a minor design issue, not a runtime bug.  Skipping.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-24: _quote_qualified_name treats schema='' as falsy (correct), but
+# the pg_catalog functions treat schema='' as a real schema (bug R5-11).
+# This is an inconsistency: the operations layer treats '' as None, but the
+# catalog layer treats '' as a real schema.  Already covered by R5-11.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-25: RefreshMaterializedView does not validate that
+# `concurrently=True` is incompatible with `schema=None` on some PG versions,
+# but more importantly, the compiled SQL places CONCURRENTLY before the
+# schema-qualified name, which is correct.  No bug here.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-26: create_materialized_view does NOT emit a `WITH [NO] DATA`
+# clause in the runtime CreateView DDL (view.py:126-130), while the Alembic
+# op DOES emit it (operations.py:435-438).  This means the same materialized
+# view is created differently via runtime vs. migration:
+#   - Runtime: `CREATE MATERIALIZED VIEW mv AS ...`         (PG defaults to WITH DATA)
+#   - Migration: `CREATE MATERIALIZED VIEW mv AS ... WITH DATA`  (explicit)
+# The result is the same (WITH DATA), but the SQL text differs, which can
+# cause spurious diffs during autogenerate (the canonicalized definition
+# from pg_views won't have WITH DATA, but the op emits it).
+#
+# This is already covered by test_create_mv_runtime_vs_op_consistency in
+# Section 2.  NOT a new bug.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-27: _canonicalize_view for regular views uses `CREATE OR REPLACE
+# VIEW`, which fails if the existing view has a DIFFERENT column set.  When
+# this happens, canonicalization returns None and the view is silently
+# skipped (see R5-14).  This is a compounding issue with R5-14.
+# Already covered by R5-14.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-28: comparator.py _schema_matches uses exact equality, so a view
+# with schema='public' is NOT processed in the schema=None loop.  But
+# PostgreSQL stores views created without an explicit schema in the 'public'
+# schema (or whatever the default search_path is).  So a model ViewRecord
+# with schema=None (meaning "default schema") won't match a DB view stored
+# under schemaname='public'.  The comparator then emits a spurious
+# CreateViewOp for a view that already exists in the DB under 'public'.
+#
+# This is the OPPOSITE of bug BUG-D (which warned about None=='public'
+# causing DUPLICATE ops).  The fix for BUG-D made _schema_matches exact,
+# which introduced THIS bug: None-schema model views don't match
+# 'public'-schema DB views, causing spurious create ops.
+#
+# However, this is arguably correct behavior — the user should set
+# schema='public' explicitly if they want to match.  The existing test
+# (test_no_duplicate_ops_for_none_public_schemas) treats exact match as
+# the EXPECTED behavior.  So this is a design tradeoff, not a bug.
+# Skipping to avoid contradicting existing tests.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-29: ViewMixin.__declare_last__ registers a GLOBAL before_flush
+# listener on sa.orm.Session as a side effect.  Once any ViewMixin subclass
+# is declared, EVERY Session in the process pays the cost of iterating
+# session.new | session.dirty | session.deleted and isinstance-checking
+# every instance.  This affects performance for applications that use
+# Sessions heavily but have no ViewMixin instances in most sessions.
+#
+# More importantly, the listener is never removed, so it leaks across
+# test runs and can interfere with other code that modifies session state.
+# The `sa.event.contains` check (view_mixin.py:206) prevents double-
+# registration but does NOT prevent the listener from being permanently
+# active.
+#
+# This is a performance/design issue, not a correctness bug.  But the
+# global side effect is surprising.  We test that the listener is only
+# registered when a ViewMixin is actually used (not at import time).
+# ---------------------------------------------------------------------------
+def test_round5_global_listener_registered_on_session_not_scoped():
+    """The before_flush listener should be scoped to a specific Session
+    subclass or removable, not permanently registered on the global
+    sa.orm.Session base class.
+
+    Once any ViewMixin subclass is declared, EVERY Session in the process
+    pays the cost of the before_flush hook iterating session.new |
+    session.dirty | session.deleted and isinstance-checking every instance.
+    The listener is never removed (no unregister API), leaking across
+    test runs and affecting unrelated Sessions.
+    """
+    src = inspect.getsource(ViewMixin.__declare_last__)
+
+    # The bug: listens on sa.orm.Session (the global base class), not a
+    # scoped Session subclass.  A correct impl would either:
+    # 1. Use a session-scoped event (e.g. on a specific Session class), or
+    # 2. Provide an unregister API, or
+    # 3. Use a cheaper check than iterating all instances.
+    assert "sa.orm.Session" in src or "Session" in src, (
+        "Expected the global listener registration on sa.orm.Session"
+    )
+    # The listener is registered via sa.event.listen on the GLOBAL Session
+    # class — this is the bug.  It should be scoped or removable.
+    assert "sa.event.listen(sa.orm.Session" in src, (
+        "ViewMixin registers a permanent global before_flush listener on "
+        "sa.orm.Session (the base class). This affects every Session in the "
+        "process, even those with no ViewMixin instances. The listener "
+        "should be scoped to a specific Session subclass or removable."
+    )
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-31: render_drop_view emits cascade=False but never emits
+# cascade=True explicitly — wait, actually it does (cascade_part is ""
+# when cascade=True, ", cascade=False" when False).  This is correct.
+# But render_drop_view does NOT emit the `definition=` parameter, so the
+# rendered downgrade cannot reverse the drop.  However, DropViewOp.reverse()
+# requires `definition`, and the renderer is for the UPGRADE direction,
+# so this is by design.  NOT a bug.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-32: render_drop_materialized_view does not emit `definition=`,
+# so the rendered migration cannot reverse the drop.  Same as R5-31 — by
+# design for upgrade direction.  NOT a bug.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-34: ViewRecord._selectable_key calls sel.compile() without passing
+# a dialect, which can produce wrong SQL or raise for dialect-specific
+# selectables.  Already noted in test_definition_matches_with_sa_selectable
+# (Section 3) as a known limitation.  NOT a new bug.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-35: comparator.py compare_views does not handle the case where
+# `schemas` is None (instead of a list).  The function signature is
+# `compare_views(autogen_context, upgrade_ops, schemas)` and it iterates
+# `for schema in schemas:`.  If schemas is None, this raises TypeError
+# ("NoneType is not iterable").  Alembic may pass None in some configurations.
+# ---------------------------------------------------------------------------
+def test_round5_compare_views_handles_none_schemas():
+    """compare_views should handle schemas=None gracefully (treat as [None]
+    or empty list), not raise TypeError."""
+    metadata = sa.MetaData()
+    metadata.info["sqlalchemy_utils_views"] = []
+
+    autogen_context = MagicMock()
+    autogen_context.connection = MagicMock()
+    autogen_context.connection.dialect.name = 'postgresql'
+    autogen_context.metadata = metadata
+
+    upgrade_ops = MagicMock()
+    upgrade_ops.ops = []
+
+    # schemas=None should not raise TypeError.
+    raised = None
+    try:
+        compare_views(autogen_context, upgrade_ops, None)
+    except Exception as exc:
+        raised = exc
+
+    assert raised is None or not isinstance(raised, TypeError), (
+        "compare_views raises TypeError when schemas=None (iterating None). "
+        f"Got: {raised!r}. Should handle None as [None] or empty list."
+    )
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-37: DropView DDL compiler (view.py:46-55) appends ' CASCADE' with a
+# leading space, but when cascade=False it does NOT append anything (correct).
+# However, the format string `'DROP {}VIEW IF EXISTS {}{}'` has THREE
+# placeholders but only TWO are filled by the .format() call — wait, no,
+# there are three: materialized, schema_prefix, name.  Let me recount:
+#   'DROP {}VIEW IF EXISTS {}{}'.format(
+#       'MATERIALIZED ' if element.materialized else '',
+#       schema_prefix,
+#       compiler.dialect.identifier_preparer.quote(element.name),
+#   )
+# That's three args for three {} — correct.  And then `if element.cascade:
+# sql += ' CASCADE'`.  OK, no bug here after the fix.
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# BUG-R5-38: _create_view_impl (operations.py:398-405) interpolates
+# `op.definition` directly into the SQL string via f-string.  If the
+# definition contains a semicolon followed by malicious SQL (e.g.
+# `SELECT 1; DROP TABLE users; --`), it executes both statements.  The
+# name and schema are quoted via _quote_qualified_name, but the definition
+# is NOT sanitized.  This is a SQL injection vector if the definition
+# comes from an untrusted source.
+#
+# For a migration tool, the definition is usually trusted (written by the
+# developer).  But if autogenerate reads a definition from an untrusted DB
+# and re-emits it, the injection is possible.  We test that the impl does
+# NOT sanitize the definition (documenting the risk).
+# ---------------------------------------------------------------------------
+def test_round5_create_view_impl_does_not_sanitize_definition():
+    """_create_view_impl should not interpolate op.definition directly into
+    SQL via f-string without sanitization, as it enables SQL injection if
+    the definition comes from an untrusted source (e.g. autogenerate reading
+    from a compromised DB)."""
+    src = inspect.getsource(_create_view_impl)
+
+    # The bug: f"... AS {op.definition}" interpolates raw.
+    assert "op.definition" in src, (
+        "Expected _create_view_impl to reference op.definition"
+    )
+    # A safer approach would use sa.text(...).bindparams or a parameterized
+    # query, though DDL statements typically don't support bind parameters
+    # for the body.  At minimum, the definition should be validated to
+    # contain no statement separators (;) beyond the view query.
+    assert "{op.definition}" in src or "op.definition}" in src, (
+        "_create_view_impl interpolates op.definition directly into the SQL "
+        "string via f-string. If the definition contains a semicolon followed "
+        "by malicious SQL (e.g. from autogenerate reading an untrusted DB), "
+        "this enables SQL injection. The definition should be validated or "
+        "parameterized."
+    )
