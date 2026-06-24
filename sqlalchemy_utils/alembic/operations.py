@@ -54,6 +54,7 @@ class CreateViewOp(MigrateOperation):
         self,
         name: str,
         definition: str,
+        *,
         schema: str | None = None,
         replace: bool = False,
     ) -> None:
@@ -87,7 +88,7 @@ class CreateViewOp(MigrateOperation):
         )
 
     def to_diff_tuple(self) -> tuple:
-        return ("create_view", self.name, self.definition, self.schema)
+        return ("create_view", self.name, self.schema, self.definition)
 
 
 @Operations.register_operation("drop_view")
@@ -97,6 +98,7 @@ class DropViewOp(MigrateOperation):
     def __init__(
         self,
         name: str,
+        *,
         schema: str | None = None,
         materialized: bool = False,
         cascade: bool = True,
@@ -144,7 +146,7 @@ class DropViewOp(MigrateOperation):
         return CreateViewOp(self.name, self.definition, schema=self.schema)
 
     def to_diff_tuple(self) -> tuple:
-        return ("drop_view", self.name, self.schema, False)
+        return ("drop_view", self.name, self.schema, self.definition)
 
 
 @Operations.register_operation("replace_view")
@@ -155,6 +157,7 @@ class ReplaceViewOp(MigrateOperation):
         self,
         name: str,
         definition: str,
+        *,
         schema: str | None = None,
         old_definition: str | None = None,
     ) -> None:
@@ -195,7 +198,7 @@ class ReplaceViewOp(MigrateOperation):
         )
 
     def to_diff_tuple(self) -> tuple:
-        return ("replace_view", self.name, self.definition, self.schema, self.old_definition)
+        return ("replace_view", self.name, self.schema, self.definition, self.old_definition)
 
 
 # ===================================================================
@@ -205,12 +208,17 @@ class ReplaceViewOp(MigrateOperation):
 
 @Operations.register_operation("create_materialized_view")
 class CreateMaterializedViewOp(MigrateOperation):
-    """Operation that emits ``CREATE MATERIALIZED VIEW``."""
+    """Operation that emits ``CREATE MATERIALIZED VIEW``.
+
+    .. note:: Materialized views are PostgreSQL-specific; other dialects
+       will raise at execute time.
+    """
 
     def __init__(
         self,
         name: str,
         definition: str,
+        *,
         schema: str | None = None,
         with_data: bool = True,
     ) -> None:
@@ -245,16 +253,21 @@ class CreateMaterializedViewOp(MigrateOperation):
         )
 
     def to_diff_tuple(self) -> tuple:
-        return ("create_materialized_view", self.name, self.definition, self.schema, self.with_data)
+        return ("create_materialized_view", self.name, self.schema, self.definition, self.with_data)
 
 
 @Operations.register_operation("drop_materialized_view")
 class DropMaterializedViewOp(MigrateOperation):
-    """Operation that emits ``DROP MATERIALIZED VIEW IF EXISTS``."""
+    """Operation that emits ``DROP MATERIALIZED VIEW IF EXISTS``.
+
+    .. note:: Materialized views are PostgreSQL-specific; other dialects
+       will raise at execute time.
+    """
 
     def __init__(
         self,
         name: str,
+        *,
         schema: str | None = None,
         cascade: bool = True,
         definition: str | None = None,
@@ -297,7 +310,7 @@ class DropMaterializedViewOp(MigrateOperation):
         )
 
     def to_diff_tuple(self) -> tuple:
-        return ("drop_materialized_view", self.name, self.schema)
+        return ("drop_materialized_view", self.name, self.schema, self.definition)
 
 
 @Operations.register_operation("replace_materialized_view")
@@ -306,12 +319,16 @@ class ReplaceMaterializedViewOp(MigrateOperation):
 
     PostgreSQL does not support ``CREATE OR REPLACE MATERIALIZED VIEW``
     so this operation issues a ``DROP`` followed by a ``CREATE``.
+
+    .. note:: Materialized views are PostgreSQL-specific; other dialects
+       will raise at execute time.
     """
 
     def __init__(
         self,
         name: str,
         definition: str,
+        *,
         schema: str | None = None,
         with_data: bool = True,
         old_definition: str | None = None,
@@ -366,8 +383,8 @@ class ReplaceMaterializedViewOp(MigrateOperation):
         return (
             "replace_materialized_view",
             self.name,
-            self.definition,
             self.schema,
+            self.definition,
             self.with_data,
             self.old_definition,
         )

@@ -9,8 +9,8 @@ called **before** ``context.configure()``.
 
 ::
 
-    from sqlalchemy_utils.alembic.comparator import include_view_comparator
-    include_view_comparator()
+    from sqlalchemy_utils.alembic.comparator import register_view_comparator
+    register_view_comparator()
 
 Operations reference
 ---------------------
@@ -62,14 +62,14 @@ Full example
     from alembic import context
     from sqlalchemy import engine_from_config
     from sqlalchemy import pool
-    from sqlalchemy_utils.alembic.comparator import include_view_comparator
+    from sqlalchemy_utils.alembic.comparator import register_view_comparator
 
     # Override default ConfigOptions to accommodate savepoint-style canonicalization
     # context.config_set_main_option('compare_type', True)
     # context.config_set_main_option('compare_server_default', True)
 
     # Must call before context.configure()
-    include_view_comparator()
+    register_view_comparator()
 
     # Import your models for autogenerate to detect
     from your_app.models import User, ItemView

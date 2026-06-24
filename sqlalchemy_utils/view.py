@@ -208,6 +208,11 @@ def create_view(
 
         metadata.create_all(engine) # View is created at this point
 
+    .. note::
+        Unlike :func:`create_materialized_view`, this function does not
+        accept ``indexes`` or ``aliases`` parameters. Regular PostgreSQL
+        views do not support indexes, and column aliases can be defined
+        directly in the view's SELECT statement.
     """
     table = create_table_from_selectable(
         name=name, selectable=selectable, metadata=None, schema=schema

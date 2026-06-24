@@ -1280,9 +1280,8 @@ def test_drop_view_op_to_diff_tuple_shape():
     """DropViewOp.to_diff_tuple should return a 4-tuple per the operations
     contract.
 
-    The current implementation returns ("drop_view", name, schema, False)
-    — the trailing False is a hardcoded materialized flag. This test
-    documents the shape so future changes are caught.
+    The standardized shape is ("drop_view", name, schema, definition).
+    When no definition is stored, the 4th element is None.
     """
     op = DropViewOp("v1", schema="public")
     tup = op.to_diff_tuple()
@@ -1291,10 +1290,12 @@ def test_drop_view_op_to_diff_tuple_shape():
     assert tup[0] == "drop_view"
     assert tup[1] == "v1"
     assert tup[2] == "public"
-    # The 4th element is a hardcoded False — this is arguably a bug
-    # (materialized status should come from op.materialized), but we
-    # document the current behavior.
-    assert tup[3] is False
+    # The 4th element is the stored definition (None when not provided).
+    assert tup[3] is None
+
+    # When a definition is stored, it appears in the 4th slot.
+    op2 = DropViewOp("v1", schema="public", definition="SELECT 1")
+    assert op2.to_diff_tuple()[3] == "SELECT 1"
 
 
 def test_create_view_op_reverse_preserves_schema():
@@ -1475,3 +1476,232 @@ def test_replace_mv_renderer_omits_default_with_data():
     assert 'with_data=False' in result_no, (
         f"Renderer should emit with_data=False when set, but got: {result_no}"
     )
+
+
+# ===========================================================================
+# Section 5: Final Interface Audit — SHOULD-FIX issues
+# ============================================================================
+
+
+def test_to_diff_tuple_consistent_shape_all_ops():
+    """All 6 Op classes should produce to_diff_tuple() with a consistent shape:
+    (op_name, name, schema, definition, *extras).
+
+    Currently shapes are wildly inconsistent:
+    - CreateViewOp: ("create_view", name, definition, schema)
+    - DropViewOp: ("drop_view", name, schema, False)  # hardcoded False!
+    - ReplaceViewOp: ("replace_view", name, definition, schema, old_definition)
+    - CreateMaterializedViewOp: ("create_materialized_view", name, definition, schema, with_data)
+    - DropMaterializedViewOp: ("drop_materialized_view", name, schema)  # missing definition!
+    - ReplaceMaterializedViewOp: ("replace_materialized_view", name, definition, schema, with_data, old_definition)
+
+    Standardize on: (op_name, name, schema, definition, *op_specific_extras)
+    """
+    from sqlalchemy_utils.alembic.operations import (
+        CreateViewOp, DropViewOp, ReplaceViewOp,
+        CreateMaterializedViewOp, DropMaterializedViewOp, ReplaceMaterializedViewOp,
+    )
+
+    # CreateViewOp
+    op = CreateViewOp("v", "SELECT 1", schema="public")
+    tup = op.to_diff_tuple()
+    assert tup[0] == "create_view"
+    assert tup[1] == "v"  # name
+    assert tup[2] == "public"  # schema
+    assert tup[3] == "SELECT 1"  # definition
+
+    # DropViewOp — currently returns ("drop_view", name, schema, False)
+    # Should return ("drop_view", name, schema, definition)
+    op = DropViewOp("v", schema="public", definition="SELECT 1")
+    tup = op.to_diff_tuple()
+    assert tup[0] == "drop_view"
+    assert tup[1] == "v"  # name
+    assert tup[2] == "public"  # schema
+    assert tup[3] == "SELECT 1"  # definition (not hardcoded False!)
+
+    # ReplaceViewOp
+    op = ReplaceViewOp("v", "SELECT 2", schema="public", old_definition="SELECT 1")
+    tup = op.to_diff_tuple()
+    assert tup[0] == "replace_view"
+    assert tup[1] == "v"  # name
+    assert tup[2] == "public"  # schema
+    assert tup[3] == "SELECT 2"  # definition
+    assert tup[4] == "SELECT 1"  # old_definition
+
+    # CreateMaterializedViewOp
+    op = CreateMaterializedViewOp("mv", "SELECT 1", schema="public", with_data=True)
+    tup = op.to_diff_tuple()
+    assert tup[0] == "create_materialized_view"
+    assert tup[1] == "mv"  # name
+    assert tup[2] == "public"  # schema
+    assert tup[3] == "SELECT 1"  # definition
+    assert tup[4] is True  # with_data
+
+    # DropMaterializedViewOp — currently returns ("drop_materialized_view", name, schema)
+    # Should return ("drop_materialized_view", name, schema, definition)
+    op = DropMaterializedViewOp("mv", schema="public", definition="SELECT 1")
+    tup = op.to_diff_tuple()
+    assert tup[0] == "drop_materialized_view"
+    assert tup[1] == "mv"  # name
+    assert tup[2] == "public"  # schema
+    assert tup[3] == "SELECT 1"  # definition
+
+    # ReplaceMaterializedViewOp
+    op = ReplaceMaterializedViewOp("mv", "SELECT 2", schema="public", with_data=True, old_definition="SELECT 1")
+    tup = op.to_diff_tuple()
+    assert tup[0] == "replace_materialized_view"
+    assert tup[1] == "mv"  # name
+    assert tup[2] == "public"  # schema
+    assert tup[3] == "SELECT 2"  # definition
+    assert tup[4] is True  # with_data
+    assert tup[5] == "SELECT 1"  # old_definition
+
+
+def test_register_view_comparator_exists():
+    """The registration function should be named register_view_comparator
+    (verb form), not include_view_comparator (which sounds like Alembic's
+    include_object filter callback).
+
+    A deprecated alias should remain for backward compat.
+    """
+    from sqlalchemy_utils.alembic import register_view_comparator
+    assert callable(register_view_comparator)
+
+    # Deprecated alias should still exist and work
+    from sqlalchemy_utils.alembic import include_view_comparator
+    assert callable(include_view_comparator)
+
+
+def test_public_apis_exported_from_alembic_init():
+    """Public APIs should be importable from sqlalchemy_utils.alembic directly."""
+    from sqlalchemy_utils.alembic import (
+        compare_views,
+        resolve_create_order,
+        resolve_drop_order,
+        get_database_views,
+        get_database_materialized_views,
+        ViewRecord,
+    )
+
+
+def test_compare_views_does_not_double_fetch(monkeypatch):
+    """compare_views should fetch each schema's DB views only once, not twice.
+
+    Currently it fetches all schemas in a first loop (lines 146-148) then
+    re-fetches per-schema in the second loop (lines 152-153). This test
+    counts get_database_views calls to verify single-fetch.
+    """
+    import sqlalchemy_utils.alembic.comparator as comparator_module
+    from sqlalchemy_utils.alembic.comparator import compare_views
+    from unittest.mock import MagicMock, patch
+
+    call_count = {"views": 0, "mvs": 0}
+
+    def mock_get_database_views(connection, schema=None):
+        call_count["views"] += 1
+        return {}
+
+    def mock_get_database_mvs(connection, schema=None):
+        call_count["mvs"] += 1
+        return {}
+
+    metadata = MagicMock()
+    metadata.info = {"sqlalchemy_utils_views": []}
+
+    autogen_context = MagicMock()
+    autogen_context.connection = MagicMock()
+    autogen_context.connection.dialect.name = 'postgresql'
+    autogen_context.metadata = metadata
+
+    upgrade_ops = MagicMock()
+    upgrade_ops.ops = []
+
+    with patch.object(comparator_module, 'get_database_views', mock_get_database_views), \
+         patch.object(comparator_module, 'get_database_materialized_views', mock_get_database_mvs), \
+         patch.object(comparator_module, '_canonicalize_view', return_value=None):
+        compare_views(autogen_context, upgrade_ops, [None, 'analytics'])
+
+    # 2 schemas × 1 fetch each = 2 total (not 4)
+    assert call_count["views"] == 2, f"Expected 2 get_database_views calls, got {call_count['views']}"
+    assert call_count["mvs"] == 2, f"Expected 2 get_database_mvs calls, got {call_count['mvs']}"
+
+
+def test_op_init_keyword_only_params():
+    """Op __init__ methods should enforce keyword-only for params after
+    name/definition, matching the classmethod entry points.
+
+    This prevents footguns like DropViewOp('v', True) silently setting
+    materialized=True instead of cascade=True.
+    """
+    from sqlalchemy_utils.alembic.operations import (
+        CreateViewOp, DropViewOp, ReplaceViewOp,
+        CreateMaterializedViewOp, DropMaterializedViewOp, ReplaceMaterializedViewOp,
+    )
+    import inspect
+
+    # DropViewOp.__init__ has materialized as 3rd positional — should be keyword-only
+    sig = inspect.signature(DropViewOp.__init__)
+    params = list(sig.parameters.values())
+    # After self, name: all remaining should be keyword-only
+    for p in params[2:]:  # skip self, name
+        assert p.kind == inspect.Parameter.KEYWORD_ONLY, (
+            f"DropViewOp.__init__ param '{p.name}' should be keyword-only, "
+            f"got {p.kind}"
+        )
+
+    # CreateMaterializedViewOp.__init__ has schema as 3rd positional
+    sig = inspect.signature(CreateMaterializedViewOp.__init__)
+    params = list(sig.parameters.values())
+    for p in params[3:]:  # skip self, name, definition
+        assert p.kind == inspect.Parameter.KEYWORD_ONLY, (
+            f"CreateMaterializedViewOp.__init__ param '{p.name}' should be keyword-only, "
+            f"got {p.kind}"
+        )
+
+
+def test_view_mixin_refresh_schema_resolution_readable():
+    """ViewMixin.refresh() should use a readable schema resolution strategy,
+    not a triple-nested getattr chain.
+
+    The current code (view_mixin.py:226-230) chains:
+        getattr(cls, '_resolved_view_schema',
+            getattr(cls, '__view_schema__', None)
+        ) or getattr(getattr(cls, '__table_args__', None), 'get', lambda _: None)('schema')
+
+    This should be refactored to a simple method or clear if/else chain.
+    We verify by checking the source doesn't contain the nested getattr chain.
+    """
+    import inspect
+    from sqlalchemy_utils.view_mixin import ViewMixin
+    src = inspect.getsource(ViewMixin.refresh)
+    # The nested getattr chain should not be present
+    assert "getattr(getattr" not in src, (
+        "ViewMixin.refresh() contains unreadable nested getattr chain. "
+        "Refactor to a readable schema resolution strategy."
+    )
+
+
+def test_create_view_documents_no_indexes():
+    """create_view docstring should mention that indexes/aliases are not
+    supported (unlike create_materialized_view)."""
+    from sqlalchemy_utils.view import create_view
+    assert create_view.__doc__ is not None
+    # Docstring should mention the asymmetry or lack of indexes param
+    doc = create_view.__doc__.lower()
+    assert 'index' in doc or 'materialized' in doc, (
+        "create_view docstring should document the indexes/aliases asymmetry "
+        "with create_materialized_view"
+    )
+
+
+def test_materialized_view_ops_document_pg_only():
+    """CreateMaterializedViewOp, DropMaterializedViewOp, and
+    ReplaceMaterializedViewOp should note PostgreSQL-only semantics in docstrings."""
+    from sqlalchemy_utils.alembic.operations import (
+        CreateMaterializedViewOp, DropMaterializedViewOp, ReplaceMaterializedViewOp,
+    )
+    for cls in [CreateMaterializedViewOp, DropMaterializedViewOp, ReplaceMaterializedViewOp]:
+        doc = (cls.__doc__ or "").lower()
+        assert 'postgresql' in doc or 'postgres' in doc, (
+            f"{cls.__name__} docstring should mention PostgreSQL-only semantics"
+        )

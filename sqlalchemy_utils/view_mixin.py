@@ -207,6 +207,30 @@ class ViewMixin:
             sa.event.listen(sa.orm.Session, 'before_flush', _view_before_flush)
 
     @classmethod
+    def _resolve_schema(cls):
+        """Resolve the view's schema for DDL operations.
+
+        Priority:
+        1. _resolved_view_schema (set by __declare_last__)
+        2. __view_schema__ class attribute
+        3. __table_args__['schema'] if present
+        """
+        schema = getattr(cls, '_resolved_view_schema', None)
+        if schema is None:
+            schema = getattr(cls, '__view_schema__', None)
+        if schema is None:
+            table_args = getattr(cls, '__table_args__', None)
+            if isinstance(table_args, dict):
+                schema = table_args.get('schema')
+            elif isinstance(table_args, tuple) and table_args:
+                for arg in table_args:
+                    if isinstance(arg, dict):
+                        schema = arg.get('schema')
+                        if schema:
+                            break
+        return schema
+
+    @classmethod
     def refresh(cls, session, concurrently=False):
         """Refresh a materialized view.
 
@@ -223,9 +247,5 @@ class ViewMixin:
             session,
             cls.__tablename__,
             concurrently=concurrently,
-            schema=getattr(
-                cls,
-                '_resolved_view_schema',
-                getattr(cls, '__view_schema__', None),
-            ) or getattr(getattr(cls, '__table_args__', None), 'get', lambda _: None)('schema'),
+            schema=cls._resolve_schema(),
         )

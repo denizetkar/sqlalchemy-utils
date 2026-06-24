@@ -11,8 +11,8 @@ Differences are emitted as :class:`CreateViewOp`, :class:`DropViewOp`,
 
 Usage in ``env.py``::
 
-    from sqlalchemy_utils.alembic.comparator import include_view_comparator
-    include_view_comparator()   # must be called before context.configure()
+    from sqlalchemy_utils.alembic.comparator import register_view_comparator
+    register_view_comparator()   # must be called before context.configure()
 """
 from __future__ import annotations
 
@@ -141,16 +141,24 @@ def compare_views(
     )
 
     # Cross-schema dependency resolution requires DB state from all schemas.
+    # Collect DB views for all schemas (single fetch per schema).
     all_db_views: dict[str, str] = {}
     all_db_mvs: dict[str, str] = {}
-    for schema in schemas:
-        all_db_views.update(get_database_views(connection, schema))
-        all_db_mvs.update(get_database_materialized_views(connection, schema))
-    all_db = {**all_db_views, **all_db_mvs}
+    db_views_by_schema: dict[str | None, dict[str, str]] = {}
+    db_mvs_by_schema: dict[str | None, dict[str, str]] = {}
 
     for schema in schemas:
         db_views = get_database_views(connection, schema)
         db_mvs = get_database_materialized_views(connection, schema)
+        db_views_by_schema[schema] = db_views
+        db_mvs_by_schema[schema] = db_mvs
+        all_db_views.update(db_views)
+        all_db_mvs.update(db_mvs)
+    all_db = {**all_db_views, **all_db_mvs}
+
+    for schema in schemas:
+        db_views = db_views_by_schema[schema]
+        db_mvs = db_mvs_by_schema[schema]
 
         # Canonicalize model views using savepoint simulation
         model_view_defs: dict[str, str] = {}
@@ -282,7 +290,7 @@ def _schema_matches(view_schema: str | None, loop_schema: str | None) -> bool:
     return view_schema == loop_schema
 
 
-def include_view_comparator() -> None:
+def register_view_comparator() -> None:
     """Register view autogenerate hooks with Alembic.
 
     Registers the ``"schema"`` comparator (``compare_views``) plus the
@@ -292,8 +300,8 @@ def include_view_comparator() -> None:
 
     Must be called in ``env.py`` **before** ``context.configure()``::
 
-        from sqlalchemy_utils.alembic.comparator import include_view_comparator
-        include_view_comparator()
+        from sqlalchemy_utils.alembic.comparator import register_view_comparator
+        register_view_comparator()
 
     This function is idempotent (safe to call more than once).  The
     comparator is registered lazily — merely importing an Op class from
@@ -305,3 +313,7 @@ def include_view_comparator() -> None:
         from . import renderer  # noqa: F401
     except ImportError:
         pass
+
+
+# Deprecated alias — use register_view_comparator() instead
+include_view_comparator = register_view_comparator
