@@ -19,6 +19,17 @@ pip_::
 
 .. _pip: https://pip.pypa.io/
 
+Optional dependencies
+---------------------
+
+Some features require optional dependencies that can be installed as extras:
+
+``pip install sqlalchemy-utils[alembic]``
+    Alembic autogenerate support for database views.
+
+``pip install sqlalchemy-utils[babel]``
+    Babel internationalization support.
+
 Installing the development version
 ----------------------------------
 

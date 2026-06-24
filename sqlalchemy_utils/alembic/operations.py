@@ -58,6 +58,8 @@ class CreateViewOp(MigrateOperation):
         schema: str | None = None,
         replace: bool = False,
     ) -> None:
+        if not isinstance(definition, str) or not definition:
+            raise TypeError("definition must be a non-empty string")
         self.name = name
         self.definition = definition
         self.schema = schema
@@ -89,6 +91,7 @@ class CreateViewOp(MigrateOperation):
         )
 
     def to_diff_tuple(self) -> tuple:
+        """Return ``("create_view", name, schema, definition)``."""
         return ("create_view", self.name, self.schema, self.definition)
 
 
@@ -123,7 +126,12 @@ class DropViewOp(MigrateOperation):
         cascade: bool = True,
         definition: str | None = None,
     ) -> None:
-        """Programmatic entry-point for ``op.drop_view()``."""
+        """Programmatic entry-point for ``op.drop_view()``.
+
+        .. note::
+           This drops a regular (non-materialized) view.  Use
+           ``op.drop_materialized_view()`` for materialized views.
+        """
         op = DropViewOp(
             name,
             schema=schema,
@@ -141,7 +149,7 @@ class DropViewOp(MigrateOperation):
         is unknown.
         """
         if self.definition is None:
-            raise RuntimeError(
+            raise NotImplementedError(
                 f"Cannot reverse DropViewOp for '{self.name}': "
                 "no definition stored. Pass definition= to DropViewOp "
                 "to enable automatic downgrade generation."
@@ -149,6 +157,7 @@ class DropViewOp(MigrateOperation):
         return CreateViewOp(self.name, self.definition, schema=self.schema, replace=self.replace)
 
     def to_diff_tuple(self) -> tuple:
+        """Return ``("drop_view", name, schema, definition)``."""
         return ("drop_view", self.name, self.schema, self.definition)
 
 
@@ -164,6 +173,8 @@ class ReplaceViewOp(MigrateOperation):
         schema: str | None = None,
         old_definition: str | None = None,
     ) -> None:
+        if not isinstance(definition, str) or not definition:
+            raise TypeError("definition must be a non-empty string")
         self.name = name
         self.definition = definition
         self.schema = schema
@@ -191,7 +202,7 @@ class ReplaceViewOp(MigrateOperation):
         Requires ``old_definition``; otherwise raises ``RuntimeError``.
         """
         if self.old_definition is None:
-            raise RuntimeError(
+            raise NotImplementedError(
                 f"Cannot reverse ReplaceViewOp for '{self.name}': "
                 "no old_definition stored. Pass old_definition= to "
                 "ReplaceViewOp to enable automatic downgrade generation."
@@ -202,6 +213,7 @@ class ReplaceViewOp(MigrateOperation):
         )
 
     def to_diff_tuple(self) -> tuple:
+        """Return ``("replace_view", name, schema, definition, old_definition)``."""
         return ("replace_view", self.name, self.schema, self.definition, self.old_definition)
 
 
@@ -216,6 +228,10 @@ class CreateMaterializedViewOp(MigrateOperation):
 
     .. note:: Materialized views are PostgreSQL-specific; other dialects
        will raise at execute time.
+
+    .. note::
+       Autogenerate always emits ``with_data=False`` (unpopulated MVs);
+       manual ``op.create_materialized_view()`` defaults to ``WITH DATA``.
     """
 
     def __init__(
@@ -226,6 +242,8 @@ class CreateMaterializedViewOp(MigrateOperation):
         schema: str | None = None,
         with_data: bool = True,
     ) -> None:
+        if not isinstance(definition, str) or not definition:
+            raise TypeError("definition must be a non-empty string")
         self.name = name
         self.definition = definition
         self.schema = schema
@@ -254,9 +272,11 @@ class CreateMaterializedViewOp(MigrateOperation):
             schema=self.schema,
             cascade=True,
             definition=self.definition,
+            with_data=self.with_data,
         )
 
     def to_diff_tuple(self) -> tuple:
+        """Return ``("create_materialized_view", name, schema, definition, with_data)``."""
         return ("create_materialized_view", self.name, self.schema, self.definition, self.with_data)
 
 
@@ -275,11 +295,13 @@ class DropMaterializedViewOp(MigrateOperation):
         schema: str | None = None,
         cascade: bool = True,
         definition: str | None = None,
+        with_data: bool = True,
     ) -> None:
         self.name = name
         self.schema = schema
         self.cascade = cascade
         self.definition = definition
+        self.with_data = with_data
 
     @classmethod
     def drop_materialized_view(
@@ -303,17 +325,19 @@ class DropMaterializedViewOp(MigrateOperation):
         Requires ``definition``; otherwise raises ``RuntimeError``.
         """
         if self.definition is None:
-            raise RuntimeError(
+            raise NotImplementedError(
                 f"Cannot reverse DropMaterializedViewOp for '{self.name}': "
                 "no definition stored. Pass definition= to "
                 "DropMaterializedViewOp to enable automatic downgrade "
                 "generation."
             )
         return CreateMaterializedViewOp(
-            self.name, self.definition, schema=self.schema
+            self.name, self.definition, schema=self.schema,
+            with_data=self.with_data,
         )
 
     def to_diff_tuple(self) -> tuple:
+        """Return ``("drop_materialized_view", name, schema, definition)``."""
         return ("drop_materialized_view", self.name, self.schema, self.definition)
 
 
@@ -337,6 +361,8 @@ class ReplaceMaterializedViewOp(MigrateOperation):
         with_data: bool = True,
         old_definition: str | None = None,
     ) -> None:
+        if not isinstance(definition, str) or not definition:
+            raise TypeError("definition must be a non-empty string")
         self.name = name
         self.definition = definition
         self.schema = schema
@@ -370,7 +396,7 @@ class ReplaceMaterializedViewOp(MigrateOperation):
         Requires ``old_definition``; otherwise raises ``RuntimeError``.
         """
         if self.old_definition is None:
-            raise RuntimeError(
+            raise NotImplementedError(
                 f"Cannot reverse ReplaceMaterializedViewOp for "
                 f"'{self.name}': no old_definition stored. Pass "
                 "old_definition= to ReplaceMaterializedViewOp to enable "
@@ -385,6 +411,7 @@ class ReplaceMaterializedViewOp(MigrateOperation):
         )
 
     def to_diff_tuple(self) -> tuple:
+        """Return ``("replace_materialized_view", name, schema, definition, with_data, old_definition)``."""
         return (
             "replace_materialized_view",
             self.name,

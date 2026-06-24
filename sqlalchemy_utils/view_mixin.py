@@ -75,10 +75,27 @@ class ViewMixin:
     __view_cascade__ = True
     __view_replace__ = False
 
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if any(isinstance(v, sa.Column) for v in cls.__dict__.values()):
+            has_tablename = any(
+                '__tablename__' in base.__dict__ for base in cls.__mro__
+                if base is not ViewMixin
+            )
+            if not has_tablename:
+                raise TypeError(
+                    f"{cls.__name__}: ViewMixin requires __tablename__ to be "
+                    f"set on the class (alongside __view_selectable__)."
+                )
+
     @classmethod
     def __declare_last__(cls):
-        if '__declare_last__' in cls.__mro__[1:]:
-            super().__declare_last__()
+        for base in cls.__mro__[1:]:
+            if base is ViewMixin:
+                continue
+            if '__declare_last__' in base.__dict__:
+                base.__declare_last__(cls)
+                break
         selectable = cls.__view_selectable__
 
         if selectable is None:

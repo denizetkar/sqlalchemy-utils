@@ -136,6 +136,13 @@ def compare_views(
         )
         return
 
+    if connection is None:
+        log.warning(
+            "View autogenerate comparison requires an online connection; "
+            "skipping view diffing in offline mode."
+        )
+        return
+
     if schemas is None:
         schemas = [None]
 
@@ -318,5 +325,12 @@ def register_view_comparator() -> None:
         pass
 
 
-# Deprecated alias — use register_view_comparator() instead
-include_view_comparator = register_view_comparator
+def include_view_comparator(*args, **kwargs):
+    """Deprecated alias for register_view_comparator."""
+    import warnings
+    warnings.warn(
+        "include_view_comparator is deprecated; use register_view_comparator",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return register_view_comparator(*args, **kwargs)

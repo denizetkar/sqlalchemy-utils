@@ -51,7 +51,7 @@ def _definition_str(view_record: ViewRecord) -> str:
 
 def _build_dependency_graph(
     view_records: list[ViewRecord],
-    db_views: dict[str, str],
+    db_views: dict[str, str] | None,
 ) -> dict[str, set[str]]:
     """Build a ``{name: {dep_name, ...}}`` mapping.
 
@@ -62,6 +62,8 @@ def _build_dependency_graph(
     *db_views* represents views that already exist in the database — they
     are potential dependencies but are NOT included in the sort output.
     """
+    if db_views is None:
+        db_views = {}
     # All known view names (model + DB) for matching
     model_names: set[str] = {vr.name for vr in view_records}
     db_names: set[str] = set(db_views.keys()) - model_names  # only DB-only
@@ -93,7 +95,7 @@ def _records_by_name(
 
 def _toposort(
     view_records: list[ViewRecord],
-    db_views: dict[str, str],
+    db_views: dict[str, str] | None,
     *,
     reverse: bool = False,
 ) -> list[ViewRecord]:
@@ -119,6 +121,8 @@ def _toposort(
     ValueError
         If a cycle is detected among the view dependencies.
     """
+    if db_views is None:
+        db_views = {}
     graph = _build_dependency_graph(view_records, db_views)
     sorter = TopologicalSorter(graph)
 
@@ -154,7 +158,7 @@ def _toposort(
 
 def resolve_create_order(
     view_records: list[ViewRecord],
-    db_views: dict[str, str],
+    db_views: dict[str, str] | None,
 ) -> list[ViewRecord]:
     """Sort *view_records* so that dependencies come before dependents.
 
@@ -186,7 +190,7 @@ def resolve_create_order(
 
 def resolve_drop_order(
     view_records: list[ViewRecord],
-    db_views: dict[str, str],
+    db_views: dict[str, str] | None,
 ) -> list[ViewRecord]:
     """Sort *view_records* so that dependents come before dependencies.
 

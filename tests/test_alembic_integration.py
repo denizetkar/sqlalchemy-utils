@@ -2255,3 +2255,369 @@ def test_round5_create_view_impl_does_not_sanitize_definition():
         "this enables SQL injection. The definition should be validated or "
         "parameterized."
     )
+
+
+# ============================================================================
+# Section 7: Bug Hunt Round 6
+#
+# Round 6 focuses on RUNTIME CORRECTNESS bugs not covered by earlier rounds:
+# None-handling crashes, round-trip fidelity losses, dead-code guards, missing
+# attribute symmetry, and silent data-loss in renderers.  Each test below
+# documents a distinct defect and is expected to FAIL until the source is
+# fixed.
+# ============================================================================
+
+
+# ---------------------------------------------------------------------------
+# BUG-R6-01: resolve_create_order / resolve_drop_order crash with
+# AttributeError when db_views=None.
+#
+# depend.py:_toposort calls _build_dependency_graph(view_records, db_views),
+# which does `set(db_views.keys())` (line 67).  If db_views is None this
+# raises AttributeError: 'NoneType' object has no attribute 'keys'.
+# The public API docstring says db_views is "a mapping", but callers (e.g.
+# a custom autogenerate flow) may pass None to mean "no existing views".
+# It should treat None as {}.
+# ---------------------------------------------------------------------------
+def test_round6_resolve_create_order_none_db_views():
+    """resolve_create_order should treat db_views=None as an empty dict,
+    not crash with AttributeError."""
+    vr = ViewRecord(name="solo", selectable="SELECT 1 AS col")
+    result = resolve_create_order([vr], db_views=None)
+    assert result == [vr], (
+        "resolve_create_order(db_views=None) should treat None as {} and "
+        "return the input list unchanged, but it raises "
+        "AttributeError: 'NoneType' object has no attribute 'keys'."
+    )
+
+
+def test_round6_resolve_drop_order_none_db_views():
+    """resolve_drop_order should treat db_views=None as an empty dict."""
+    vr = ViewRecord(name="solo", selectable="SELECT 1 AS col")
+    result = resolve_drop_order([vr], db_views=None)
+    assert result == [vr], (
+        "resolve_drop_order(db_views=None) should treat None as {} and "
+        "return the input list unchanged, but it raises AttributeError."
+    )
+
+
+def test_round6_build_dependency_graph_none_db_views():
+    """_build_dependency_graph should treat db_views=None as {}."""
+    vr = ViewRecord(name="solo", selectable="SELECT 1 AS col")
+    graph = _build_dependency_graph([vr], None)
+    assert graph == {"solo": set()}, (
+        "_build_dependency_graph(db_views=None) should treat None as {} "
+        "and return {'solo': set()}, but it raises AttributeError."
+    )
+
+
+# ---------------------------------------------------------------------------
+# BUG-R6-02: ViewMixin.__declare_last__ has a dead-code super() guard.
+#
+# view_mixin.py:80-81:
+#     if '__declare_last__' in cls.__mro__[1:]:
+#         super().__declare_last__()
+#
+# `cls.__mro__[1:]` is a tuple of CLASS OBJECTS, not strings.  The check
+# `'__declare_last__' in <tuple of classes>` tests whether the STRING
+# equals any class object — which is always False.  So super() is NEVER
+# invoked by ViewMixin, even when a parent mixin in the MRO defines
+# __declare_last__.  The guard is dead code; the intent was likely
+# `hasattr(cls.__mro__[1], '__declare_last__')` or
+# `any(hasattr(c, '__declare_last__') for c in cls.__mro__[1:])`.
+#
+# Impact: any mixin declared BEFORE ViewMixin in the MRO whose
+# __declare_last__ performs setup that ViewMixin depends on will NOT be
+# called by ViewMixin's __declare_last__ (it relies on SQLAlchemy's own
+# configure_mappers() walk to call the parent, which is fragile if
+# __declare_last__ ordering matters).
+# ---------------------------------------------------------------------------
+def test_round6_declare_last_super_guard_is_not_dead_code():
+    """The `if '__declare_last__' in cls.__mro__[1:]` guard checks if a
+    STRING is in a tuple of CLASS OBJECTS, which is always False — so
+    super().__declare_last__() is never called by ViewMixin.
+
+    A parent mixin's __declare_last__ is only invoked by SQLAlchemy's
+    own configure_mappers() walk, NOT by ViewMixin's explicit super()
+    call.  The guard should use hasattr() or any() over the MRO.
+    """
+    src = inspect.getsource(ViewMixin.__declare_last__)
+
+    # The buggy guard: checks string membership in a tuple of classes.
+    assert "'__declare_last__' in cls.__mro__[1:]" not in src, (
+        "ViewMixin.__declare_last__ contains dead code: the guard "
+        "`if '__declare_last__' in cls.__mro__[1:]` checks if a STRING "
+        "is in a tuple of CLASS OBJECTS (always False), so "
+        "super().__declare_last__() is never called. The guard should "
+        "use hasattr() or any(hasattr(c, '__declare_last__') for c in "
+        "cls.__mro__[1:])."
+    )
+
+
+# ---------------------------------------------------------------------------
+# BUG-R6-03: CreateMaterializedViewOp(with_data=False) loses with_data
+# on double-reverse.
+#
+# operations.py:300-313 — DropMaterializedViewOp.reverse() constructs
+# CreateMaterializedViewOp(self.name, self.definition, schema=self.schema)
+# WITHOUT forwarding with_data.  So:
+#   CreateMaterializedViewOp("mv", "SELECT 1", with_data=False)
+#       .reverse()  → DropMaterializedViewOp(definition="SELECT 1")
+#       .reverse()  → CreateMaterializedViewOp("mv", "SELECT 1")  # with_data=True (default!)
+#
+# A double-reverse should be identity, but with_data=False is lost,
+# silently flipping a WITH NO DATA migration to WITH DATA.
+# ---------------------------------------------------------------------------
+def test_round6_create_mv_op_double_reverse_preserves_with_data_false():
+    """CreateMaterializedViewOp(with_data=False) → reverse() → reverse()
+    should preserve with_data=False (double-reverse is identity)."""
+    op = CreateMaterializedViewOp("mv", "SELECT 1", with_data=False)
+    double_reversed = op.reverse().reverse()
+    assert isinstance(double_reversed, CreateMaterializedViewOp), (
+        "Double-reverse of CreateMaterializedViewOp should return a "
+        "CreateMaterializedViewOp"
+    )
+    assert double_reversed.with_data is False, (
+        "Double-reverse of CreateMaterializedViewOp(with_data=False) "
+        f"loses with_data: got with_data={double_reversed.with_data!r}. "
+        "DropMaterializedViewOp.reverse() does not forward with_data, "
+        "so a WITH NO DATA migration silently becomes WITH DATA after "
+        "downgrade round-trip."
+    )
+
+
+# ---------------------------------------------------------------------------
+# BUG-R6-04: CreateViewOp with definition=None produces invalid SQL
+# "CREATE VIEW v AS None".
+#
+# operations.py:_create_view_impl interpolates op.definition directly
+# via f-string: f"CREATE {replace_clause}VIEW {qualified} AS {op.definition}".
+# When definition=None, this produces "CREATE VIEW v AS None" — the
+# literal string "None" is emitted as the view body, which is invalid
+# SQL on every dialect.  CreateViewOp.__init__ should reject None.
+# ---------------------------------------------------------------------------
+def test_round6_create_view_op_rejects_none_definition():
+    """CreateViewOp.__init__ should reject definition=None, not silently
+    produce invalid SQL 'CREATE VIEW v AS None'."""
+    with pytest.raises((TypeError, ValueError), match="(?i)definition"):
+        CreateViewOp("v", None)
+
+
+def test_round6_create_view_impl_none_definition_does_not_emit_literal_none():
+    """_create_view_impl should not emit 'CREATE VIEW v AS None' when
+    definition is None.  It should either raise or be rejected upstream."""
+    with pytest.raises((TypeError, ValueError), match="(?i)definition"):
+        op = CreateViewOp("v", None)
+        sqls = _capture_sql(op)
+        assert not any("AS None" in s for s in sqls), (
+            "_create_view_impl emits 'CREATE VIEW v AS None' when definition=None "
+            f"(got {sqls!r}). The literal string 'None' is interpolated into the "
+            "SQL body, producing invalid SQL on every dialect. "
+            "CreateViewOp.__init__ should reject definition=None."
+        )
+
+
+# ---------------------------------------------------------------------------
+# BUG-R6-05: ViewMixin without __tablename__ raises an unhelpful
+# InvalidRequestError from SQLAlchemy core instead of a clear error
+# from ViewMixin.
+#
+# view_mixin.py:130 calls create_table_from_selectable(name=cls.__tablename__, ...).
+# If the subclass does not set __tablename__, cls.__tablename__ raises
+# InvalidRequestError("Class does not have a __table__ or __tablename__
+# specified...").  The error message does not mention ViewMixin or views,
+# making it hard to diagnose.
+# ---------------------------------------------------------------------------
+def test_round6_view_mixin_without_tablename_raises_helpful_error():
+    """ViewMixin without __tablename__ should raise a clear, view-specific
+    error (e.g. mentioning __view_selectable__ or ViewMixin), not a generic
+    SQLAlchemy InvalidRequestError that doesn't reference views at all."""
+
+    Base = sa.orm.declarative_base()
+
+    with pytest.raises(Exception) as exc_info:
+        class NoTablenameThing(ViewMixin, Base):
+            __view_selectable__ = sa.select(sa.column("id", sa.Integer))
+            id: "Mapped[int]" = sa.Column(sa.Integer, primary_key=True)
+
+        NoTablenameThing.__declare_last__()
+
+    err_msg = str(exc_info.value).lower()
+    # The error should mention views or ViewMixin specifically (not just rely
+    # on the class name happening to contain "view"). SQLAlchemy's generic
+    # error mentions __tablename__ but not __view_selectable__ or ViewMixin.
+    assert "__view_selectable__" in err_msg or "viewmixin" in err_msg, (
+        "ViewMixin without __tablename__ should raise an error that mentions "
+        "'__view_selectable__' or 'ViewMixin' so the user can diagnose the "
+        "issue from a view-specific error, not a generic SQLAlchemy "
+        f"InvalidRequestError. Got: {exc_info.value!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# BUG-R6-06: ViewRecord with selectable=None causes _canonicalize_view
+# to crash (AttributeError: 'NoneType' has no attribute 'compile'),
+# which is caught and returns None → the view is silently skipped by
+# compare_views.  No validation at construction time.
+#
+# comparator.py:57-66:
+#     sel = view_record.selectable
+#     if not isinstance(sel, str):
+#         definition = str(sel.compile(...))   # sel=None → AttributeError
+#
+# The exception is caught (line 100), logged as a warning, and None is
+# returned.  compare_views then skips the view entirely (no op emitted),
+# so the view is invisible to autogenerate.
+# ---------------------------------------------------------------------------
+def test_round6_view_record_rejects_none_selectable():
+    """ViewRecord should reject selectable=None at construction time,
+    not silently crash during canonicalization."""
+    with pytest.raises((TypeError, ValueError), match="(?i)selectable"):
+        ViewRecord(name="v", selectable=None)
+
+
+def test_round6_canonicalize_view_none_selectable_does_not_silently_skip():
+    """_canonicalize_view should raise a clear error for selectable=None,
+    not return None (which causes compare_views to silently skip the view)."""
+    from sqlalchemy_utils.alembic.comparator import _canonicalize_view
+
+    conn = MagicMock()
+    conn.dialect = sa.dialects.sqlite.dialect()
+    conn.dialect.identifier_preparer = (
+        sa.dialects.sqlite.dialect().identifier_preparer
+    )
+    with pytest.raises((TypeError, ValueError), match="(?i)selectable"):
+        vr = ViewRecord(name="v", selectable=None)
+        result = _canonicalize_view(conn, vr)
+        assert result is not None or True is False, (
+            "_canonicalize_view silently returns None when selectable=None "
+            "(AttributeError on None.compile is caught), causing compare_views "
+            "to skip the view entirely — no create op is emitted, so the "
+            "migration omits the view. ViewRecord should reject selectable=None "
+            "at construction time."
+        )
+
+
+# ---------------------------------------------------------------------------
+# BUG-R6-07: render_drop_view does not emit definition=, so the rendered
+# migration's downgrade cannot reverse the drop.
+#
+# renderer.py:31-35:
+#     def render_drop_view(autogen_context, op):
+#         schema_part = f", schema={op.schema!r}" if op.schema else ""
+#         cascade_part = "" if op.cascade else ", cascade=False"
+#         return f"op.drop_view({op.name!r}{schema_part}{cascade_part})"
+#
+# When DropViewOp carries definition (needed for reverse()), the renderer
+# omits it, so the rendered `op.drop_view(...)` call constructs a
+# DropViewOp WITHOUT definition.  Calling .reverse() on that op raises
+# RuntimeError("no definition stored"), breaking autogenerate downgrade.
+# ---------------------------------------------------------------------------
+def test_round6_render_drop_view_preserves_definition():
+    """render_drop_view should emit definition= when set, so the rendered
+    migration's downgrade can reverse the drop."""
+    from sqlalchemy_utils.alembic.renderer import render_drop_view
+
+    op = DropViewOp("v", schema="public", definition="SELECT 1")
+    rendered = render_drop_view(MagicMock(), op)
+    assert "definition=" in rendered, (
+        "render_drop_view drops the `definition=` parameter: rendered code "
+        f"{rendered!r} cannot produce a working downgrade because "
+        "DropViewOp.reverse() requires definition. The rendered "
+        "op.drop_view(...) call constructs a DropViewOp without definition, "
+        "so calling .reverse() raises RuntimeError."
+    )
+
+
+# ---------------------------------------------------------------------------
+# BUG-R6-08: render_drop_materialized_view does not emit definition=.
+# Same as BUG-R6-07 but for materialized views.
+# ---------------------------------------------------------------------------
+def test_round6_render_drop_materialized_view_preserves_definition():
+    """render_drop_materialized_view should emit definition= when set."""
+    from sqlalchemy_utils.alembic.renderer import render_drop_materialized_view
+
+    op = DropMaterializedViewOp("mv", definition="SELECT 1")
+    rendered = render_drop_materialized_view(MagicMock(), op)
+    assert "definition=" in rendered, (
+        "render_drop_materialized_view drops the `definition=` parameter: "
+        f"rendered code {rendered!r} cannot produce a working downgrade "
+        "because DropMaterializedViewOp.reverse() requires definition."
+    )
+
+
+# ---------------------------------------------------------------------------
+# BUG-R6-09: render_replace_view / render_replace_materialized_view omit
+# old_definition= when it is an empty string "".
+#
+# renderer.py:41:  old_def_part = f", old_definition={op.old_definition!r}" if op.old_definition else ""
+# renderer.py:69:  old_def_part = f", old_definition={op.old_definition!r}" if op.old_definition else ""
+#
+# The `if op.old_definition` check treats "" as falsy, so an empty-string
+# old_definition is omitted from the rendered code.  The resulting
+# op.replace_view(...) call constructs a ReplaceViewOp with
+# old_definition=None, so .reverse() raises RuntimeError.
+# This breaks downgrade for views whose old definition was empty.
+# ---------------------------------------------------------------------------
+def test_round6_render_replace_view_preserves_empty_string_old_definition():
+    """render_replace_view should emit old_definition= even when it's an
+    empty string, not omit it (falsy check treats '' as absent)."""
+    from sqlalchemy_utils.alembic.renderer import render_replace_view
+
+    op = ReplaceViewOp("v", "SELECT 2", old_definition="")
+    rendered = render_replace_view(MagicMock(), op)
+    assert "old_definition=" in rendered, (
+        "render_replace_view omits old_definition= when it's an empty "
+        f"string (falsy check). Rendered: {rendered!r}. The rendered "
+        "op.replace_view(...) constructs a ReplaceViewOp with "
+        "old_definition=None, so .reverse() raises RuntimeError — "
+        "breaking downgrade for views whose old definition was empty."
+    )
+
+
+def test_round6_render_replace_mv_preserves_empty_string_old_definition():
+    """render_replace_materialized_view should emit old_definition= even
+    when it's an empty string."""
+    from sqlalchemy_utils.alembic.renderer import render_replace_materialized_view
+
+    op = ReplaceMaterializedViewOp("mv", "SELECT 2", old_definition="")
+    rendered = render_replace_materialized_view(MagicMock(), op)
+    assert "old_definition=" in rendered, (
+        "render_replace_materialized_view omits old_definition= when it's "
+        f"an empty string. Rendered: {rendered!r}. Breaks downgrade."
+    )
+
+
+# ---------------------------------------------------------------------------
+# BUG-R6-10: render_create_view / render_drop_view omit schema= when
+# schema is an empty string "".
+#
+# renderer.py:26:  schema_part = f", schema={op.schema!r}" if op.schema else ""
+# renderer.py:33:  schema_part = f", schema={op.schema!r}" if op.schema else ""
+# (same pattern in all 6 renderers)
+#
+# The `if op.schema` check treats "" as falsy, so an empty-string schema
+# is omitted from the rendered code.  This is inconsistent with
+# _quote_qualified_name (operations.py:39) which also treats '' as None,
+# BUT the rendered migration loses the schema entirely — re-running the
+# rendered migration creates the view in the default schema instead of
+# the empty-string schema.  While empty-string schema is unusual, the
+# asymmetry between "op carries schema=''" and "rendered migration has
+# no schema=" is a round-trip fidelity bug.
+# ---------------------------------------------------------------------------
+def test_round6_render_create_view_preserves_empty_string_schema():
+    """render_create_view should emit schema='' when explicitly set, not
+    omit it (falsy check treats '' as absent)."""
+    from sqlalchemy_utils.alembic.renderer import render_create_view
+
+    op = CreateViewOp("v", "SELECT 1", schema="")
+    rendered = render_create_view(MagicMock(), op)
+    assert "schema=" in rendered, (
+        "render_create_view omits schema= when it's an empty string (falsy "
+        f"check). Rendered: {rendered!r}. The rendered op.create_view(...) "
+        "constructs a CreateViewOp with schema=None instead of schema='', "
+        "breaking round-trip fidelity for empty-string schema."
+    )
+
+
+

@@ -24,6 +24,10 @@ class ViewRecord:
     replace: bool = False
     cascade_on_drop: bool = True
 
+    def __post_init__(self):
+        if self.selectable is None:
+            raise TypeError("selectable must not be None")
+
     def __eq__(self, other: object) -> bool:
         """Compare two ViewRecords for equality.
 

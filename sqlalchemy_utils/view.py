@@ -254,7 +254,7 @@ def create_view(
 class RefreshMaterializedView(Executable, ClauseElement):
     inherit_cache = True
 
-    def __init__(self, name, schema=None, concurrently=False):
+    def __init__(self, name, *, schema=None, concurrently=False):
         self.name = name
         self.schema = schema
         self.concurrently = concurrently
