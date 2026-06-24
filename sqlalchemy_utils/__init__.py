@@ -101,6 +101,9 @@ from .view import (  # noqa
     refresh_materialized_view,
 )
 from .view_mixin import ViewMixin  # noqa
-from .alembic import include_view_comparator  # noqa
+try:
+    from .alembic import include_view_comparator  # noqa
+except ImportError:
+    pass
 
 __version__ = '0.42.0'

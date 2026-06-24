@@ -585,7 +585,7 @@ class TestOperationsReplaceMaterializedViewOp:
         assert op.name == "mv1"
         assert op.definition == "SELECT 2"
         assert op.old_definition is None
-        assert op.with_data is False
+        assert op.with_data is True
 
     def test_reverse_returns_replace_mv_with_old_def(self):
         op = ReplaceMaterializedViewOp(
@@ -1572,13 +1572,13 @@ class TestRendererReplaceMaterializedView:
         result = render_replace_materialized_view(_make_autogen_context(), op)
         assert "with_data=" not in result
 
-    def test_includes_with_data_true(self):
-        """Renderer includes with_data=True when explicitly set."""
+    def test_omits_with_data_when_default(self):
+        """Renderer omits with_data when it equals the default (True)."""
         from sqlalchemy_utils.alembic.renderer import render_replace_materialized_view
 
         op = ReplaceMaterializedViewOp("mv_stats", "SELECT 2", with_data=True)
         result = render_replace_materialized_view(_make_autogen_context(), op)
-        assert "with_data=True" in result
+        assert "with_data=" not in result
 
     def test_schema_included_when_provided(self):
         """Schema parameter is included when schema is provided."""

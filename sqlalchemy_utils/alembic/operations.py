@@ -313,7 +313,7 @@ class ReplaceMaterializedViewOp(MigrateOperation):
         name: str,
         definition: str,
         schema: str | None = None,
-        with_data: bool = False,
+        with_data: bool = True,
         old_definition: str | None = None,
     ) -> None:
         self.name = name

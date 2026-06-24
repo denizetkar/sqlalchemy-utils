@@ -2,7 +2,10 @@ import logging
 
 import sqlalchemy as sa
 
-from sqlalchemy_utils.alembic.view_record import ViewRecord
+try:
+    from sqlalchemy_utils.alembic.view_record import ViewRecord
+except ImportError:
+    ViewRecord = None
 from sqlalchemy_utils.exceptions import ViewReadonlyError
 from sqlalchemy_utils.view import (
     create_table_from_selectable,

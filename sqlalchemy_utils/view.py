@@ -4,7 +4,11 @@ from sqlalchemy.schema import DDLElement, PrimaryKeyConstraint
 from sqlalchemy.sql.expression import ClauseElement, Executable
 
 from sqlalchemy_utils.functions import get_columns
-from sqlalchemy_utils.alembic.view_record import ViewRecord
+
+try:
+    from sqlalchemy_utils.alembic.view_record import ViewRecord
+except ImportError:
+    ViewRecord = None
 
 
 class CreateView(DDLElement):

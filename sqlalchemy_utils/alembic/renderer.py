@@ -30,7 +30,7 @@ def render_create_view(autogen_context: AutogenContext, op: CreateViewOp) -> str
 @renderers.dispatch_for(DropViewOp)
 def render_drop_view(autogen_context: AutogenContext, op: DropViewOp) -> str:
     schema_part = f", schema={op.schema!r}" if op.schema else ""
-    cascade_part = ", cascade=True" if op.cascade else ""
+    cascade_part = "" if op.cascade else ", cascade=False"
     return f"op.drop_view({op.name!r}{schema_part}{cascade_part})"
 
 
@@ -63,5 +63,5 @@ def render_replace_materialized_view(
     autogen_context: AutogenContext, op: ReplaceMaterializedViewOp
 ) -> str:
     schema_part = f", schema={op.schema!r}" if op.schema else ""
-    with_data_part = ", with_data=True" if op.with_data else ""
+    with_data_part = "" if op.with_data else ", with_data=False"
     return f"op.replace_materialized_view({op.name!r}, {op.definition!r}{schema_part}{with_data_part})"

@@ -1,5 +1,7 @@
 """PostgreSQL catalog query module for SQLAlchemy-Utils Alembic integration."""
 
+from __future__ import annotations
+
 import sqlalchemy as sa
 
 
