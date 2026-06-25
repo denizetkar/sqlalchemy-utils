@@ -425,6 +425,54 @@ class ReplaceMaterializedViewOp(MigrateOperation):
 
 
 # ===================================================================
+# Refresh materialized view operation
+# ===================================================================
+
+
+@Operations.register_operation("refresh_materialized_view")
+class RefreshMaterializedViewOp(MigrateOperation):
+    """Operation that emits ``REFRESH MATERIALIZED VIEW``.
+
+    .. note:: Materialized views are PostgreSQL-specific; other dialects
+       will raise at execute time.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        schema: str | None = None,
+        concurrently: bool = False,
+    ) -> None:
+        self.name = name
+        self.schema = schema
+        self.concurrently = concurrently
+
+    @classmethod
+    def refresh_materialized_view(
+        cls,
+        operations: Operations,
+        name: str,
+        *,
+        schema: str | None = None,
+        concurrently: bool = False,
+    ) -> None:
+        """Programmatic entry-point for ``op.refresh_materialized_view()``."""
+        op = cls(name, schema=schema, concurrently=concurrently)
+        return operations.invoke(op)
+
+    def reverse(self) -> "RefreshMaterializedViewOp":
+        """Return self; refreshing a view is its own inverse."""
+        return RefreshMaterializedViewOp(
+            self.name, schema=self.schema, concurrently=self.concurrently
+        )
+
+    def to_diff_tuple(self) -> tuple:
+        """Return ``("refresh_materialized_view", name, schema)``."""
+        return ("refresh_materialized_view", self.name, self.schema)
+
+
+# ===================================================================
 # SQL implementations
 # ===================================================================
 
@@ -502,3 +550,15 @@ def _replace_materialized_view_impl(
     )
     operations.execute(sa.text(drop_sql))
     operations.execute(sa.text(create_sql))
+
+
+@Operations.implementation_for(RefreshMaterializedViewOp)
+def _refresh_materialized_view_impl(
+    operations: Operations, op: RefreshMaterializedViewOp
+) -> None:
+    """Execute ``REFRESH MATERIALIZED VIEW`` via the migration connection."""
+    dialect = operations.get_bind().dialect
+    qualified = _quote_qualified_name(dialect, op.name, op.schema)
+    concurrently = "CONCURRENTLY " if op.concurrently else ""
+    sql = f"REFRESH MATERIALIZED VIEW {concurrently}{qualified}"
+    operations.execute(sa.text(sql))

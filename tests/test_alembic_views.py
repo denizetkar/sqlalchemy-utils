@@ -932,7 +932,7 @@ class TestOpValidation:
         create_view("my_view", selectable, metadata)
         after_second = len(metadata.dispatch.after_create)
 
-        assert after_second == after_first + 2
+        assert after_second == after_first + 1
 
     def test_create_mv_runtime_vs_op_consistency(self):
         """Runtime and op paths agree on WITH [NO] DATA default."""
@@ -2961,7 +2961,7 @@ class TestViewMixinIntegration:
         create_view("my_view", selectable, metadata)
         after_second = len(metadata.dispatch.after_create)
 
-        assert after_second == after_first + 2
+        assert after_second == after_first + 1
 
     def test_global_listener_registered_on_session(self):
         """The before_flush listener is registered on the global Session."""
@@ -3235,3 +3235,50 @@ class TestCrossSchemaDedup:
                 seen.add(key)
                 deduped.append(op)
         assert len(deduped) <= 1
+
+
+# ===========================================================================
+# Interface audit: migration refresh, dead listener, mapped_column guard
+# ===========================================================================
+
+class TestInterfaceAuditFixes:
+    """Interface audit fixes for migration refresh, dead listener, SA2 guard."""
+
+    def test_op_refresh_materialized_view_exists(self):
+        """op.refresh_materialized_view should exist for use inside migrations."""
+        from sqlalchemy_utils.alembic.operations import (
+            RefreshMaterializedViewOp,
+        )
+        assert hasattr(RefreshMaterializedViewOp, "refresh_materialized_view")
+        assert callable(RefreshMaterializedViewOp.refresh_materialized_view)
+
+    def test_create_view_does_not_register_dead_index_listener(self):
+        """create_view should not register a create_indexes listener since regular views don't support indexes."""
+        import inspect
+        from sqlalchemy_utils.view import create_view
+        src = inspect.getsource(create_view)
+        # The listener should either not be present, or gated behind a
+        # materialized check (like ViewMixin does).
+        # If 'create_indexes' appears in create_view source, it should be
+        # inside an 'if' block that checks for materialized.
+        if "create_indexes" in src:
+            # Find the line and check it's inside a conditional
+            lines = src.split("\n")
+            for i, line in enumerate(lines):
+                if "create_indexes" in line and "def " not in line:
+                    # Look backwards for a materialized check
+                    context = "\n".join(lines[max(0, i - 5):i])
+                    assert "materialized" in context.lower(), (
+                        f"create_indexes listener at line {i} is not gated "
+                        f"behind a materialized check. Context:\n{context}"
+                    )
+
+    def test_viewmixin_init_subclass_catches_mapped_column_without_tablename(self):
+        """ViewMixin.__init_subclass__ should catch mapped_column usage without __tablename__ and give a helpful error."""
+        from sqlalchemy_utils.view_mixin import ViewMixin
+        from sqlalchemy.orm import declarative_base, Mapped, mapped_column
+        Base = declarative_base()
+        with pytest.raises(TypeError, match="__tablename__"):
+            class BadView(ViewMixin, Base):
+                id: Mapped[int] = mapped_column(primary_key=True)
+                __view_selectable__ = sa.select(sa.column("id", sa.Integer))

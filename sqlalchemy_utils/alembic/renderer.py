@@ -18,6 +18,7 @@ from sqlalchemy_utils.alembic.operations import (
     CreateMaterializedViewOp,
     DropMaterializedViewOp,
     ReplaceMaterializedViewOp,
+    RefreshMaterializedViewOp,
 )
 
 
@@ -70,3 +71,12 @@ def render_replace_materialized_view(
     with_data_part = "" if op.with_data else ", with_data=False"
     old_def_part = f", old_definition={op.old_definition!r}" if op.old_definition is not None else ""
     return f"op.replace_materialized_view({op.name!r}, {op.definition!r}{schema_part}{with_data_part}{old_def_part})"
+
+
+@renderers.dispatch_for(RefreshMaterializedViewOp)
+def render_refresh_materialized_view(
+    autogen_context: AutogenContext, op: RefreshMaterializedViewOp
+) -> str:
+    schema_part = f", schema={op.schema!r}" if op.schema is not None else ""
+    concurrently_part = ", concurrently=True" if op.concurrently else ""
+    return f"op.refresh_materialized_view({op.name!r}{schema_part}{concurrently_part})"

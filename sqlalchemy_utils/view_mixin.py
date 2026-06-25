@@ -74,7 +74,12 @@ class ViewMixin:
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        if any(isinstance(v, sa.Column) for v in cls.__dict__.values()):
+        has_columns = any(
+            isinstance(v, sa.Column)
+            or (v is not None and type(v).__name__ == "MappedColumn")
+            for v in cls.__dict__.values()
+        )
+        if has_columns:
             has_tablename = any(
                 '__tablename__' in base.__dict__ for base in cls.__mro__
                 if base is not ViewMixin

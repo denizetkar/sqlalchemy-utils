@@ -27,6 +27,7 @@ Operations reference
 .. autofunction:: sqlalchemy_utils.alembic.operations.CreateMaterializedViewOp.create_materialized_view
 .. autofunction:: sqlalchemy_utils.alembic.operations.DropMaterializedViewOp.drop_materialized_view
 .. autofunction:: sqlalchemy_utils.alembic.operations.ReplaceMaterializedViewOp.replace_materialized_view
+.. autofunction:: sqlalchemy_utils.alembic.operations.RefreshMaterializedViewOp.refresh_materialized_view
 
 Autogenerate
 ------------

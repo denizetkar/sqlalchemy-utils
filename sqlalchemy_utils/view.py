@@ -242,17 +242,6 @@ def create_view(
         CreateView(name, selectable, replace=replace, schema=schema),
     )
 
-    @sa.event.listens_for(metadata, 'after_create')
-    def create_indexes(target, connection, **kw):
-        # The table is built with metadata=None (see create_table_from_selectable
-        # above), so it is NOT registered on this metadata and a table-scoped
-        # listener would never fire during metadata.create_all(). We therefore
-        # listen on the metadata and filter to only act for this view's table.
-        if target is not table:
-            return
-        for idx in table.indexes:
-            idx.create(connection)
-
     sa.event.listen(
         metadata, 'before_drop', DropView(name, cascade=cascade_on_drop, schema=schema)
     )
