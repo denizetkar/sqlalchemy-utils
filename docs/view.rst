@@ -29,3 +29,15 @@ ViewReadonlyError
 -----------------
 
 .. autoexception:: sqlalchemy_utils.exceptions.ViewReadonlyError
+
+DDL constructs
+--------------
+
+.. autoclass:: sqlalchemy_utils.view.CreateView
+   :members:
+
+.. autoclass:: sqlalchemy_utils.view.DropView
+   :members:
+
+.. autoclass:: sqlalchemy_utils.view.RefreshMaterializedView
+   :members:

@@ -21,6 +21,7 @@ class CreateView(DDLElement):
 
 @compiler.compiles(CreateView)
 def compile_create_materialized_view(element, compiler, **kw):
+    """Compile ``CreateView`` to ``CREATE [OR REPLACE] [MATERIALIZED] VIEW``."""
     schema_prefix = f'{compiler.dialect.identifier_preparer.quote(element.schema)}.' if element.schema else ''
     return 'CREATE {}{}VIEW {}{} AS {}'.format(
         'OR REPLACE ' if element.replace else '',
@@ -41,6 +42,7 @@ class DropView(DDLElement):
 
 @compiler.compiles(DropView)
 def compile_drop_materialized_view(element, compiler, **kw):
+    """Compile ``DropView`` to ``DROP [MATERIALIZED] VIEW IF EXISTS [...]``."""
     schema_prefix = f'{compiler.dialect.identifier_preparer.quote(element.schema)}.' if element.schema else ''
     sql = 'DROP {}VIEW IF EXISTS {}{}'.format(
         'MATERIALIZED ' if element.materialized else '',
@@ -55,6 +57,25 @@ def compile_drop_materialized_view(element, compiler, **kw):
 def create_table_from_selectable(
     name, selectable, indexes=None, metadata=None, aliases=None, schema=None, **kwargs
 ):
+    """Create a :class:`~sqlalchemy.Table` from a selectable.
+
+    Builds a table whose columns mirror the selectable's output columns.
+    If no column has ``primary_key=True``, a :class:`PrimaryKeyConstraint`
+    is added over all columns.
+
+    :param name: Table name.
+    :param selectable: A SQLAlchemy selectable (``select()``, ``text()``, etc.)
+        or a string SQL expression.
+    :param indexes: Optional list of :class:`~sqlalchemy.Index` objects.
+    :param metadata: :class:`~sqlalchemy.MetaData` to attach the table to.
+        If ``None``, the table is not attached to any metadata (used by
+        :func:`create_view` and :func:`create_materialized_view`).
+    :param aliases: Optional ``{column_name: alias}`` mapping to override
+        column keys.
+    :param schema: Optional schema name.
+    :param kwargs: Additional ``Table`` constructor arguments.
+    :returns: The created :class:`~sqlalchemy.Table`.
+    """
     if indexes is None:
         indexes = []
     if metadata is None:
@@ -259,6 +280,7 @@ class RefreshMaterializedView(Executable, ClauseElement):
 
 @compiler.compiles(RefreshMaterializedView)
 def compile_refresh_materialized_view(element, compiler, **kw):
+    """Compile ``RefreshMaterializedView`` to ``REFRESH MATERIALIZED VIEW``."""
     schema_prefix = f'{compiler.dialect.identifier_preparer.quote(element.schema)}.' if element.schema else ''
     return 'REFRESH MATERIALIZED VIEW {concurrently}{schema_prefix}{name}'.format(
         concurrently='CONCURRENTLY ' if element.concurrently else '',

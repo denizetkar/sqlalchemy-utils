@@ -94,6 +94,23 @@ Full example
     # ... rest of usual alembic setup ...
 
 
+**SA2 Core (non-ORM) pattern**::
+
+    import sqlalchemy as sa
+    from sqlalchemy_utils import create_view, create_materialized_view
+    from sqlalchemy_utils.alembic.comparator import register_view_comparator
+
+    register_view_comparator()
+
+    metadata = sa.MetaData()
+    create_view("my_view", sa.select(sa.column("id", sa.Integer)), metadata)
+    create_materialized_view(
+        "my_mv", sa.select(sa.column("id", sa.Integer)), metadata
+    )
+
+    # In env.py: target_metadata = metadata
+
+
 Dependencies
 ------------
 
@@ -122,6 +139,7 @@ API reference
 -------------
 
 .. autofunction:: sqlalchemy_utils.alembic.comparator.register_view_comparator
+.. autofunction:: sqlalchemy_utils.alembic.comparator.include_view_comparator
 .. autofunction:: sqlalchemy_utils.alembic.comparator.compare_views
 
 .. autoclass:: sqlalchemy_utils.alembic.view_record.ViewRecord
