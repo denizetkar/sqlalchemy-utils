@@ -145,7 +145,7 @@ class DropViewOp(MigrateOperation):
         """Return the inverse: re-create the view that was just dropped.
 
         Requires ``definition`` to have been stored at construction time;
-        otherwise a ``RuntimeError`` is raised because the view definition
+        otherwise a ``NotImplementedError`` is raised because the view definition
         is unknown.
         """
         if self.definition is None:
@@ -199,7 +199,7 @@ class ReplaceViewOp(MigrateOperation):
     def reverse(self) -> ReplaceViewOp:
         """Return the inverse: replace back to the old definition.
 
-        Requires ``old_definition``; otherwise raises ``RuntimeError``.
+        Requires ``old_definition``; otherwise raises ``NotImplementedError``.
         """
         if self.old_definition is None:
             raise NotImplementedError(
@@ -312,17 +312,19 @@ class DropMaterializedViewOp(MigrateOperation):
         schema: str | None = None,
         cascade: bool = True,
         definition: str | None = None,
+        with_data: bool = True,
     ) -> None:
         """Programmatic entry-point for ``op.drop_materialized_view()``."""
         op = DropMaterializedViewOp(
-            name, schema=schema, cascade=cascade, definition=definition
+            name, schema=schema, cascade=cascade, definition=definition,
+            with_data=with_data,
         )
         return operations.invoke(op)
 
     def reverse(self) -> CreateMaterializedViewOp:
         """Return the inverse: re-create the materialized view.
 
-        Requires ``definition``; otherwise raises ``RuntimeError``.
+        Requires ``definition``; otherwise raises ``NotImplementedError``.
         """
         if self.definition is None:
             raise NotImplementedError(
@@ -393,7 +395,7 @@ class ReplaceMaterializedViewOp(MigrateOperation):
     def reverse(self) -> ReplaceMaterializedViewOp:
         """Return the inverse: replace back to old definition.
 
-        Requires ``old_definition``; otherwise raises ``RuntimeError``.
+        Requires ``old_definition``; otherwise raises ``NotImplementedError``.
         """
         if self.old_definition is None:
             raise NotImplementedError(

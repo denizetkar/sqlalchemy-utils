@@ -3096,3 +3096,79 @@ class TestDocumentation:
         ]:
             doc = (cls.__doc__ or "").lower()
             assert "postgresql" in doc or "postgres" in doc
+
+
+# ===========================================================================
+# Round 7: Interface audit fixes
+# ===========================================================================
+
+def test_create_view_works_without_alembic_installed():
+    """create_view() must work when alembic is not installed.
+
+    ViewRecord has no alembic dependency, so importing it should not
+    fail when alembic is absent. The try/except guard in view.py sets
+    ViewRecord=None, which then crashes when create_view() calls it.
+    """
+    import subprocess, sys
+    code = (
+        'import sys\n'
+        "sys.modules['alembic'] = None\n"
+        "sys.modules['alembic.operations'] = None\n"
+        "sys.modules['alembic.autogenerate'] = None\n"
+        'import sqlalchemy as sa\n'
+        'from sqlalchemy_utils.view import create_view\n'
+        'metadata = sa.MetaData()\n'
+        'create_view("v", sa.select(sa.column("id", sa.Integer)), metadata)\n'
+        'print("SUCCESS")\n'
+    )
+    result = subprocess.run(
+        [sys.executable, '-c', code],
+        capture_output=True, text=True,
+        env={'PYTHONPATH': 'src', 'PATH': ''},
+    )
+    assert result.returncode == 0, f"STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    assert 'SUCCESS' in result.stdout
+
+
+def test_reverse_docstrings_say_not_implemented_error():
+    """Docstrings for reverse() should mention NotImplementedError, not RuntimeError."""
+    import inspect
+    from sqlalchemy_utils.alembic.operations import (
+        DropViewOp, ReplaceViewOp, DropMaterializedViewOp, ReplaceMaterializedViewOp,
+    )
+    for cls in [DropViewOp, ReplaceViewOp, DropMaterializedViewOp, ReplaceMaterializedViewOp]:
+        src = inspect.getsource(cls.reverse)
+        assert 'NotImplementedError' in src, (
+            f"{cls.__name__}.reverse docstring should mention NotImplementedError"
+        )
+        assert 'RuntimeError' not in src, (
+            f"{cls.__name__}.reverse docstring should NOT mention RuntimeError"
+        )
+
+
+def test_compare_views_offline_mode_guard_reachable():
+    """compare_views should guard connection is None BEFORE accessing dialect."""
+    import inspect
+    from sqlalchemy_utils.alembic.comparator import compare_views
+    src = inspect.getsource(compare_views)
+    # The None check must come BEFORE the dialect check
+    none_check_line = src.index('connection is None')
+    dialect_check_line = src.index('connection.dialect')
+    assert none_check_line < dialect_check_line, (
+        "connection is None check must come before connection.dialect access"
+    )
+
+
+def test_op_drop_materialized_view_accepts_with_data():
+    """op.drop_materialized_view should accept with_data for round-trip fidelity."""
+    from unittest.mock import MagicMock
+    from sqlalchemy_utils.alembic.operations import DropMaterializedViewOp
+    operations = MagicMock()
+    invoked: list = []
+    operations.invoke.side_effect = lambda op: invoked.append(op) or op
+    DropMaterializedViewOp.drop_materialized_view(
+        operations, "mv", definition="SELECT 1", with_data=False
+    )
+    operations.invoke.assert_called_once()
+    invoked_op = operations.invoke.call_args[0][0]
+    assert invoked_op.with_data is False

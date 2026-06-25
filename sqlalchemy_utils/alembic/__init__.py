@@ -4,7 +4,7 @@ from .operations import (CreateViewOp, DropViewOp, ReplaceViewOp,
                           CreateMaterializedViewOp, DropMaterializedViewOp,
                           ReplaceMaterializedViewOp)
 from .pg_catalog import get_database_views, get_database_materialized_views
-from .view_record import ViewRecord
+from ..view_record import ViewRecord
 
 __all__ = [
     "register_view_comparator",

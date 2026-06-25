@@ -22,7 +22,7 @@ import sqlalchemy as sa
 from alembic.autogenerate import comparators
 from alembic.autogenerate.api import AutogenContext
 
-from sqlalchemy_utils.alembic.view_record import ViewRecord
+from sqlalchemy_utils.view_record import ViewRecord
 from sqlalchemy_utils.alembic.pg_catalog import (
     get_database_views,
     get_database_materialized_views,
@@ -128,18 +128,18 @@ def compare_views(
     connection = autogen_context.connection
     metadata = autogen_context.metadata
 
+    if connection is None:
+        log.warning(
+            "View autogenerate comparison requires an online connection; "
+            "skipping view diffing in offline mode."
+        )
+        return
+
     if connection.dialect.name != 'postgresql':
         log.warning(
             "View autogenerate comparison is only supported on PostgreSQL; "
             "skipping view diffing for non-PostgreSQL dialect '%s'.",
             connection.dialect.name,
-        )
-        return
-
-    if connection is None:
-        log.warning(
-            "View autogenerate comparison requires an online connection; "
-            "skipping view diffing in offline mode."
         )
         return
 

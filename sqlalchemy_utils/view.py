@@ -5,10 +5,7 @@ from sqlalchemy.sql.expression import ClauseElement, Executable
 
 from sqlalchemy_utils.functions import get_columns
 
-try:
-    from sqlalchemy_utils.alembic.view_record import ViewRecord
-except ImportError:
-    ViewRecord = None
+from sqlalchemy_utils.view_record import ViewRecord
 
 
 class CreateView(DDLElement):

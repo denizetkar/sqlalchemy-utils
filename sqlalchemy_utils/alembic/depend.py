@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from graphlib import TopologicalSorter, CycleError
 
-from sqlalchemy_utils.alembic.view_record import ViewRecord
+from sqlalchemy_utils.view_record import ViewRecord
 
 
 # ---------------------------------------------------------------------------
