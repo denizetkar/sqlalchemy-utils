@@ -88,9 +88,13 @@ def _build_dependency_graph(
 
 def _records_by_name(
     view_records: list[ViewRecord],
-) -> dict[str, ViewRecord]:
-    """Return a ``{name: ViewRecord}`` lookup (last one wins on dup names)."""
-    return {vr.name: vr for vr in view_records}
+) -> dict[str, list[ViewRecord]]:
+    """Return a ``{name: [ViewRecord, ...]}`` lookup preserving all records
+    with the same name (e.g. same name in different schemas)."""
+    result: dict[str, list[ViewRecord]] = {}
+    for vr in view_records:
+        result.setdefault(vr.name, []).append(vr)
+    return result
 
 
 def _toposort(
@@ -144,11 +148,10 @@ def _toposort(
     name_to_record = _records_by_name(view_records)
 
     # Filter out any names that are only in db_views (not in model records)
-    result = [
-        name_to_record[name]
-        for name in sorted_names
-        if name in name_to_record
-    ]
+    result: list[ViewRecord] = []
+    for name in sorted_names:
+        if name in name_to_record:
+            result.extend(name_to_record[name])
     return result
 
 

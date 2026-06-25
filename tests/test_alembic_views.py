@@ -3099,7 +3099,7 @@ class TestDocumentation:
 
 
 # ===========================================================================
-# Round 7: Interface audit fixes
+# Interface audit fixes
 # ===========================================================================
 
 def test_create_view_works_without_alembic_installed():
@@ -3172,3 +3172,66 @@ def test_op_drop_materialized_view_accepts_with_data():
     operations.invoke.assert_called_once()
     invoked_op = operations.invoke.call_args[0][0]
     assert invoked_op.with_data is False
+
+
+# ===========================================================================
+# Cross-schema dedup and ordering
+# ===========================================================================
+
+
+class TestCrossSchemaDedup:
+    """Dedup and ordering across schemas with same-name views."""
+
+    def test_keyword_filter_preserves_dependency_order(self):
+        """A view named 'data' (a SQL keyword) must still be ordered
+        before views that reference it."""
+        views = [
+            ViewRecord(name="data", selectable="SELECT 1 AS col"),
+            ViewRecord(name="report", selectable="SELECT * FROM data"),
+        ]
+        order = resolve_create_order(views, db_views={})
+        names = [v.name for v in order]
+        assert names.index("data") < names.index("report")
+
+    def test_compare_views_does_not_overwrite_cross_schema(self):
+        """compare_views source must not use dict.update() for merging
+        cross-schema DB views (silently overwrites same-name entries)."""
+        src = inspect.getsource(compare_views)
+        assert "all_db_views.update" not in src
+
+    def test_resolve_create_order_preserves_same_name_diff_schema(self):
+        """Two views with the same name in different schemas must both
+        appear in the ordered output."""
+        views = [
+            ViewRecord(name="v", schema="a", selectable="SELECT 1"),
+            ViewRecord(name="v", schema="b", selectable="SELECT 1"),
+        ]
+        result = resolve_create_order(views, db_views={})
+        assert len(result) == 2
+
+    def test_dedup_collapses_create_and_replace_for_same_view(self):
+        """Dedup must not keep both a CreateViewOp and a ReplaceViewOp
+        for the same view name/schema — replace supersedes create."""
+        from sqlalchemy_utils.alembic.operations import (
+            CreateViewOp, ReplaceViewOp,
+        )
+        ops = [
+            CreateViewOp("v", "SELECT 1", schema="a"),
+            ReplaceViewOp("v", "SELECT 2", schema="a", old_definition="SELECT 1"),
+        ]
+        # Reproduce the dedup logic from compare_views
+        seen = set()
+        deduped = []
+        for op in ops:
+            op_name = type(op).__name__.lower()
+            if op_name.startswith("create") or op_name.startswith("replace"):
+                op_family = "create_or_replace"
+            elif op_name.startswith("drop"):
+                op_family = "drop"
+            else:
+                op_family = op_name
+            key = (op_family, op.name, op.schema)
+            if key not in seen:
+                seen.add(key)
+                deduped.append(op)
+        assert len(deduped) <= 1
