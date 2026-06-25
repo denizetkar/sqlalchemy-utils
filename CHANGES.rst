@@ -15,14 +15,14 @@ Unreleased
 - Add `ViewMixin` declarative mixin for typed ORM view classes
 - Add `ViewReadonlyError` exception (subclasses `sa.exc.InvalidRequestError`)
 - Add Alembic migration operations for views (`create_view`, `drop_view`, `replace_view`, and materialized equivalents)
-- Add Alembic autogenerate comparator for view detection (`include_view_comparator()`)
+- Add Alembic autogenerate comparator for view detection (`register_view_comparator()`)
 - Add Alembic renderer for view migration operations
 - Add `ViewMixin.refresh()` classmethod for materialized views
 - Add `__view_schema__` class attribute for multi-schema support
 - Rename `__view_cascade_on_drop__` → `__view_cascade__` (aligns with SQL/Alembic naming)
 
 0.42.1 (2025-12-12)
-^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^
 
 - Fix ``AttributeError`` with Sequence defaults in ``instant_defaults_listener`` (#793)
 
