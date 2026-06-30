@@ -12,14 +12,14 @@ Unreleased
 - Fix ``ChoiceType`` returning the raw scalar instead of a ``Choice`` for falsy codes such as ``0`` or the empty string. (#813)
 
   NULL values continue to return ``None``.
-- Add `ViewMixin` declarative mixin for typed ORM view classes
-- Add `ViewReadonlyError` exception (subclasses `sa.exc.InvalidRequestError`)
-- Add Alembic migration operations for views (`create_view`, `drop_view`, `replace_view`, and materialized equivalents)
-- Add Alembic autogenerate comparator for view detection (`register_view_comparator()`)
-- Add Alembic renderer for view migration operations
-- Add `ViewMixin.refresh()` classmethod for materialized views
-- Add `__view_schema__` class attribute for multi-schema support
-- Rename `__view_cascade_on_drop__` → `__view_cascade__` (aligns with SQL/Alembic naming)
+- Add Alembic integration for views: migration operations (``create_view``,
+  ``drop_view``, ``replace_view``, and materialized equivalents), autogenerate
+  comparator (``register_view_comparator()``), and renderer
+- Add ``ViewMixin`` declarative mixin (with ``refresh()`` for materialized views)
+  for typed ORM view classes
+- Add ``ViewReadonlyError`` exception (subclasses ``sa.exc.InvalidRequestError``)
+- Add ``__view_schema__`` class attribute for multi-schema support
+- Rename ``__view_cascade_on_drop__`` → ``__view_cascade__`` (aligns with SQL/Alembic naming)
 
 0.42.1 (2025-12-12)
 ^^^^^^^^^^^^^^^^^^^

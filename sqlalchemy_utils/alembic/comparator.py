@@ -352,14 +352,3 @@ def register_view_comparator() -> None:
         from . import renderer  # noqa: F401
     except ImportError:
         pass
-
-
-def include_view_comparator(*args, **kwargs):
-    """Deprecated alias for register_view_comparator."""
-    import warnings
-    warnings.warn(
-        "include_view_comparator is deprecated; use register_view_comparator",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return register_view_comparator(*args, **kwargs)

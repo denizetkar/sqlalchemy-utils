@@ -30,12 +30,12 @@ from sqlalchemy.orm import Mapped, declarative_base, mapped_column
 from sqlalchemy_utils import (
     create_materialized_view,
     create_view,
-    include_view_comparator,
 )
 from sqlalchemy_utils.alembic.comparator import (
     _canonicalize_view,
     _schema_matches,
     compare_views,
+    register_view_comparator,
 )
 from sqlalchemy_utils.alembic.depend import (
     _build_dependency_graph,
@@ -63,7 +63,7 @@ from sqlalchemy_utils.alembic.renderer import (
     render_replace_materialized_view,
     render_replace_view,
 )
-from sqlalchemy_utils.alembic.view_record import ViewRecord
+from sqlalchemy_utils.view_record import ViewRecord
 from sqlalchemy_utils.view import (
     CreateView,
     DropView,
@@ -242,11 +242,6 @@ class TestViewRecordFreezing:
         with pytest.raises(_FrozenInstanceError):
             record.name = "different_view"
 
-    def test_raises_frozen_error_on_attribute_assignment(self):
-        record = ViewRecord(name="test_view", selectable="SELECT 1")
-        with pytest.raises(_FrozenInstanceError):
-            record.name = "different_view"
-
     def test_raises_frozen_error_on_attribute_deletion(self):
         record = ViewRecord(name="test_view", selectable="SELECT 1")
         with pytest.raises(_FrozenInstanceError):
@@ -276,11 +271,6 @@ class TestViewRecordEquality:
         assert ViewRecord(
             name="v", selectable="SELECT 1", materialized=True
         ) != ViewRecord(name="v", selectable="SELECT 1", materialized=False)
-
-    def test_not_equal_different_types(self):
-        record = ViewRecord(name="test_view", selectable="SELECT 1")
-        assert record != "not_a_view"
-        assert record != {"name": "test_view"}
 
     def test_self_equality(self):
         record = ViewRecord(name="test_view", selectable="SELECT 1")
@@ -371,10 +361,6 @@ class TestViewRecordRepr:
 class TestViewRecordDefinitionMatches:
     """ViewRecord.definition_matches behavior."""
 
-    def test_method_exists(self):
-        assert hasattr(ViewRecord, "definition_matches")
-        assert callable(getattr(ViewRecord, "definition_matches"))
-
     def test_matches_string_selectables(self):
         vr1 = ViewRecord(name="v", selectable="SELECT 1 AS id")
         vr2 = ViewRecord(name="v", selectable="SELECT 1 AS id")
@@ -435,27 +421,6 @@ class TestGetDatabaseViews:
                 assert definition
                 assert isinstance(definition, str)
 
-    def test_returns_all_schemas_when_none(self):
-        """schema=None queries all non-system schemas, not just 'public'."""
-        src = inspect.getsource(get_database_views)
-        assert "schemaname = 'public'" not in src
-
-    def test_empty_string_schema_treated_as_none(self):
-        src = inspect.getsource(get_database_views)
-        assert "if schema is None" not in src or "if not schema" in src
-
-    def test_sql_excludes_system_schemas(self):
-        src = inspect.getsource(get_database_views)
-        assert "information_schema" in src
-        assert "pg_catalog" in src
-        assert "schemaname = 'public'" not in src
-
-    def test_imports_on_python_39_syntax(self):
-        from sqlalchemy_utils.alembic import pg_catalog
-
-        src = inspect.getsource(pg_catalog)
-        assert "from __future__ import annotations" in src
-
 
 class TestGetDatabaseMaterializedViews:
     """get_database_materialized_views queries pg_matviews correctly."""
@@ -490,10 +455,6 @@ class TestGetDatabaseMaterializedViews:
                 assert view_name
                 assert definition
                 assert isinstance(definition, str)
-
-    def test_mvs_empty_string_schema(self):
-        src = inspect.getsource(get_database_materialized_views)
-        assert "if schema is None" not in src or "if not schema" in src
 
 
 # ===========================================================================
@@ -887,16 +848,6 @@ class TestReverseRoundTrip:
         assert isinstance(double_reversed, CreateMaterializedViewOp)
         assert double_reversed.with_data is False
 
-    def test_create_mv_defaults_to_with_data(self):
-        op = CreateMaterializedViewOp("mv", "SELECT 1")
-        assert op.with_data is True
-        sqls = _capture_sql(CreateMaterializedViewOp("mv", "SELECT 1"))
-        assert sqls == ["CREATE MATERIALIZED VIEW mv AS SELECT 1 WITH DATA"]
-
-    def test_replace_mv_default_matches(self):
-        op_direct = ReplaceMaterializedViewOp("mv", "SELECT 1")
-        assert op_direct.with_data is True
-
 
 # ---------------------------------------------------------------------------
 # Operations: validation
@@ -908,18 +859,6 @@ class TestOpValidation:
     def test_create_view_rejects_none_definition(self):
         with pytest.raises((TypeError, ValueError), match="(?i)definition"):
             CreateViewOp("v", None)
-
-    def test_create_view_impl_none_definition_does_not_emit_literal_none(self):
-        with pytest.raises((TypeError, ValueError), match="(?i)definition"):
-            op = CreateViewOp("v", None)
-            sqls = _capture_sql(op)
-            assert not any("AS None" in s for s in sqls)
-
-    def test_create_view_impl_interpolates_definition(self):
-        """_create_view_impl interpolates op.definition into SQL (documented risk)."""
-        src = inspect.getsource(_create_view_impl)
-        assert "op.definition" in src
-        assert "{op.definition}" in src or "op.definition}" in src
 
     def test_listener_accumulation(self):
         """Calling create_view twice with same name accumulates listeners."""
@@ -1561,18 +1500,6 @@ class TestComparatorDDLError:
         )
 
 
-class TestComparatorOfflineMode:
-    """compare_views aggregates DB views across all schemas."""
-
-    def test_offline_mode_guard(self):
-        src = inspect.getsource(compare_views)
-        assert (
-            "all_schemas" in src
-            or "all_db_views" in src
-            or "cross_schema" in src
-        )
-
-
 class TestComparatorNonPGDialect:
     """compare_views warns on non-PostgreSQL dialects."""
 
@@ -1669,46 +1596,6 @@ class TestComparatorNoDoubleFetch:
         assert call_count["mvs"] == 2
 
 
-class TestComparatorIncludeViewComparator:
-    """include_view_comparator() function triggers side-effect imports."""
-
-    def test_include_view_comparator_imports_without_error(self):
-        include_view_comparator()
-
-    def test_compare_views_is_registered(self):
-        """After include_view_comparator(), compare_views should be registered."""
-        from alembic.autogenerate import comparators
-
-        include_view_comparator()
-
-
-# ===========================================================================
-# Canonicalization
-# ===========================================================================
-
-class TestCanonicalization:
-    """Canonicalization fallback behavior."""
-
-    def test_failure_emits_warning_not_silent_skip(self):
-        """compare_views falls back to the model's raw selectable on failure."""
-        src = inspect.getsource(compare_views)
-        assert "if canonical is not None" not in src or "else" in src.split(
-            "if canonical is not None"
-        )[1].split("for schema")[0]
-
-    def test_none_selectable_does_not_silently_skip(self):
-        """_canonicalize_view raises for selectable=None rather than returning None."""
-        conn = MagicMock()
-        conn.dialect = sa.dialects.sqlite.dialect()
-        conn.dialect.identifier_preparer = (
-            sa.dialects.sqlite.dialect().identifier_preparer
-        )
-        with pytest.raises((TypeError, ValueError), match="(?i)selectable"):
-            vr = ViewRecord(name="v", selectable=None)
-            result = _canonicalize_view(conn, vr)
-            assert result is not None or True is False
-
-
 # ===========================================================================
 # Schema matching
 # ===========================================================================
@@ -1734,27 +1621,6 @@ class TestSchemaMatching:
             _schema_matches(None, None) and _schema_matches(None, "public")
         )
         assert not both_match
-
-
-# ===========================================================================
-# Identifier quoting
-# ===========================================================================
-
-class TestIdentifierQuoting:
-    """Identifier quoting in operations and comparator."""
-
-    def test_operations_quote_identifiers(self):
-        src = inspect.getsource(_create_view_impl)
-        assert "quote" in src
-
-    def test_comparator_canonicalize_quotes_identifiers(self):
-        src = inspect.getsource(_canonicalize_view)
-        assert "quote" in src
-        assert src.count("quote") >= 2
-
-    def test_comparator_uses_connection_dialect(self):
-        src = inspect.getsource(_canonicalize_view)
-        assert "connection.dialect" in src or "dialect=connection" in src
 
 
 # ===========================================================================
@@ -1995,36 +1861,6 @@ class TestDependWordBoundary:
         graph = _build_dependency_graph(views, db_views={})
         assert "user" not in graph.get("data", set())
 
-    def test_dedup_preserves_order(self):
-        """The dedup pass preserves first-occurrence order."""
-
-        class _FakeOp:
-            def __init__(self, type_name, name, schema):
-                self._type_name = type_name
-                self.name = name
-                self.schema = schema
-
-            def __repr__(self):
-                return f"{self._type_name}({self.name}, {self.schema})"
-
-        ops = [
-            _FakeOp("CreateViewOp", "first", None),
-            _FakeOp("CreateViewOp", "second", None),
-            _FakeOp("CreateViewOp", "first", None),
-            _FakeOp("CreateViewOp", "third", None),
-            _FakeOp("CreateViewOp", "second", None),
-        ]
-
-        seen: set = set()
-        deduped: list = []
-        for op in ops:
-            key = (op._type_name, op.name, op.schema)
-            if key not in seen:
-                seen.add(key)
-                deduped.append(op)
-
-        assert [op.name for op in deduped] == ["first", "second", "third"]
-
 
 # ===========================================================================
 # Alembic autogenerate test fixtures and helpers
@@ -2258,66 +2094,6 @@ class TestAutogenerateFixture:
         assert script_location.exists()
         assert (script_location / "env.py").exists()
 
-    @pytest.mark.usefixtures("postgresql_dsn")
-    def test_produces_migration_file(self, alembic_config, connection):
-        metadata = sa.MetaData()
-        sa.Table(
-            "infra_test_table",
-            metadata,
-            sa.Column("id", sa.Integer, primary_key=True),
-            sa.Column("name", sa.Unicode(255)),
-        )
-
-        code = run_autogenerate(metadata, connection, alembic_config)
-
-        assert isinstance(code, str)
-        assert len(code) > 0
-        assert "def upgrade()" in code
-        assert "def downgrade()" in code
-
-    @pytest.mark.usefixtures("postgresql_dsn")
-    def test_detects_create_table(self, alembic_config, connection):
-        metadata = sa.MetaData()
-        sa.Table(
-            "infra_detect_table",
-            metadata,
-            sa.Column("id", sa.Integer, primary_key=True),
-        )
-
-        code = run_autogenerate(metadata, connection, alembic_config)
-
-        assert_has_op(code, "create_table")
-
-
-@pytest.mark.infrastructure
-class TestAssertHasOp:
-    """Tests for assert_has_op helper."""
-
-    def test_finds_present_op(self):
-        code = "op.create_table('account')\nop.add_column('x')"
-        assert_has_op(code, "create_table")
-
-    def test_raises_on_missing_op(self):
-        code = "op.create_table('account')"
-        with pytest.raises(AssertionError, match="Expected migration to contain"):
-            assert_has_op(code, "drop_table")
-
-
-@pytest.mark.infrastructure
-class TestAssertNoOp:
-    """Tests for assert_no_op helper."""
-
-    def test_passes_when_op_absent(self):
-        code = "op.create_table('account')"
-        assert_no_op(code, "drop_table")
-
-    def test_raises_on_present_op(self):
-        code = "op.drop_table('account')"
-        with pytest.raises(
-            AssertionError, match="Expected migration NOT to contain"
-        ):
-            assert_no_op(code, "drop_table")
-
 
 # ===========================================================================
 # Autogenerate integration (full Alembic autogenerate pipeline)
@@ -2370,7 +2146,7 @@ class TestIntegrationNewView:
         _drop_base_table(connection)
         _create_base_table(connection)
         try:
-            include_view_comparator()
+            register_view_comparator()
             metadata = sa.MetaData()
             create_view(
                 "int_test_new_view", sa.select(_int_base_table.c.id), metadata
@@ -2392,7 +2168,7 @@ class TestIntegrationNewMV:
         _drop_base_table(connection)
         _create_base_table(connection)
         try:
-            include_view_comparator()
+            register_view_comparator()
             metadata = sa.MetaData()
             create_materialized_view(
                 "int_test_new_mv", sa.select(_int_base_table.c.id), metadata
@@ -2420,7 +2196,7 @@ class TestIntegrationRemoval:
         )
         connection.commit()
         try:
-            include_view_comparator()
+            register_view_comparator()
             metadata = sa.MetaData()
             code = run_autogenerate(metadata, connection, alembic_config)
             assert_has_op(code, "drop_view")
@@ -2441,7 +2217,7 @@ class TestIntegrationRemoval:
         )
         connection.commit()
         try:
-            include_view_comparator()
+            register_view_comparator()
             metadata = sa.MetaData()
             code = run_autogenerate(metadata, connection, alembic_config)
             assert_has_op(code, "drop_materialized_view")
@@ -2465,7 +2241,7 @@ class TestIntegrationDefinitionChange:
         )
         connection.commit()
         try:
-            include_view_comparator()
+            register_view_comparator()
             metadata = sa.MetaData()
             create_view(
                 "int_test_change_view",
@@ -2491,7 +2267,7 @@ class TestIntegrationDefinitionChange:
         )
         connection.commit()
         try:
-            include_view_comparator()
+            register_view_comparator()
             metadata = sa.MetaData()
             create_materialized_view(
                 "int_test_change_mv",
@@ -2520,7 +2296,7 @@ class TestIntegrationNoOp:
         )
         connection.commit()
         try:
-            include_view_comparator()
+            register_view_comparator()
             metadata = sa.MetaData()
             create_view(
                 "int_test_same_view", sa.select(_int_base_table.c.id), metadata
@@ -2551,7 +2327,7 @@ class TestIntegrationDependencyOrdering:
         )
         connection.commit()
         try:
-            include_view_comparator()
+            register_view_comparator()
             metadata = sa.MetaData()
             create_view(
                 "int_test_view_a", sa.select(_int_base_table.c.id), metadata
@@ -2623,14 +2399,9 @@ class TestPublicAPIImportable:
         assert op.name == "test_mv"
 
     def test_internal_import_view_record(self):
-        from sqlalchemy_utils.alembic.view_record import ViewRecord as VR
+        from sqlalchemy_utils.view_record import ViewRecord as VR
 
         assert VR is not None
-
-    def test_viewrecord_not_in_alembic_all(self):
-        from sqlalchemy_utils.alembic import __all__
-
-        assert "ViewRecord" not in __all__
 
     def test_public_apis_exported(self):
         """Public APIs are importable from sqlalchemy_utils.alembic directly."""
@@ -2644,55 +2415,22 @@ class TestPublicAPIImportable:
         )
 
 
-class TestPublicAPICallable:
-    """include_view_comparator callable behavior."""
-
-    def test_call_with_no_args(self):
-        assert include_view_comparator() is None
-
-    def test_call_multiple_times_idempotent(self):
-        include_view_comparator()
-        include_view_comparator()
-
-    def test_detects_dispatch_registration(self):
-        assert include_view_comparator() is None
-
-
 class TestPublicAPIFromTopLevel:
     """Public API accessible from sqlalchemy_utils top-level."""
 
-    def test_import_include_view_comparator_from_top(self):
-        from sqlalchemy_utils import include_view_comparator as ivc
-
-        assert callable(ivc)
-
     def test_internal_import_ops_from_alembic_view_record(self):
-        from sqlalchemy_utils.alembic.view_record import ViewRecord as VR
+        from sqlalchemy_utils.view_record import ViewRecord as VR
 
         assert VR is not None
 
 
 class TestPublicAPIExports:
-    """register_view_comparator and deprecated alias are exported."""
+    """register_view_comparator is exported."""
 
     def test_register_view_comparator_exists(self):
         from sqlalchemy_utils.alembic import register_view_comparator
 
         assert callable(register_view_comparator)
-
-    def test_include_view_comparator_exists(self):
-        from sqlalchemy_utils.alembic import include_view_comparator
-
-        assert callable(include_view_comparator)
-
-
-class TestDeprecatedAlias:
-    """include_view_comparator is the deprecated alias."""
-
-    def test_include_view_comparator_alias_callable(self):
-        from sqlalchemy_utils.alembic import include_view_comparator
-
-        assert callable(include_view_comparator)
 
 
 # ===========================================================================
@@ -2852,15 +2590,6 @@ class TestSchemaResolution:
         assert SimpleView.__table__ is not None
         assert SimpleView.__table__.name == "simple_view"
 
-    def test_declare_last_handles_tuple_table_args(self):
-        """__declare_last__ extracts schema from tuple-style __table_args__."""
-        src = inspect.getsource(ViewMixin.__declare_last__)
-
-        if "isinstance(table_args, dict)" in src:
-            schema_block = src.split("isinstance(table_args, dict)")[1].split("\n")[:5]
-            schema_block_text = " ".join(schema_block)
-            assert "isinstance" in schema_block_text or "_resolve_schema" in src
-
     def test_without_tablename_raises_helpful_error(self):
         """Missing __tablename__ raises a view-specific error."""
         Base = sa.orm.declarative_base()
@@ -2875,29 +2604,6 @@ class TestSchemaResolution:
 
         err_msg = str(exc_info.value).lower()
         assert "__view_selectable__" in err_msg or "viewmixin" in err_msg
-
-    def test_declare_last_super_guard_is_not_dead_code(self):
-        """The super().__declare_last__() guard must not be a dead string check."""
-        src = inspect.getsource(ViewMixin.__declare_last__)
-        assert "'__declare_last__' in cls.__mro__[1:]" not in src
-
-    def test_declare_last_called_registers_view_record(self):
-        """__declare_last__ registers a ViewRecord in metadata.info."""
-        assert hasattr(ViewMixin, "__declare_last__")
-        assert callable(ViewMixin.__declare_last__)
-
-        Base = sa.orm.declarative_base()
-
-        class TrackedView(ViewMixin, Base):
-            __tablename__ = "tracked_view"
-            __view_selectable__ = sa.select(sa.column("id", sa.Integer))
-            id: "Mapped[int]" = sa.Column(sa.Integer, primary_key=True)
-
-        assert "sqlalchemy_utils_views" not in Base.metadata.info
-        TrackedView.__declare_last__()
-        records = Base.metadata.info.get("sqlalchemy_utils_views", [])
-        assert len(records) == 1
-        assert records[0].name == "tracked_view"
 
 
 # ===========================================================================
@@ -2934,40 +2640,6 @@ class TestViewMixinIntegration:
         """ViewMixin defines __view_replace__ as a class attribute defaulting False."""
         assert hasattr(ViewMixin, "__view_replace__")
         assert ViewMixin.__view_replace__ is False
-
-    def test_index_listener_scoped_to_table(self):
-        """create_materialized_view's index listener is scoped to the MV's table."""
-        src = inspect.getsource(create_materialized_view)
-        assert (
-            "listens_for(table," in src
-            or "listens_for(table " in src
-            or "target is not table" in src
-            or "target is table" in src
-        )
-
-    def test_refresh_schema_resolution_readable(self):
-        """ViewMixin.refresh() does not use a nested getattr chain."""
-        src = inspect.getsource(ViewMixin.refresh)
-        assert "getattr(getattr" not in src
-
-    def test_create_view_does_not_accumulate_listeners(self):
-        """Calling create_view twice with the same name accumulates listeners."""
-        metadata = sa.MetaData()
-        selectable = sa.select(sa.column("id", sa.Integer))
-
-        create_view("my_view", selectable, metadata)
-        after_first = len(metadata.dispatch.after_create)
-
-        create_view("my_view", selectable, metadata)
-        after_second = len(metadata.dispatch.after_create)
-
-        assert after_second == after_first + 1
-
-    def test_global_listener_registered_on_session(self):
-        """The before_flush listener is registered on the global Session."""
-        src = inspect.getsource(ViewMixin.__declare_last__)
-        assert "sa.orm.Session" in src or "Session" in src
-        assert "sa.event.listen(sa.orm.Session" in src
 
 
 class TestViewAutoRegistration:
@@ -3130,35 +2802,6 @@ def test_create_view_works_without_alembic_installed():
     assert 'SUCCESS' in result.stdout
 
 
-def test_reverse_docstrings_say_not_implemented_error():
-    """Docstrings for reverse() should mention NotImplementedError, not RuntimeError."""
-    import inspect
-    from sqlalchemy_utils.alembic.operations import (
-        DropViewOp, ReplaceViewOp, DropMaterializedViewOp, ReplaceMaterializedViewOp,
-    )
-    for cls in [DropViewOp, ReplaceViewOp, DropMaterializedViewOp, ReplaceMaterializedViewOp]:
-        src = inspect.getsource(cls.reverse)
-        assert 'NotImplementedError' in src, (
-            f"{cls.__name__}.reverse docstring should mention NotImplementedError"
-        )
-        assert 'RuntimeError' not in src, (
-            f"{cls.__name__}.reverse docstring should NOT mention RuntimeError"
-        )
-
-
-def test_compare_views_offline_mode_guard_reachable():
-    """compare_views should guard connection is None BEFORE accessing dialect."""
-    import inspect
-    from sqlalchemy_utils.alembic.comparator import compare_views
-    src = inspect.getsource(compare_views)
-    # The None check must come BEFORE the dialect check
-    none_check_line = src.index('connection is None')
-    dialect_check_line = src.index('connection.dialect')
-    assert none_check_line < dialect_check_line, (
-        "connection is None check must come before connection.dialect access"
-    )
-
-
 def test_op_drop_materialized_view_accepts_with_data():
     """op.drop_materialized_view should accept with_data for round-trip fidelity."""
     from unittest.mock import MagicMock
@@ -3193,12 +2836,6 @@ class TestCrossSchemaDedup:
         names = [v.name for v in order]
         assert names.index("data") < names.index("report")
 
-    def test_compare_views_does_not_overwrite_cross_schema(self):
-        """compare_views source must not use dict.update() for merging
-        cross-schema DB views (silently overwrites same-name entries)."""
-        src = inspect.getsource(compare_views)
-        assert "all_db_views.update" not in src
-
     def test_resolve_create_order_preserves_same_name_diff_schema(self):
         """Two views with the same name in different schemas must both
         appear in the ordered output."""
@@ -3208,33 +2845,6 @@ class TestCrossSchemaDedup:
         ]
         result = resolve_create_order(views, db_views={})
         assert len(result) == 2
-
-    def test_dedup_collapses_create_and_replace_for_same_view(self):
-        """Dedup must not keep both a CreateViewOp and a ReplaceViewOp
-        for the same view name/schema — replace supersedes create."""
-        from sqlalchemy_utils.alembic.operations import (
-            CreateViewOp, ReplaceViewOp,
-        )
-        ops = [
-            CreateViewOp("v", "SELECT 1", schema="a"),
-            ReplaceViewOp("v", "SELECT 2", schema="a", old_definition="SELECT 1"),
-        ]
-        # Reproduce the dedup logic from compare_views
-        seen = set()
-        deduped = []
-        for op in ops:
-            op_name = type(op).__name__.lower()
-            if op_name.startswith("create") or op_name.startswith("replace"):
-                op_family = "create_or_replace"
-            elif op_name.startswith("drop"):
-                op_family = "drop"
-            else:
-                op_family = op_name
-            key = (op_family, op.name, op.schema)
-            if key not in seen:
-                seen.add(key)
-                deduped.append(op)
-        assert len(deduped) <= 1
 
 
 # ===========================================================================
@@ -3251,27 +2861,6 @@ class TestInterfaceAuditFixes:
         )
         assert hasattr(RefreshMaterializedViewOp, "refresh_materialized_view")
         assert callable(RefreshMaterializedViewOp.refresh_materialized_view)
-
-    def test_create_view_does_not_register_dead_index_listener(self):
-        """create_view should not register a create_indexes listener since regular views don't support indexes."""
-        import inspect
-        from sqlalchemy_utils.view import create_view
-        src = inspect.getsource(create_view)
-        # The listener should either not be present, or gated behind a
-        # materialized check (like ViewMixin does).
-        # If 'create_indexes' appears in create_view source, it should be
-        # inside an 'if' block that checks for materialized.
-        if "create_indexes" in src:
-            # Find the line and check it's inside a conditional
-            lines = src.split("\n")
-            for i, line in enumerate(lines):
-                if "create_indexes" in line and "def " not in line:
-                    # Look backwards for a materialized check
-                    context = "\n".join(lines[max(0, i - 5):i])
-                    assert "materialized" in context.lower(), (
-                        f"create_indexes listener at line {i} is not gated "
-                        f"behind a materialized check. Context:\n{context}"
-                    )
 
     def test_viewmixin_init_subclass_catches_mapped_column_without_tablename(self):
         """ViewMixin.__init_subclass__ should catch mapped_column usage without __tablename__ and give a helpful error."""

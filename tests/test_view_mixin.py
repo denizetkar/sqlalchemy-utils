@@ -221,7 +221,7 @@ def test_viewmixin_autogenerate_integration():
     verifies the critical prerequisite: that the ViewRecord is correctly
     populated with all fields needed by the comparator.
     """
-    from sqlalchemy_utils.alembic.view_record import ViewRecord
+    from sqlalchemy_utils.view_record import ViewRecord
 
     Base = declarative_base()
 

@@ -12,12 +12,6 @@ called **before** ``context.configure()``.
     from sqlalchemy_utils.alembic.comparator import register_view_comparator
     register_view_comparator()
 
-.. note::
-
-    ``register_view_comparator()`` is the canonical entry point.
-    ``include_view_comparator`` is kept as a deprecated alias and emits a
-    ``DeprecationWarning`` when called.
-
 Operations reference
 ---------------------
 
@@ -99,9 +93,6 @@ Full example
 
     import sqlalchemy as sa
     from sqlalchemy_utils import create_view, create_materialized_view
-    from sqlalchemy_utils.alembic.comparator import register_view_comparator
-
-    register_view_comparator()
 
     metadata = sa.MetaData()
     create_view("my_view", sa.select(sa.column("id", sa.Integer)), metadata)
@@ -112,38 +103,20 @@ Full example
     # In env.py: target_metadata = metadata
 
 
-Dependencies
-------------
-
-* Requires PostgreSQL for ``pg_views``/``pg_matviews`` catalog access
-* Requires ``alembic`` to be installed, or ``sqlalchemy_utils[alembic]`` extra
-
 Downgrade generation
 --------------------
 
-Each operation class implements ``reverse()`` which Alembic invokes to
-generate downgrade migrations automatically:
-
-- ``CreateViewOp.reverse()`` → ``DropViewOp`` (with ``cascade=True``)
-- ``DropViewOp.reverse()`` → ``CreateViewOp`` (requires ``definition=``)
-- ``ReplaceViewOp.reverse()`` → ``ReplaceViewOp`` (requires ``old_definition=``)
-- ``CreateMaterializedViewOp.reverse()`` → ``DropMaterializedViewOp``
-- ``DropMaterializedViewOp.reverse()`` → ``CreateMaterializedViewOp`` (requires ``definition=``)
-- ``ReplaceMaterializedViewOp.reverse()`` → ``ReplaceMaterializedViewOp`` (requires ``old_definition=``)
-
-If the required ``definition`` or ``old_definition`` is not stored,
-``reverse()`` raises ``NotImplementedError``.  The autogenerate comparator
-always stores these, but manual ``op.drop_view(...)`` calls without
-``definition=`` cannot be reversed.
+Each operation class implements ``reverse()`` for automatic downgrade
+generation.  Calls without a stored ``definition`` or ``old_definition``
+raise ``NotImplementedError``.  See the API reference below for details.
 
 API reference
 -------------
 
 .. autofunction:: sqlalchemy_utils.alembic.comparator.register_view_comparator
-.. autofunction:: sqlalchemy_utils.alembic.comparator.include_view_comparator
 .. autofunction:: sqlalchemy_utils.alembic.comparator.compare_views
 
-.. autoclass:: sqlalchemy_utils.alembic.view_record.ViewRecord
+.. autoclass:: sqlalchemy_utils.view_record.ViewRecord
    :members:
 
 .. autofunction:: sqlalchemy_utils.alembic.depend.resolve_create_order

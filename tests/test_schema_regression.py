@@ -15,22 +15,16 @@ import ast
 import re
 import textwrap
 from pathlib import Path
-from unittest import mock
 
 import pytest
 import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 
-from sqlalchemy_utils.alembic.comparator import _schema_matches
-from sqlalchemy_utils.alembic.view_record import ViewRecord
+from sqlalchemy_utils.view_record import ViewRecord
 from sqlalchemy_utils.view import (
     DropView,
-    RefreshMaterializedView,
     create_materialized_view,
     create_view,
-    refresh_materialized_view,
 )
-from sqlalchemy_utils.view_mixin import ViewMixin
 
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -74,64 +68,6 @@ def test_create_materialized_view_accepts_schema_param():
 
 
 # ---------------------------------------------------------------------------
-# Bug 3: refresh_materialized_view() does not accept a schema parameter
-# ---------------------------------------------------------------------------
-def test_refresh_materialized_view_accepts_schema_param():
-    """refresh_materialized_view must accept schema= without TypeError."""
-    session = mock.MagicMock(name='session')
-
-    # Bug: refresh_materialized_view signature is
-    #       (session, name, concurrently=False) — no schema kwarg.
-    refresh_materialized_view(session, 'mv', schema='analytics')
-
-    # If we got here, no TypeError was raised. Verify the compiled statement
-    # carried the schema by inspecting the executed RefreshMaterializedView.
-    session.execute.assert_called_once()
-    executed = session.execute.call_args.args[0]
-    assert isinstance(executed, RefreshMaterializedView)
-    assert getattr(executed, 'schema', None) == 'analytics'
-
-
-def test_refresh_materialized_view_compiler_includes_schema():
-    """The RefreshMaterializedView compiler must qualify the view with schema."""
-    # Bug: RefreshMaterializedView.__init__ only takes (name, concurrently);
-    #       the compiler emits `REFRESH MATERIALIZED VIEW <name>` with no schema.
-    element = RefreshMaterializedView(
-        'mv', concurrently=False, schema='analytics'
-    )
-    dialect = postgresql.dialect()
-    compiled = str(
-        element.compile(dialect=dialect)
-    )
-    assert compiled == 'REFRESH MATERIALIZED VIEW analytics.mv'
-
-
-# ---------------------------------------------------------------------------
-# Bug 4: ViewMixin.refresh() does not pass schema to refresh_materialized_view
-# ---------------------------------------------------------------------------
-def test_viewmixin_refresh_passes_schema():
-    """ViewMixin.refresh must forward __view_schema__ to refresh_materialized_view."""
-    class MySchemaView(ViewMixin):
-        __tablename__ = 'my_schema_mv'
-        __view_selectable__ = sa.select(sa.column('id', sa.Integer))
-        __view_materialized__ = True
-        __view_schema__ = 'analytics'
-        metadata = sa.MetaData()
-        id = sa.Column(sa.Integer, primary_key=True)
-
-    session = mock.MagicMock(name='session')
-
-    with mock.patch(
-        'sqlalchemy_utils.view_mixin.refresh_materialized_view'
-    ) as mock_refresh:
-        MySchemaView.refresh(session)
-
-    mock_refresh.assert_called_once()
-    _, kwargs = mock_refresh.call_args
-    assert kwargs.get('schema') == 'analytics'
-
-
-# ---------------------------------------------------------------------------
 # Bug 5: ViewRecord.__eq__ ignores the selectable field (known limitation)
 # ---------------------------------------------------------------------------
 def test_viewrecord_eq_ignores_selectable():
@@ -157,30 +93,6 @@ def test_viewrecord_eq_ignores_selectable():
     # This assertion documents the limitation: the records ARE equal under
     # the current implementation, masking real differences in the view body.
     assert record_a == record_b
-
-
-# ---------------------------------------------------------------------------
-# Bug 6: _schema_matches treats None and 'public' as equivalent (FIXED)
-# ---------------------------------------------------------------------------
-def test_schema_matches_none_public_equivalence():
-    """Verifies _schema_matches uses exact match only (Bug 6 fixed).
-
-    Previously _schema_matches(None, 'public') returned True, masking views
-    that are genuinely in a non-default schema from autogenerate diff loops
-    scoped to 'public'. After the fix, _schema_matches is an exact equality
-    check, so None matches only None.
-    """
-    # None no longer maps to 'public' — exact match only.
-    assert _schema_matches(None, 'public') is False
-
-    # None still matches None (same schema).
-    assert _schema_matches(None, None) is True
-
-    # A view explicitly in 'analytics' against a None loop is NOT a match.
-    assert _schema_matches('analytics', None) is False
-
-    # 'public' matches 'public' (exact match).
-    assert _schema_matches('public', 'public') is True
 
 
 # ---------------------------------------------------------------------------

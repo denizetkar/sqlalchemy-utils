@@ -41,6 +41,11 @@ def _quote_qualified_name(dialect, name: str, schema: str | None) -> str:
     return _quote_identifier(dialect, name)
 
 
+def _validate_definition(definition: str) -> None:
+    if not isinstance(definition, str) or not definition:
+        raise TypeError("definition must be a non-empty string")
+
+
 # ===================================================================
 # Regular view operations
 # ===================================================================
@@ -58,8 +63,7 @@ class CreateViewOp(MigrateOperation):
         schema: str | None = None,
         replace: bool = False,
     ) -> None:
-        if not isinstance(definition, str) or not definition:
-            raise TypeError("definition must be a non-empty string")
+        _validate_definition(definition)
         self.name = name
         self.definition = definition
         self.schema = schema
@@ -173,8 +177,7 @@ class ReplaceViewOp(MigrateOperation):
         schema: str | None = None,
         old_definition: str | None = None,
     ) -> None:
-        if not isinstance(definition, str) or not definition:
-            raise TypeError("definition must be a non-empty string")
+        _validate_definition(definition)
         self.name = name
         self.definition = definition
         self.schema = schema
@@ -242,8 +245,7 @@ class CreateMaterializedViewOp(MigrateOperation):
         schema: str | None = None,
         with_data: bool = True,
     ) -> None:
-        if not isinstance(definition, str) or not definition:
-            raise TypeError("definition must be a non-empty string")
+        _validate_definition(definition)
         self.name = name
         self.definition = definition
         self.schema = schema
@@ -363,8 +365,7 @@ class ReplaceMaterializedViewOp(MigrateOperation):
         with_data: bool = True,
         old_definition: str | None = None,
     ) -> None:
-        if not isinstance(definition, str) or not definition:
-            raise TypeError("definition must be a non-empty string")
+        _validate_definition(definition)
         self.name = name
         self.definition = definition
         self.schema = schema

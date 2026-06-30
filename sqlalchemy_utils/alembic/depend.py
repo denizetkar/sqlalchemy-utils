@@ -1,7 +1,7 @@
 """Topological sort for view-on-view dependency ordering.
 
 Provides ``resolve_create_order`` and ``resolve_drop_order`` which sort
-:class:`~sqlalchemy_utils.alembic.view_record.ViewRecord` instances so that
+:class:`~sqlalchemy_utils.view_record.ViewRecord` instances so that
 views are created / dropped in a safe order even when they reference each
 other.
 
@@ -43,10 +43,13 @@ def _definition_str(view_record: ViewRecord) -> str:
     """Return the SQL definition string for *view_record*.
 
     If ``selectable`` is already a string it is returned as-is; otherwise
-    ``str()`` is applied (covers SQLAlchemy selectable objects).
+    it is compiled with ``literal_binds`` (matching
+    :meth:`ViewRecord._selectable_key`).
     """
     sel = view_record.selectable
-    return sel if isinstance(sel, str) else str(sel)
+    if isinstance(sel, str):
+        return sel
+    return str(sel.compile(compile_kwargs={"literal_binds": True}))
 
 
 def _build_dependency_graph(

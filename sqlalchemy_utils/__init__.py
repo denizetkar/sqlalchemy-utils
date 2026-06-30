@@ -102,7 +102,7 @@ from .view import (  # noqa
 )
 from .view_mixin import ViewMixin  # noqa
 try:
-    from .alembic import register_view_comparator, include_view_comparator  # noqa
+    from .alembic import register_view_comparator  # noqa
 except ImportError:
     pass
 

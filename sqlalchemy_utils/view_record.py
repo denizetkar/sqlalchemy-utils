@@ -3,11 +3,6 @@ from __future__ import annotations
 from typing import Any
 from dataclasses import dataclass
 
-try:
-    from dataclasses import FrozenInstanceError
-except ImportError:
-    FrozenInstanceError = TypeError
-
 
 @dataclass(frozen=True)
 class ViewRecord:
