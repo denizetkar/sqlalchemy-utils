@@ -26,6 +26,7 @@ from sqlalchemy_utils.view_record import ViewRecord
 from sqlalchemy_utils.alembic.pg_catalog import (
     get_database_views,
     get_database_materialized_views,
+    get_dependent_views,
 )
 from sqlalchemy_utils.alembic.operations import (
     CreateViewOp,
@@ -218,6 +219,14 @@ def compare_views(
                         definition=db_views[name],
                     )
                 )
+                dependents = get_dependent_views(connection, name, schema=schema)
+                if dependents:
+                    log.warning(
+                        "Dropping view %r which has %d dependent view(s): %s. "
+                        "CASCADE will drop them automatically. "
+                        "Remove the dependent views from your model first if this is unintended.",
+                        name, len(dependents), ", ".join(sorted(dependents.keys())),
+                    )
 
         # Materialized views
         for name, definition in model_mv_defs.items():
@@ -247,6 +256,14 @@ def compare_views(
                         definition=db_mvs[name],
                     )
                 )
+                dependents = get_dependent_views(connection, name, schema=schema)
+                if dependents:
+                    log.warning(
+                        "Dropping materialized view %r which has %d dependent view(s): %s. "
+                        "CASCADE will drop them automatically. "
+                        "Remove the dependent views from your model first if this is unintended.",
+                        name, len(dependents), ", ".join(sorted(dependents.keys())),
+                    )
 
         # Order by dependency
         if create_ops:

@@ -67,3 +67,45 @@ def get_database_materialized_views(connection, schema: str | None = None) -> di
         result = connection.execute(sql, {"schema": schema})
     mvs = {row.matviewname: row.definition for row in result}
     return mvs
+
+
+def get_dependent_views(connection, view_name: str, schema: str | None = None) -> dict[str, str]:
+    """Query pg_depend for views that depend on the given view.
+
+    Args:
+        connection: SQLAlchemy Connection object.
+        view_name: Name of the view to check dependents for.
+        schema: Optional schema name. If None, searches all non-system schemas.
+
+    Returns:
+        Dictionary mapping dependent view name to its definition.
+        Empty dict if no dependents.
+    """
+    if not schema:
+        sql = sa.text(
+            "SELECT dep.refobjname AS dependent_name, "
+            "v.definition AS dependent_definition "
+            "FROM pg_depend dep "
+            "JOIN pg_rewrite r ON dep.objid = r.oid "
+            "JOIN pg_class c ON r.ev_class = c.oid "
+            "JOIN pg_views v ON c.relname = v.viewname "
+            "WHERE dep.refobjname = :view_name "
+            "AND dep.refobjid != dep.objid "
+            "AND c.relname != :view_name"
+        )
+        result = connection.execute(sql, {"view_name": view_name})
+    else:
+        sql = sa.text(
+            "SELECT dep.refobjname AS dependent_name, "
+            "v.definition AS dependent_definition "
+            "FROM pg_depend dep "
+            "JOIN pg_rewrite r ON dep.objid = r.oid "
+            "JOIN pg_class c ON r.ev_class = c.oid "
+            "JOIN pg_views v ON c.relname = v.viewname "
+            "WHERE dep.refobjname = :view_name "
+            "AND dep.refobjid != dep.objid "
+            "AND c.relname != :view_name "
+            "AND v.schemaname = :schema"
+        )
+        result = connection.execute(sql, {"view_name": view_name, "schema": schema})
+    return {row.dependent_name: row.dependent_definition for row in result}

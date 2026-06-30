@@ -3282,3 +3282,104 @@ class TestInterfaceAuditFixes:
             class BadView(ViewMixin, Base):
                 id: Mapped[int] = mapped_column(primary_key=True)
                 __view_selectable__ = sa.select(sa.column("id", sa.Integer))
+
+
+# ===========================================================================
+# Cascade-on-drop warning
+# ===========================================================================
+
+class TestCascadeOnDropWarning:
+    """When autogenerate drops a view that has dependents, warn the user."""
+
+    def test_warns_when_dropping_view_with_dependents(self):
+        """compare_views should log a warning when dropping a view that
+        other views depend on."""
+        from unittest.mock import MagicMock, patch
+        import sqlalchemy_utils.alembic.comparator as comparator_module
+
+        # Model has no views; DB has one view that another view depends on
+        metadata = MagicMock()
+        metadata.info = {"sqlalchemy_utils_views": []}
+
+        autogen_context = MagicMock()
+        autogen_context.connection = MagicMock()
+        autogen_context.connection.dialect.name = 'postgresql'
+        autogen_context.metadata = metadata
+
+        upgrade_ops = MagicMock()
+        upgrade_ops.ops = []
+
+        # DB has view "base_view" which is depended on by "dependent_view"
+        with patch.object(comparator_module, 'get_database_views', return_value={"base_view": "SELECT 1 AS col"}), \
+             patch.object(comparator_module, 'get_database_materialized_views', return_value={}), \
+             patch.object(comparator_module, '_canonicalize_view', return_value=None), \
+             patch.object(comparator_module, 'get_dependent_views', return_value={"dependent_view": "SELECT * FROM base_view"}), \
+             patch.object(comparator_module, 'log') as mock_log:
+            comparator_module.compare_views(autogen_context, upgrade_ops, [None])
+
+        # Warning should have been logged
+        warning_calls = [c for c in mock_log.warning.call_args_list if 'base_view' in str(c) and 'dependent' in str(c).lower()]
+        assert len(warning_calls) > 0, (
+            f"Expected warning about dependents when dropping base_view, "
+            f"got warnings: {mock_log.warning.call_args_list}"
+        )
+
+    def test_does_not_warn_when_dropping_view_without_dependents(self):
+        """compare_views should NOT warn when dropping a view with no dependents."""
+        from unittest.mock import MagicMock, patch
+        import sqlalchemy_utils.alembic.comparator as comparator_module
+
+        metadata = MagicMock()
+        metadata.info = {"sqlalchemy_utils_views": []}
+
+        autogen_context = MagicMock()
+        autogen_context.connection = MagicMock()
+        autogen_context.connection.dialect.name = 'postgresql'
+        autogen_context.metadata = metadata
+
+        upgrade_ops = MagicMock()
+        upgrade_ops.ops = []
+
+        with patch.object(comparator_module, 'get_database_views', return_value={"lonely_view": "SELECT 1 AS col"}), \
+             patch.object(comparator_module, 'get_database_materialized_views', return_value={}), \
+             patch.object(comparator_module, '_canonicalize_view', return_value=None), \
+             patch.object(comparator_module, 'get_dependent_views', return_value={}), \
+             patch.object(comparator_module, 'log') as mock_log:
+            comparator_module.compare_views(autogen_context, upgrade_ops, [None])
+
+        # No warning about dependents should be logged
+        warning_calls = [c for c in mock_log.warning.call_args_list if 'dependent' in str(c).lower()]
+        assert len(warning_calls) == 0, (
+            f"Should not warn about dependents for lonely_view, got: {warning_calls}"
+        )
+
+    def test_drop_op_still_generated_even_with_dependents(self):
+        """The DropViewOp should still be generated even if the view has dependents
+        (warn, don't block)."""
+        from unittest.mock import MagicMock, patch
+        import sqlalchemy_utils.alembic.comparator as comparator_module
+        from sqlalchemy_utils.alembic.operations import DropViewOp
+
+        metadata = MagicMock()
+        metadata.info = {"sqlalchemy_utils_views": []}
+
+        autogen_context = MagicMock()
+        autogen_context.connection = MagicMock()
+        autogen_context.connection.dialect.name = 'postgresql'
+        autogen_context.metadata = metadata
+
+        upgrade_ops = MagicMock()
+        upgrade_ops.ops = []
+
+        with patch.object(comparator_module, 'get_database_views', return_value={"base_view": "SELECT 1 AS col"}), \
+             patch.object(comparator_module, 'get_database_materialized_views', return_value={}), \
+             patch.object(comparator_module, '_canonicalize_view', return_value=None), \
+             patch.object(comparator_module, 'get_dependent_views', return_value={"dependent_view": "SELECT * FROM base_view"}), \
+             patch.object(comparator_module, 'log'):
+            comparator_module.compare_views(autogen_context, upgrade_ops, [None])
+
+        # DropViewOp should still be in the ops list
+        drop_ops = [op for op in upgrade_ops.ops if isinstance(op, DropViewOp)]
+        assert any(op.name == "base_view" for op in drop_ops), (
+            f"DropViewOp for base_view should still be generated, got ops: {upgrade_ops.ops}"
+        )
