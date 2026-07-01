@@ -33,6 +33,11 @@ ViewReadonlyError
 DDL constructs
 --------------
 
+These low-level DDL constructs are used internally by
+:func:`sqlalchemy_utils.view.create_view` /
+:func:`sqlalchemy_utils.view.create_materialized_view`; you typically do not
+need to instantiate them directly.
+
 .. autoclass:: sqlalchemy_utils.view.CreateView
    :members:
 

@@ -37,8 +37,9 @@ class ViewMixin:
     * ``__view_schema__`` — Schema name; takes precedence over
       ``__table_args__['schema']`` (default ``None``).
     * ``__view_cascade__`` — ``True`` to emit ``DROP ... CASCADE`` (default ``True``).
-      See also ``cascade_on_drop`` in :func:`sqlalchemy_utils.view.create_view`
-      (the runtime equivalent used by ``create_materialized_view``).
+      This is the mixin equivalent of the ``cascade_on_drop`` parameter accepted by
+      :func:`sqlalchemy_utils.view.create_view` and
+      :func:`sqlalchemy_utils.view.create_materialized_view`.
     * ``__view_replace__`` — ``True`` to emit ``CREATE OR REPLACE`` (default ``False``).
 
     **Methods:**
@@ -52,6 +53,9 @@ class ViewMixin:
     listeners on ``cls.metadata`` (the Base's metadata).
 
     Example::
+
+        import sqlalchemy as sa
+        from sqlalchemy.orm import mapped_column, Mapped
 
         class UserCountView(ViewMixin, Base):
             __tablename__ = 'user_count_view'
@@ -92,12 +96,6 @@ class ViewMixin:
 
     @classmethod
     def __declare_last__(cls):
-        for base in cls.__mro__[1:]:
-            if base is ViewMixin:
-                continue
-            if '__declare_last__' in base.__dict__:
-                base.__declare_last__(cls)
-                break
         selectable = cls.__view_selectable__
 
         if selectable is None:
@@ -239,7 +237,7 @@ class ViewMixin:
             table_args = getattr(cls, '__table_args__', None)
             if isinstance(table_args, dict):
                 schema = table_args.get('schema')
-            elif isinstance(table_args, tuple) and table_args:
+            elif isinstance(table_args, (list, tuple)) and table_args:
                 for arg in table_args:
                     if isinstance(arg, dict):
                         schema = arg.get('schema')

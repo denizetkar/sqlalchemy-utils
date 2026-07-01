@@ -14,7 +14,10 @@ Unreleased
   NULL values continue to return ``None``.
 - Add Alembic integration for views: migration operations (``create_view``,
   ``drop_view``, ``replace_view``, and materialized equivalents), autogenerate
-  comparator (``register_view_comparator()``), and renderer
+  comparator (``register_view_comparator()``), and renderer. Requires
+  ``pip install sqlalchemy-utils[alembic]``. Activate by calling
+  ``register_view_comparator()`` in your Alembic ``env.py`` before
+  ``context.configure()``; see the View Migrations guide.
 - Add ``ViewMixin`` declarative mixin (with ``refresh()`` for materialized views)
   for typed ORM view classes
 - Add ``ViewReadonlyError`` exception (subclasses ``sa.exc.InvalidRequestError``)

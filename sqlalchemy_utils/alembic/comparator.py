@@ -2,9 +2,15 @@
 Alembic autogenerate comparator for database views.
 
 Compares model-defined views (stored in ``metadata.info['sqlalchemy_utils_views']``)
-against the current database state using **savepoint canonicalization**: each model
-view is temporarily created inside a savepoint, its definition read back from
-``pg_views``/``pg_matviews``, and the savepoint is rolled back so nothing persists.
+against the current database state using **single-savepoint batch canonicalization**:
+all model views for a schema are created inside *one* outer savepoint (so
+view-on-view dependencies resolve because every view exists simultaneously),
+their definitions are read back from ``pg_views``/``pg_matviews`` in one batch,
+and the outer savepoint is rolled back once so nothing persists.
+
+Views whose ``CREATE`` fails are **skipped** (not dropped) — they are tracked
+in a ``skipped`` set so the drop-detection loop does not emit a false
+``DropViewOp`` for an existing view that merely failed to canonicalize.
 
 Differences are emitted as :class:`CreateViewOp`, :class:`DropViewOp`,
 :class:`ReplaceViewOp` (and their materialized-view equivalents).
@@ -41,74 +47,128 @@ from sqlalchemy_utils.alembic.depend import resolve_create_order, resolve_drop_o
 log = logging.getLogger(__name__)
 
 
-def _canonicalize_view(
-    connection: sa.engine.Connection,
-    view_record: ViewRecord,
-) -> str | None:
-    """Create a view inside a savepoint, read its definition from pg_catalog,
-    then roll back so the view never persists.
+# Outer savepoint name shared across all views in one canonicalization batch.
+# A single outer savepoint (RELEASEd never — always rolled back at the end)
+# fixes BUG-7 (per-view savepoint accumulation) and BUG-3 (A rolled back
+# before B is canonicalized → B's CREATE fails).
+_OUTER_SAVEPOINT = "su_view_cmp"
 
-    Returns the canonical SQL definition string from PostgreSQL, or ``None``
-    if the view cannot be created (e.g. depends on missing tables).
-    """
-    savepoint_name = "su_view_cmp"
-    try:
-        connection.execute(sa.text(f"SAVEPOINT {savepoint_name}"))
 
-        sel = view_record.selectable
-        if not isinstance(sel, str):
-            definition = str(
-                sel.compile(
-                    dialect=connection.dialect,
-                    compile_kwargs={"literal_binds": True},
-                )
-            )
-        else:
-            definition = sel
-
-        ip = connection.dialect.identifier_preparer
-        prefix = f"{ip.quote(view_record.schema)}." if view_record.schema else ""
-        name = ip.quote(view_record.name)
-        if view_record.materialized:
-            # For MVs, if one already exists we must drop it first
-            # (PG has no CREATE OR REPLACE MATERIALIZED VIEW)
-            connection.execute(sa.text(
-                f"DROP MATERIALIZED VIEW IF EXISTS {prefix}{name} CASCADE"
-            ))
-            sql = (
-                f"CREATE MATERIALIZED VIEW {prefix}{name} "
-                f"AS {definition} WITH NO DATA"
-            )
-        else:
-            # Use OR REPLACE to avoid DuplicateTable if view already exists in DB
-            sql = (
-                f"CREATE OR REPLACE VIEW {prefix}{name} "
-                f"AS {definition}"
-            )
-
-        connection.execute(sa.text(sql))
-
-        if view_record.materialized:
-            db_mvs = get_database_materialized_views(connection, view_record.schema)
-            canonical = db_mvs.get(view_record.name)
-        else:
-            db_views = get_database_views(connection, view_record.schema)
-            canonical = db_views.get(view_record.name)
-
-        connection.execute(sa.text(f"ROLLBACK TO SAVEPOINT {savepoint_name}"))
-        return canonical
-
-    except Exception as exc:
-        log.warning(
-            "Failed to canonicalize view '%s': %s",
-            view_record.name,
-            exc,
+def _compile_selectable(connection: sa.engine.Connection, view_record: ViewRecord) -> str:
+    sel = view_record.selectable
+    if isinstance(sel, str):
+        return sel
+    return str(
+        sel.compile(
+            dialect=connection.dialect,
+            compile_kwargs={"literal_binds": True},
         )
-        try:
-            connection.execute(sa.text(f"ROLLBACK TO SAVEPOINT {savepoint_name}"))
-        except Exception:
-            pass
-        return None
+    )
+
+
+def _build_create_sql(connection: sa.engine.Connection, view_record: ViewRecord) -> str:
+    """Build the CREATE (OR REPLACE) VIEW / MATERIALIZED VIEW statement."""
+    definition = _compile_selectable(connection, view_record)
+    ip = connection.dialect.identifier_preparer
+    prefix = f"{ip.quote(view_record.schema)}." if view_record.schema else ""
+    name = ip.quote(view_record.name)
+    if view_record.materialized:
+        # PG has no CREATE OR REPLACE MATERIALIZED VIEW; drop first.
+        # The drop happens inside the outer savepoint so it never persists.
+        return (
+            f"DROP MATERIALIZED VIEW IF EXISTS {prefix}{name} CASCADE; "
+            f"CREATE MATERIALIZED VIEW {prefix}{name} "
+            f"AS {definition} WITH NO DATA"
+        )
+    return f"CREATE OR REPLACE VIEW {prefix}{name} AS {definition}"
+
+
+def _canonicalize_all_views(
+    connection: sa.engine.Connection,
+    view_records: list[ViewRecord],
+    db_views_for_deps: dict[str, str] | None,
+) -> tuple[dict[str, str], dict[str, str], set[str]]:
+    """Canonicalize all *view_records* for one schema in a single savepoint.
+
+    Creates ONE outer savepoint, creates each view (in dependency order) inside
+    nested savepoints that are RELEASEd on success, reads all definitions back
+    from pg_catalog in one batch, then rolls back the outer savepoint so
+    nothing persists.
+
+    Views that fail to CREATE are **skipped** — their names are returned in
+    the ``skipped`` set so the caller can exclude them from drop detection
+    (BUG-2: a failed canonicalization must NOT produce a false DropViewOp).
+
+    Returns ``(view_defs, mv_defs, skipped)`` where ``view_defs`` /
+    ``mv_defs`` map view name → canonical definition for regular /
+    materialized views, and ``skipped`` holds names that failed to
+    canonicalize.
+    """
+    view_defs: dict[str, str] = {}
+    mv_defs: dict[str, str] = {}
+    skipped: set[str] = set()
+
+    if not view_records:
+        return view_defs, mv_defs, skipped
+
+    # Order by dependency so a view is created before any view that references
+    # it (BUG-3 fix: all views coexist inside the single outer savepoint).
+    try:
+        ordered = resolve_create_order(view_records, db_views_for_deps)
+    except ValueError:
+        log.warning(
+            "Circular view dependency detected; "
+            "canonicalizing views in model-definition order"
+        )
+        ordered = view_records
+
+    schema = view_records[0].schema
+    connection.execute(sa.text(f"SAVEPOINT {_OUTER_SAVEPOINT}"))
+    try:
+        for vr in ordered:
+            # Inner savepoint per view: on success RELEASE (view persists in
+            # the outer savepoint so dependents can see it); on failure
+            # ROLLBACK TO (cleans the aborted sub-transaction without
+            # touching already-created views). Releasing avoids savepoint
+            # accumulation (BUG-7).
+            inner_sp = f"{_OUTER_SAVEPOINT}_v"
+            connection.execute(sa.text(f"SAVEPOINT {inner_sp}"))
+            try:
+                connection.execute(sa.text(_build_create_sql(connection, vr)))
+                connection.execute(sa.text(f"RELEASE SAVEPOINT {inner_sp}"))
+            except (sa.exc.SQLAlchemyError, sa.exc.DBAPIError, OSError) as exc:
+                log.warning(
+                    "Failed to canonicalize view '%s': %s", vr.name, exc
+                )
+                try:
+                    connection.execute(
+                        sa.text(f"ROLLBACK TO SAVEPOINT {inner_sp}")
+                    )
+                except (sa.exc.SQLAlchemyError, sa.exc.DBAPIError, OSError):
+                    pass
+                skipped.add(vr.name)
+
+        # Batch-read canonical definitions from pg_catalog in one query per
+        # kind (regular + materialized) rather than one per view.
+        db_views = get_database_views(connection, schema)
+        db_mvs = get_database_materialized_views(connection, schema)
+    finally:
+        connection.execute(sa.text(f"ROLLBACK TO SAVEPOINT {_OUTER_SAVEPOINT}"))
+
+    for vr in ordered:
+        if vr.name in skipped:
+            continue
+        if vr.materialized:
+            if vr.name in db_mvs:
+                mv_defs[vr.name] = db_mvs[vr.name]
+            else:
+                skipped.add(vr.name)
+        else:
+            if vr.name in db_views:
+                view_defs[vr.name] = db_views[vr.name]
+            else:
+                skipped.add(vr.name)
+    return view_defs, mv_defs, skipped
 
 
 def compare_views(
@@ -122,9 +182,9 @@ def compare_views(
     called automatically during ``alembic revision --autogenerate``.
 
     It reads view definitions from ``metadata.info['sqlalchemy_utils_views']``
-    (populated by the auto-registration mechanism in Task 6), canonicalizes
-    each model view via savepoint simulation, and diffs against the live
-    database.
+    (populated by `create_view()`, `create_materialized_view()`, and
+    `ViewMixin.__declare_last__`), canonicalizes each model view via
+    savepoint simulation, and diffs against the live database.
     """
     connection = autogen_context.connection
     metadata = autogen_context.metadata
@@ -174,20 +234,15 @@ def compare_views(
         db_views = db_views_by_schema[schema]
         db_mvs = db_mvs_by_schema[schema]
 
-        # Canonicalize model views using savepoint simulation
-        model_view_defs: dict[str, str] = {}
-        model_mv_defs: dict[str, str] = {}
-
-        for vr in model_records:
-            if not _schema_matches(vr.schema, schema):
-                continue
-
-            canonical = _canonicalize_view(connection, vr)
-            if canonical is not None:
-                if vr.materialized:
-                    model_mv_defs[vr.name] = canonical
-                else:
-                    model_view_defs[vr.name] = canonical
+        # Batch-canonicalize all model views for this schema inside ONE outer
+        # savepoint (BUG-3/BUG-7). Views that fail to canonicalize are
+        # returned in `skipped` so drop detection can ignore them (BUG-2).
+        schema_records = [
+            vr for vr in model_records if _schema_matches(vr.schema, schema)
+        ]
+        model_view_defs, model_mv_defs, skipped = _canonicalize_all_views(
+            connection, schema_records, all_db
+        )
 
         # Diff model vs DB
         create_ops: list = []
@@ -209,24 +264,34 @@ def compare_views(
                     )
                 )
 
+        # BUG-2: only drop views that are genuinely in the DB but NOT in the
+        # model. Views in `skipped` failed canonicalization and must NOT be
+        # dropped — they are still modeled, just not canonicalizable right now.
         for name in db_views:
-            if name not in model_view_defs:
-                drop_ops.append(
-                    DropViewOp(
-                        name,
-                        schema=schema,
-                        materialized=False,
-                        definition=db_views[name],
-                    )
+            if name in model_view_defs or name in skipped:
+                continue
+            drop_ops.append(
+                DropViewOp(
+                    name,
+                    schema=schema,
+                    materialized=False,
+                    definition=db_views[name],
                 )
+            )
+            try:
                 dependents = get_dependent_views(connection, name, schema=schema)
-                if dependents:
-                    log.warning(
-                        "Dropping view %r which has %d dependent view(s): %s. "
-                        "CASCADE will drop them automatically. "
-                        "Remove the dependent views from your model first if this is unintended.",
-                        name, len(dependents), ", ".join(sorted(dependents.keys())),
-                    )
+            except Exception as exc:
+                log.warning(
+                    "Failed to query dependent views for %r: %s", name, exc
+                )
+                dependents = {}
+            if dependents:
+                log.warning(
+                    "Dropping view %r which has %d dependent view(s): %s. "
+                    "CASCADE will drop them automatically. "
+                    "Remove the dependent views from your model first if this is unintended.",
+                    name, len(dependents), ", ".join(sorted(dependents.keys())),
+                )
 
         # Materialized views
         for name, definition in model_mv_defs.items():
@@ -248,26 +313,33 @@ def compare_views(
                 )
 
         for name in db_mvs:
-            if name not in model_mv_defs:
-                drop_ops.append(
-                    DropMaterializedViewOp(
-                        name,
-                        schema=schema,
-                        definition=db_mvs[name],
-                    )
+            if name in model_mv_defs or name in skipped:
+                continue
+            drop_ops.append(
+                DropMaterializedViewOp(
+                    name,
+                    schema=schema,
+                    definition=db_mvs[name],
                 )
+            )
+            try:
                 dependents = get_dependent_views(connection, name, schema=schema)
-                if dependents:
-                    log.warning(
-                        "Dropping materialized view %r which has %d dependent view(s): %s. "
-                        "CASCADE will drop them automatically. "
-                        "Remove the dependent views from your model first if this is unintended.",
-                        name, len(dependents), ", ".join(sorted(dependents.keys())),
-                    )
+            except Exception as exc:
+                log.warning(
+                    "Failed to query dependent views for %r: %s", name, exc
+                )
+                dependents = {}
+            if dependents:
+                log.warning(
+                    "Dropping materialized view %r which has %d dependent view(s): %s. "
+                    "CASCADE will drop them automatically. "
+                    "Remove the dependent views from your model first if this is unintended.",
+                    name, len(dependents), ", ".join(sorted(dependents.keys())),
+                )
 
         # Order by dependency
         if create_ops:
-            create_by_name = {op.name: op for op in create_ops}
+            create_by_name = {(op.name, op.schema): op for op in create_ops}
             try:
                 ordered_records = resolve_create_order(model_records, all_db)
             except ValueError:
@@ -278,15 +350,16 @@ def compare_views(
                 ordered_records = model_records
 
             for vr in ordered_records:
-                if vr.name in create_by_name:
-                    op = create_by_name.pop(vr.name)
+                key = (vr.name, vr.schema)
+                if key in create_by_name:
+                    op = create_by_name.pop(key)
                     upgrade_ops.ops.append(op)
 
             for op in create_by_name.values():
                 upgrade_ops.ops.append(op)
 
         if drop_ops:
-            drop_by_name = {op.name: op for op in drop_ops}
+            drop_by_name = {(op.name, op.schema): op for op in drop_ops}
             try:
                 ordered_records = resolve_drop_order(model_records, all_db)
             except ValueError:
@@ -297,8 +370,9 @@ def compare_views(
                 ordered_records = model_records
 
             for vr in ordered_records:
-                if vr.name in drop_by_name:
-                    op = drop_by_name.pop(vr.name)
+                key = (vr.name, vr.schema)
+                if key in drop_by_name:
+                    op = drop_by_name.pop(key)
                     upgrade_ops.ops.append(op)
 
             # Drop any DB-only views not in model_records
@@ -332,12 +406,15 @@ def _schema_matches(view_schema: str | None, loop_schema: str | None) -> bool:
 def register_view_comparator() -> None:
     """Register view autogenerate hooks with Alembic.
 
-    Registers the ``"schema"`` comparator (``compare_views``) plus the
-    corresponding renderer and operation classes so that
-    ``alembic revision --autogenerate`` detects database view changes
-    (create / drop / replace for both regular and materialized views).
+    Registers the view comparator (``compare_views``) with Alembic's
+    autogenerate system so that ``alembic revision --autogenerate``
+    detects database view changes (create / drop / replace for both
+    regular and materialized views). The comparator walks the model
+    metadata, compares it against the live database, and emits the
+    appropriate ``CreateViewOp`` / ``DropViewOp`` / ``ReplaceViewOp``
+    (and materialized variants) operations.
 
-    Must be called in ``env.py`` **before** ``context.configure()``::
+    Call this once in your ``env.py`` **before** ``context.configure()``::
 
         from sqlalchemy_utils.alembic.comparator import register_view_comparator
         register_view_comparator()
@@ -350,5 +427,11 @@ def register_view_comparator() -> None:
     comparators.dispatch_for("schema")(compare_views)
     try:
         from . import renderer  # noqa: F401
-    except ImportError:
-        pass
+    except ImportError as exc:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Failed to import renderer module; autogenerate will detect but "
+            "not render view operations: %s",
+            exc,
+        )

@@ -11,6 +11,11 @@ class ViewRecord:
 
     Mirrors the parameters of create_view() and CreateView.__init__
     to enable reconstruction of view definitions from serialized data.
+
+    Equality is name-based: two ViewRecords with the same ``name`` and
+    ``schema`` (and ``materialized`` flag) compare equal, regardless of the
+    underlying selectable SQL.  Use :meth:`definition_matches` to compare the
+    actual SQL definitions.
     """
     name: str
     selectable: Any

@@ -32,7 +32,7 @@ from sqlalchemy_utils import (
     create_view,
 )
 from sqlalchemy_utils.alembic.comparator import (
-    _canonicalize_view,
+    _canonicalize_all_views,
     _schema_matches,
     compare_views,
     register_view_comparator,
@@ -491,11 +491,37 @@ class TestCreateViewOp:
     def test_create_view_accepts_replace_kwarg(self):
         operations = MagicMock()
         operations.invoke.return_value = None
-        CreateViewOp.create_view(operations, "test_view", "SELECT 1", replace=True)
+        with pytest.warns(DeprecationWarning):
+            CreateViewOp.create_view(operations, "test_view", "SELECT 1", replace=True)
         operations.invoke.assert_called_once()
         invoked_op = operations.invoke.call_args[0][0]
         assert isinstance(invoked_op, CreateViewOp)
         assert invoked_op.replace is True
+
+    def test_replace_view_classmethod_invokes_replace_view_op(self):
+        operations = MagicMock()
+        operations.invoke.return_value = None
+        ReplaceViewOp.replace_view(
+            operations, "test_view", "SELECT 2", old_definition="SELECT 1"
+        )
+        operations.invoke.assert_called_once()
+        invoked_op = operations.invoke.call_args[0][0]
+        assert isinstance(invoked_op, ReplaceViewOp)
+        assert invoked_op.definition == "SELECT 2"
+        assert invoked_op.old_definition == "SELECT 1"
+
+    def test_deprecate_replace_on_create(self):
+        """CreateViewOp(replace=True) emits a DeprecationWarning.
+
+        Points users to ``op.replace_view()`` / ``ReplaceViewOp`` because
+        ``CreateViewOp(replace=True).reverse()`` emits a destructive DROP,
+        while ``ReplaceViewOp.reverse()`` restores the prior definition.
+        """
+        with pytest.warns(DeprecationWarning) as record:
+            CreateViewOp("v", "SELECT 1", replace=True)
+        assert len(record) == 1
+        message = str(record[0].message)
+        assert "op.replace_view" in message
 
 
 class TestDropViewOp:
@@ -577,7 +603,16 @@ class TestCreateMaterializedViewOp:
     def test_instantiation(self):
         op = CreateMaterializedViewOp("mv1", "SELECT 1")
         assert op.name == "mv1"
-        assert op.with_data is True
+        assert op.with_data is False
+
+    def test_with_data_default_false(self):
+        """CreateMaterializedViewOp defaults to with_data=False (IFACE-2).
+
+        Manual and autogenerate behavior must be consistent: large MVs
+        should not be populated by default during migrations.
+        """
+        op = CreateMaterializedViewOp("mv", "SELECT 1")
+        assert op.with_data is False
 
     def test_reverse_returns_drop_mv(self):
         op = CreateMaterializedViewOp("mv1", "SELECT 1")
@@ -600,7 +635,7 @@ class TestCreateMaterializedViewOp:
         op = CreateMaterializedViewOp("mv1", "SELECT 1", schema="analytics")
         sqls = _capture_sql(op)
         assert sqls == [
-            "CREATE MATERIALIZED VIEW analytics.mv1 AS SELECT 1 WITH DATA"
+            "CREATE MATERIALIZED VIEW analytics.mv1 AS SELECT 1 WITH NO DATA"
         ]
 
 
@@ -643,7 +678,7 @@ class TestReplaceMaterializedViewOp:
         assert op.name == "mv1"
         assert op.definition == "SELECT 2"
         assert op.old_definition is None
-        assert op.with_data is True
+        assert op.with_data is False
 
     def test_reverse_returns_replace_mv_with_old_def(self):
         op = ReplaceMaterializedViewOp(
@@ -818,10 +853,19 @@ class TestReverseRoundTrip:
     """reverse() round-trips preserve op attributes."""
 
     def test_create_view_reverse_preserves_replace(self):
-        op = CreateViewOp("v", "SELECT 1", replace=True)
-        double_reversed = op.reverse().reverse()
+        with pytest.warns(DeprecationWarning):
+            op = CreateViewOp("v", "SELECT 1", replace=True)
+        with pytest.warns(DeprecationWarning):
+            double_reversed = op.reverse().reverse()
         assert isinstance(double_reversed, CreateViewOp)
         assert double_reversed.replace is True
+
+    def test_replace_view_reverse_preserves_old_definition(self):
+        op = ReplaceViewOp("v", "SELECT 2", old_definition="SELECT 1")
+        double_reversed = op.reverse().reverse()
+        assert isinstance(double_reversed, ReplaceViewOp)
+        assert double_reversed.definition == "SELECT 2"
+        assert double_reversed.old_definition == "SELECT 1"
 
     def test_create_view_reverse_preserves_schema(self):
         op = CreateViewOp("v1", "SELECT 1", schema="analytics")
@@ -874,7 +918,14 @@ class TestOpValidation:
         assert after_second == after_first + 1
 
     def test_create_mv_runtime_vs_op_consistency(self):
-        """Runtime and op paths agree on WITH [NO] DATA default."""
+        """Runtime and op paths agree on WITH [NO] DATA when aligned.
+
+        Note: the migration op defaults to ``WITH NO DATA`` (IFACE-2) so
+        migrations don't block on large MVs; the runtime DDL listener still
+        defaults to ``WITH DATA`` for app-level eager population. When the
+        op is constructed with ``with_data=True`` the two paths emit the
+        same SQL shape.
+        """
         metadata = sa.MetaData()
         create_materialized_view(
             "runtime_mv",
@@ -887,7 +938,9 @@ class TestOpValidation:
         engine = sa.create_engine("sqlite:///:memory:")
         compiled_runtime = str(runtime_ddl.compile(dialect=engine.dialect)).upper()
 
-        op_sqls = _capture_sql(CreateMaterializedViewOp("op_mv", "SELECT 1"))
+        op_sqls = _capture_sql(
+            CreateMaterializedViewOp("op_mv", "SELECT 1", with_data=True)
+        )
         op_sql = op_sqls[0].upper() if op_sqls else ""
 
         runtime_emits_with_no_data = "WITH NO DATA" in compiled_runtime
@@ -932,7 +985,11 @@ class TestRendererCreateView:
         [(False, ""), (True, "replace=True")],
     )
     def test_renders_replace(self, replace, expected_in_output):
-        op = CreateViewOp("v", "SELECT 1", replace=replace)
+        if replace:
+            with pytest.warns(DeprecationWarning):
+                op = CreateViewOp("v", "SELECT 1", replace=replace)
+        else:
+            op = CreateViewOp("v", "SELECT 1", replace=replace)
         rendered = render_create_view(_make_autogen_context(), op)
         if expected_in_output:
             assert expected_in_output in rendered
@@ -1021,14 +1078,18 @@ class TestRendererCreateMaterializedView:
         assert "op.create_materialized_view(" in result
 
     def test_omits_with_data_when_default(self):
-        """Renderer omits with_data by default and when True (the default)."""
+        """Renderer omits with_data by default and when False (the default)."""
         op = CreateMaterializedViewOp("mv_stats", "SELECT 1")
         result = render_create_materialized_view(_make_autogen_context(), op)
         assert "with_data=" not in result
 
+        op_false = CreateMaterializedViewOp("mv_stats", "SELECT 1", with_data=False)
+        result_false = render_create_materialized_view(_make_autogen_context(), op_false)
+        assert "with_data=" not in result_false
+
         op_true = CreateMaterializedViewOp("mv_stats", "SELECT 1", with_data=True)
         result_true = render_create_materialized_view(_make_autogen_context(), op_true)
-        assert "with_data=" not in result_true
+        assert "with_data=True" in result_true
 
     def test_schema_included_when_provided(self):
         op = CreateMaterializedViewOp("mv_stats", "SELECT 1", schema="analytics")
@@ -1079,18 +1140,18 @@ class TestRendererReplaceMaterializedView:
         assert "op.replace_materialized_view(" in result
 
     def test_omits_with_data_when_default(self):
-        """Renderer omits with_data by default and when True (the default)."""
+        """Renderer omits with_data by default and when False (the default)."""
         op = ReplaceMaterializedViewOp("mv_stats", "SELECT 2")
         result = render_replace_materialized_view(_make_autogen_context(), op)
         assert "with_data=" not in result
 
-        op_true = ReplaceMaterializedViewOp("mv_stats", "SELECT 2", with_data=True)
-        result_true = render_replace_materialized_view(_make_autogen_context(), op_true)
-        assert "with_data=" not in result_true
-
         op_false = ReplaceMaterializedViewOp("mv_stats", "SELECT 2", with_data=False)
         result_false = render_replace_materialized_view(_make_autogen_context(), op_false)
-        assert "with_data=False" in result_false
+        assert "with_data=" not in result_false
+
+        op_true = ReplaceMaterializedViewOp("mv_stats", "SELECT 2", with_data=True)
+        result_true = render_replace_materialized_view(_make_autogen_context(), op_true)
+        assert "with_data=True" in result_true
 
     def test_schema_included_when_provided(self):
         op = ReplaceMaterializedViewOp("mv_stats", "SELECT 2", schema="analytics")
@@ -1427,8 +1488,12 @@ class TestComparatorNoChanges:
         upgrade_ops.ops = []
 
         with mock.patch(
-            "sqlalchemy_utils.alembic.comparator._canonicalize_view",
-            return_value="SELECT id FROM (VALUES (1)) AS t(id)",
+            "sqlalchemy_utils.alembic.comparator._canonicalize_all_views",
+            return_value=(
+                {"test_v": "SELECT id FROM (VALUES (1)) AS t(id)"},
+                {},
+                set(),
+            ),
         ), mock.patch(
             "sqlalchemy_utils.alembic.comparator.get_database_views",
             return_value={},
@@ -1498,6 +1563,194 @@ class TestComparatorDDLError:
         assert len(bad_view_ops) == 0, (
             f"Invalid view should be skipped, got ops: {bad_view_ops}"
         )
+
+
+# ===========================================================================
+# Regression: IFACE-8 (programming errors must propagate, not be swallowed)
+# ===========================================================================
+
+class _SelectableBreakingOnDialectCompile:
+    """A selectable-like object that compiles for dependency resolution but
+    raises a real ``TypeError`` when ``compile`` is called with a ``dialect``
+    kwarg (the path used by ``_compile_selectable`` inside the savepoint try).
+
+    This reproduces a genuine programming error (wrong selectable type / a
+    selectable that cannot be compiled against a live dialect) surfacing
+    inside ``_canonicalize_all_views``'s per-view try/except — distinct from
+    a DB-level SQL error the savepoint is designed to tolerate.
+
+    ``resolve_create_order`` calls ``sel.compile(compile_kwargs=...)`` WITHOUT
+    a dialect (stringification only), so dependency resolution succeeds and
+    execution reaches the savepoint loop. ``_compile_selectable`` then calls
+    ``sel.compile(dialect=..., compile_kwargs=...)`` and the ``TypeError``
+    fires inside the try/except under test.
+    """
+
+    def compile(self, **kw):
+        if "dialect" in kw:
+            raise TypeError(
+                "programming error: selectable cannot be compiled against a dialect"
+            )
+        return "SELECT 1 AS id"
+
+
+class TestProgrammingErrorPropagates:
+    """IFACE-8: programming errors (TypeError/AttributeError/NameError) raised
+    during canonicalization must propagate to the caller, NOT be swallowed by
+    the broad ``except Exception`` in ``_canonicalize_all_views``.
+
+    Only SQLAlchemy/DBAPI errors (missing deps, DDL failures) should be
+    caught — programming errors indicate a bug in the user's model code and
+    must surface.
+    """
+
+    @pytest.mark.usefixtures("postgresql_dsn")
+    def test_programming_error_propagates(self, connection):
+        _drop_test_views(connection)
+        _drop_base_table(connection)
+
+        metadata = sa.MetaData()
+        metadata.info["sqlalchemy_utils_views"] = [
+            ViewRecord(
+                name="iface8_broken_view",
+                selectable=_SelectableBreakingOnDialectCompile(),
+                schema=None,
+            ),
+        ]
+
+        with pytest.raises(TypeError):
+            _run_comparator(connection, metadata, schemas=[None])
+
+
+# ===========================================================================
+# Regression: BUG-2, BUG-3, BUG-7 (canonicalization savepoint refactor)
+# ===========================================================================
+
+# Distinct names so tests don't collide with other view fixtures.
+_BUG2_VIEW_NAMES = ["bug2_view_x"]
+_BUG3_VIEW_NAMES = ["bug3_view_a", "bug3_view_b"]
+
+
+def _drop_bug_views(connection):
+    """Drop any leftover views created by the BUG-2 / BUG-3 regression tests."""
+    for view_name in _BUG2_VIEW_NAMES + _BUG3_VIEW_NAMES:
+        try:
+            connection.execute(
+                sa.text(f"DROP MATERIALIZED VIEW IF EXISTS {view_name} CASCADE")
+            )
+        except sa.exc.ProgrammingError:
+            connection.rollback()
+        try:
+            connection.execute(sa.text(f"DROP VIEW IF EXISTS {view_name} CASCADE"))
+        except sa.exc.ProgrammingError:
+            connection.rollback()
+    connection.commit()
+
+
+class TestCanonicalizeViewOnViewDeps:
+    """BUG-3 regression: view-on-view dependencies must survive savepoint.
+
+    When two model views depend on each other (B references A) and BOTH are
+    new (not in the DB), each was previously canonicalized inside its own
+    savepoint. View A was created then rolled back *before* view B was
+    canonicalized, so B's CREATE failed (A doesn't exist) → B got
+    ``canonical=None`` → B was silently dropped from the migration.
+
+    After the refactor, ALL views share a single outer savepoint so they all
+    exist simultaneously during canonicalization. Both must produce
+    ``CreateViewOp``.
+    """
+
+    @pytest.mark.infrastructure
+    @pytest.mark.usefixtures("postgresql_dsn")
+    def test_dependent_view_chain_both_created(self, connection):
+        _drop_bug_views(connection)
+        _drop_base_table(connection)
+        try:
+            metadata = sa.MetaData()
+            metadata.info["sqlalchemy_utils_views"] = [
+                ViewRecord(
+                    name="bug3_view_a",
+                    selectable=sa.select(sa.text("1 AS id")),
+                    schema=None,
+                ),
+                ViewRecord(
+                    name="bug3_view_b",
+                    selectable=sa.select(sa.text("* FROM bug3_view_a")),
+                    schema=None,
+                ),
+            ]
+
+            upgrade_ops = _run_comparator(connection, metadata, schemas=[None])
+
+            create_ops = [
+                op for op in upgrade_ops.ops if isinstance(op, CreateViewOp)
+            ]
+            created_names = {op.name for op in create_ops}
+            assert "bug3_view_a" in created_names, (
+                f"BUG-3 regression: bug3_view_a missing from create ops; "
+                f"got {sorted(created_names)}"
+            )
+            assert "bug3_view_b" in created_names, (
+                f"BUG-3 regression: bug3_view_b missing from create ops "
+                f"(likely rolled back A before canonicalizing B); "
+                f"got {sorted(created_names)}"
+            )
+        finally:
+            _drop_bug_views(connection)
+            _drop_base_table(connection)
+
+
+class TestCanonicalizeSkipDoesNotDrop:
+    """BUG-2 regression: a view whose canonicalization fails must be SKIPPED,
+    not dropped.
+
+    If a model view references a nonexistent table, ``CREATE OR REPLACE VIEW``
+    inside the canonicalization savepoint fails. Previously the view was
+    omitted from ``model_view_defs`` and the drop-detection loop then emitted
+    a ``DropViewOp`` because the view was "in DB but not in model" — destroying
+    the existing view.
+
+    After the refactor, failed-canonicalization views are tracked as "skipped"
+    and excluded from drop detection.
+    """
+
+    @pytest.mark.infrastructure
+    @pytest.mark.usefixtures("postgresql_dsn")
+    def test_failing_canonicalization_does_not_emit_drop(self, connection):
+        _drop_bug_views(connection)
+        _drop_base_table(connection)
+        try:
+            # Pre-create the view in the DB with an old, valid definition.
+            connection.execute(
+                sa.text("CREATE VIEW bug2_view_x AS SELECT 1 AS id")
+            )
+            connection.commit()
+
+            metadata = sa.MetaData()
+            metadata.info["sqlalchemy_utils_views"] = [
+                ViewRecord(
+                    name="bug2_view_x",
+                    selectable=sa.select(sa.text("* FROM nonexistent_table")),
+                    schema=None,
+                ),
+            ]
+
+            upgrade_ops = _run_comparator(connection, metadata, schemas=[None])
+
+            drop_ops = [
+                op for op in upgrade_ops.ops if isinstance(op, DropViewOp)
+            ]
+            bug2_drops = [op for op in drop_ops if op.name == "bug2_view_x"]
+            assert bug2_drops == [], (
+                f"BUG-2 regression: false DropViewOp emitted for "
+                f"bug2_view_x (canonicalization failed → should be SKIPPED, "
+                f"not dropped). Got drop ops: "
+                f"{[(op.name, op.schema) for op in drop_ops]}"
+            )
+        finally:
+            _drop_bug_views(connection)
+            _drop_base_table(connection)
 
 
 class TestComparatorNonPGDialect:
@@ -1588,7 +1841,8 @@ class TestComparatorNoDoubleFetch:
         ), patch.object(
             comparator_module, "get_database_materialized_views", mock_get_database_mvs
         ), patch.object(
-            comparator_module, "_canonicalize_view", return_value=None
+            comparator_module, "_canonicalize_all_views",
+            return_value=({}, {}, set()),
         ):
             compare_views(autogen_context, upgrade_ops, [None, "analytics"])
 
@@ -2862,6 +3116,20 @@ class TestInterfaceAuditFixes:
         assert hasattr(RefreshMaterializedViewOp, "refresh_materialized_view")
         assert callable(RefreshMaterializedViewOp.refresh_materialized_view)
 
+    def test_refresh_reverse_raises(self):
+        """RefreshMaterializedViewOp.reverse() raises NotImplementedError.
+
+        REFRESH MATERIALIZED VIEW is not meaningfully reversible (you
+        cannot "un-refresh" a materialized view), so reverse() must
+        raise rather than silently emit another REFRESH in the downgrade.
+        """
+        from sqlalchemy_utils.alembic.operations import (
+            RefreshMaterializedViewOp,
+        )
+        op = RefreshMaterializedViewOp("mv")
+        with pytest.raises(NotImplementedError, match="not meaningfully reversible"):
+            op.reverse()
+
     def test_viewmixin_init_subclass_catches_mapped_column_without_tablename(self):
         """ViewMixin.__init_subclass__ should catch mapped_column usage without __tablename__ and give a helpful error."""
         from sqlalchemy_utils.view_mixin import ViewMixin
@@ -2901,7 +3169,7 @@ class TestCascadeOnDropWarning:
         # DB has view "base_view" which is depended on by "dependent_view"
         with patch.object(comparator_module, 'get_database_views', return_value={"base_view": "SELECT 1 AS col"}), \
              patch.object(comparator_module, 'get_database_materialized_views', return_value={}), \
-             patch.object(comparator_module, '_canonicalize_view', return_value=None), \
+             patch.object(comparator_module, '_canonicalize_all_views', return_value=({}, {}, set())), \
              patch.object(comparator_module, 'get_dependent_views', return_value={"dependent_view": "SELECT * FROM base_view"}), \
              patch.object(comparator_module, 'log') as mock_log:
             comparator_module.compare_views(autogen_context, upgrade_ops, [None])
@@ -2931,7 +3199,7 @@ class TestCascadeOnDropWarning:
 
         with patch.object(comparator_module, 'get_database_views', return_value={"lonely_view": "SELECT 1 AS col"}), \
              patch.object(comparator_module, 'get_database_materialized_views', return_value={}), \
-             patch.object(comparator_module, '_canonicalize_view', return_value=None), \
+             patch.object(comparator_module, '_canonicalize_all_views', return_value=({}, {}, set())), \
              patch.object(comparator_module, 'get_dependent_views', return_value={}), \
              patch.object(comparator_module, 'log') as mock_log:
             comparator_module.compare_views(autogen_context, upgrade_ops, [None])
@@ -2962,7 +3230,7 @@ class TestCascadeOnDropWarning:
 
         with patch.object(comparator_module, 'get_database_views', return_value={"base_view": "SELECT 1 AS col"}), \
              patch.object(comparator_module, 'get_database_materialized_views', return_value={}), \
-             patch.object(comparator_module, '_canonicalize_view', return_value=None), \
+             patch.object(comparator_module, '_canonicalize_all_views', return_value=({}, {}, set())), \
              patch.object(comparator_module, 'get_dependent_views', return_value={"dependent_view": "SELECT * FROM base_view"}), \
              patch.object(comparator_module, 'log'):
             comparator_module.compare_views(autogen_context, upgrade_ops, [None])
@@ -2971,4 +3239,162 @@ class TestCascadeOnDropWarning:
         drop_ops = [op for op in upgrade_ops.ops if isinstance(op, DropViewOp)]
         assert any(op.name == "base_view" for op in drop_ops), (
             f"DropViewOp for base_view should still be generated, got ops: {upgrade_ops.ops}"
+        )
+
+
+# ===========================================================================
+# Cross-schema same-name view handling (regression for BUG-4)
+# ===========================================================================
+
+class TestCrossSchemaSameNameBothOps:
+    """When two schemas each have a model view with the same name, both
+    create ops must survive — the second must not overwrite the first
+    in the ``create_by_name`` / ``drop_by_name`` dicts (BUG-4).
+    """
+
+    def test_cross_schema_same_name_both_ops(self):
+        import sqlalchemy_utils.alembic.comparator as comparator_module
+
+        # Two model views, same name, different schemas
+        model_views = [
+            ViewRecord(
+                name="foo",
+                selectable="SELECT 1 AS id",
+                schema="public",
+            ),
+            ViewRecord(
+                name="foo",
+                selectable="SELECT 2 AS id",
+                schema="analytics",
+            ),
+        ]
+
+        metadata = MagicMock()
+        metadata.info = {"sqlalchemy_utils_views": model_views}
+
+        autogen_context = MagicMock()
+        autogen_context.connection = MagicMock()
+        autogen_context.connection.dialect.name = "postgresql"
+        autogen_context.metadata = metadata
+
+        upgrade_ops = MagicMock()
+        upgrade_ops.ops = []
+
+        # DB has no views in either schema → both model views become creates.
+        # _canonicalize_all_views is called once per schema; return a
+        # distinct definition per call so the created ops are distinguishable.
+        canonical_returns = iter(
+            [
+                ({"foo": "SELECT 1 AS id"}, {}, set()),
+                ({"foo": "SELECT 2 AS id"}, {}, set()),
+            ]
+        )
+
+        def mock_canonicalize_all(connection, view_records, db_views):
+            return next(canonical_returns)
+
+        with patch.object(
+            comparator_module, "get_database_views", return_value={}
+        ), patch.object(
+            comparator_module, "get_database_materialized_views", return_value={}
+        ), patch.object(
+            comparator_module, "_canonicalize_all_views",
+            side_effect=mock_canonicalize_all,
+        ), patch.object(
+            comparator_module, "get_dependent_views", return_value={}
+        ), patch.object(comparator_module, "log"):
+            comparator_module.compare_views(
+                autogen_context, upgrade_ops, ["public", "analytics"]
+            )
+
+        create_ops = [
+            op for op in upgrade_ops.ops if isinstance(op, CreateViewOp)
+        ]
+        # Both ops must survive — one per schema
+        assert len(create_ops) == 2, (
+            f"Expected 2 CreateViewOps (one per schema), got {len(create_ops)}: "
+            f"{[(op.name, op.schema) for op in create_ops]}"
+        )
+
+        schemas_seen = {(op.name, op.schema) for op in create_ops}
+        assert ("foo", "public") in schemas_seen, (
+            f"Missing CreateViewOp for (foo, public); got {schemas_seen}"
+        )
+        assert ("foo", "analytics") in schemas_seen, (
+            f"Missing CreateViewOp for (foo, analytics); got {schemas_seen}"
+        )
+
+
+# ===========================================================================
+# Regression for BUG-6: schema=None asymmetric comparison
+# ===========================================================================
+
+class TestSchemaNoneNoFalseDrop:
+    """schemas=[None] must not produce false DropViewOps for non-default schemas."""
+
+    def test_schema_none_no_false_drop(self):
+        import sqlalchemy_utils.alembic.comparator as comparator_module
+        from types import SimpleNamespace
+
+        model_views = [
+            ViewRecord(
+                name="model_view",
+                selectable="SELECT 1 AS id",
+                schema="public",
+            ),
+        ]
+
+        public_row = SimpleNamespace(
+            viewname="model_view", definition="SELECT 1 AS id"
+        )
+        analytics_row = SimpleNamespace(
+            viewname="analytics_view", definition="SELECT 2 AS id"
+        )
+
+        def mock_execute(sql, params=None):
+            sql_str = str(sql)
+            if "current_schema()" in sql_str:
+                return [public_row]
+            if "NOT IN" in sql_str:
+                return [public_row, analytics_row]
+            return []
+
+        connection = MagicMock()
+        connection.dialect.name = "postgresql"
+        connection.execute = mock_execute
+
+        metadata = MagicMock()
+        metadata.info = {"sqlalchemy_utils_views": model_views}
+
+        autogen_context = MagicMock()
+        autogen_context.connection = connection
+        autogen_context.metadata = metadata
+
+        upgrade_ops = MagicMock()
+        upgrade_ops.ops = []
+
+        with patch.object(
+            comparator_module, "get_database_materialized_views",
+            return_value={},
+        ), patch.object(
+            comparator_module, "_canonicalize_all_views",
+            return_value=({"model_view": "SELECT 1 AS id"}, {}, set()),
+        ), patch.object(
+            comparator_module, "get_dependent_views",
+            return_value={},
+        ), patch.object(comparator_module, "log"):
+            comparator_module.compare_views(
+                autogen_context, upgrade_ops, [None]
+            )
+
+        drop_ops = [
+            op for op in upgrade_ops.ops if isinstance(op, DropViewOp)
+        ]
+        analytics_drops = [
+            op for op in drop_ops if op.name == "analytics_view"
+        ]
+        assert analytics_drops == [], (
+            f"BUG-6 regression: false DropViewOp emitted for "
+            f"analytics_view (schema=analytics) when schemas=[None]. "
+            f"Got drop ops: {[(op.name, op.schema) for op in drop_ops]}"
         )

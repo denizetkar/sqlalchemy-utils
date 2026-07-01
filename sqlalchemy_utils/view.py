@@ -9,6 +9,8 @@ from sqlalchemy_utils.view_record import ViewRecord
 
 
 class CreateView(DDLElement):
+    """DDL element for CREATE VIEW (or CREATE OR REPLACE VIEW)."""
+
     def __init__(self, name, selectable, materialized=False, replace=False, schema=None):
         if materialized and replace:
             raise ValueError('Cannot use CREATE OR REPLACE with materialized views')
@@ -33,6 +35,8 @@ def compile_create_materialized_view(element, compiler, **kw):
 
 
 class DropView(DDLElement):
+    """DDL element for DROP VIEW (or DROP MATERIALIZED VIEW)."""
+
     def __init__(self, name, materialized=False, cascade=True, schema=None):
         self.name = name
         self.materialized = materialized
@@ -259,6 +263,8 @@ def create_view(
 
 
 class RefreshMaterializedView(Executable, ClauseElement):
+    """DDL element for REFRESH MATERIALIZED VIEW."""
+
     inherit_cache = True
 
     def __init__(self, name, *, schema=None, concurrently=False):

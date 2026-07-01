@@ -12,9 +12,8 @@ def _query_view_catalog(connection, table: str, name_col: str, schema: str | Non
         connection: SQLAlchemy Connection object.
         table: Catalog table name (e.g. ``"pg_views"``, ``"pg_matviews"``).
         name_col: Column name holding the view name (e.g. ``"viewname"``).
-        schema: Optional schema name filter. If None, all non-system schemas
-            are returned (i.e. every schema except ``information_schema`` and
-            ``pg_catalog``).
+        schema: Optional schema name filter. If None, only the connection's
+            current default schema is queried (via ``current_schema()``).
 
     Returns:
         Dictionary mapping view name to definition SQL.
@@ -22,7 +21,7 @@ def _query_view_catalog(connection, table: str, name_col: str, schema: str | Non
     if not schema:  # catches None and ""
         sql = sa.text(
             f"SELECT {name_col}, definition FROM {table} "
-            "WHERE schemaname NOT IN ('information_schema', 'pg_catalog')"
+            "WHERE schemaname = current_schema()"
         )
         result = connection.execute(sql)
     else:
@@ -39,15 +38,14 @@ def get_database_views(connection, schema: str | None = None) -> dict[str, str]:
 
     Args:
         connection: SQLAlchemy Connection object.
-        schema: Optional schema name filter. If None, all non-system schemas
-            are returned (i.e. every schema except ``information_schema`` and
-            ``pg_catalog``).
+        schema: Optional schema name filter. If None, only the connection's
+            current default schema is queried (via ``current_schema()``).
 
     Returns:
         Dictionary mapping view_name to definition SQL.
 
     Example:
-        >>> views = get_database_views(connection)  # all non-system schemas
+        >>> views = get_database_views(connection)  # current schema only
         >>> views = get_database_views(connection, schema="public")
     """
     return _query_view_catalog(connection, "pg_views", "viewname", schema)
@@ -58,15 +56,14 @@ def get_database_materialized_views(connection, schema: str | None = None) -> di
 
     Args:
         connection: SQLAlchemy Connection object.
-        schema: Optional schema name filter. If None, all non-system schemas
-            are returned (i.e. every schema except ``information_schema`` and
-            ``pg_catalog``).
+        schema: Optional schema name filter. If None, only the connection's
+            current default schema is queried (via ``current_schema()``).
 
     Returns:
         Dictionary mapping matviewname to definition SQL.
 
     Example:
-        >>> mvs = get_database_materialized_views(connection)  # all non-system schemas
+        >>> mvs = get_database_materialized_views(connection)  # current schema only
         >>> mvs = get_database_materialized_views(connection, schema="public")
     """
     return _query_view_catalog(connection, "pg_matviews", "matviewname", schema)
@@ -88,14 +85,21 @@ def get_dependent_views(connection, view_name: str, schema: str | None = None) -
     params: dict[str, str] = {"view_name": view_name}
     if schema:
         params["schema"] = schema
+    # ``pg_depend`` has no ``refobjname`` column — its columns are
+    # ``classid, objid, objsubid, refclassid, refobjid, refobjsubid, deptype``.
+    # To resolve the *referenced* object's name we join ``pg_class ref`` on
+    # ``dep.refobjid = ref.oid`` and filter on ``ref.relname``. The dependent
+    # view's name comes from ``c.relname`` (the view that owns the rewrite
+    # rule recorded in ``pg_depend``).
     sql = sa.text(
-        "SELECT dep.refobjname AS dependent_name, "
+        "SELECT c.relname AS dependent_name, "
         "v.definition AS dependent_definition "
         "FROM pg_depend dep "
         "JOIN pg_rewrite r ON dep.objid = r.oid "
         "JOIN pg_class c ON r.ev_class = c.oid "
+        "JOIN pg_class ref ON dep.refobjid = ref.oid "
         "JOIN pg_views v ON c.relname = v.viewname "
-        "WHERE dep.refobjname = :view_name "
+        "WHERE ref.relname = :view_name "
         "AND dep.refobjid != dep.objid "
         "AND c.relname != :view_name"
         + schema_clause

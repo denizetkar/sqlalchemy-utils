@@ -1,8 +1,8 @@
 """
 Alembic migration operations for database views.
 
-Provides 6 MigrateOperation subclasses for creating, dropping, and replacing
-both regular and materialized views, along with ``op.*`` helper functions.
+Provides 7 MigrateOperation subclasses for creating, dropping, replacing,
+and refreshing materialized views, along with ``op.*`` helper functions.
 
 Usage in Alembic migrations::
 
@@ -16,6 +16,8 @@ Usage in Alembic migrations::
 """
 
 from __future__ import annotations
+
+import warnings
 
 import sqlalchemy as sa
 from alembic.operations import MigrateOperation, Operations
@@ -64,6 +66,15 @@ class CreateViewOp(MigrateOperation):
         replace: bool = False,
     ) -> None:
         _validate_definition(definition)
+        if replace:
+            warnings.warn(
+                "CreateViewOp(replace=True) is deprecated; use op.replace_view() "
+                "or ReplaceViewOp instead. The reverse() of CreateViewOp(replace=True) "
+                "emits a destructive DROP, while ReplaceViewOp.reverse() restores "
+                "the prior definition.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         self.name = name
         self.definition = definition
         self.schema = schema
@@ -108,7 +119,12 @@ class DropViewOp(MigrateOperation):
         name: str,
         *,
         schema: str | None = None,
+        # Internal-only: used by reverse() for round-trip. Autogenerate uses
+        # DropMaterializedViewOp for MV drops; op.drop_view rejects
+        # materialized=True. The renderer does not round-trip this flag.
         materialized: bool = False,
+        # Note: named cascade for Alembic op consistency; corresponds to
+        # cascade_on_drop in ViewMixin and create_view().
         cascade: bool = True,
         definition: str | None = None,
         replace: bool = False,
@@ -234,7 +250,8 @@ class CreateMaterializedViewOp(MigrateOperation):
 
     .. note::
        Autogenerate always emits ``with_data=False`` (unpopulated MVs);
-       manual ``op.create_materialized_view()`` defaults to ``WITH DATA``.
+       manual ``op.create_materialized_view()`` also defaults to
+       ``WITH NO DATA`` for consistency.
     """
 
     def __init__(
@@ -243,7 +260,7 @@ class CreateMaterializedViewOp(MigrateOperation):
         definition: str,
         *,
         schema: str | None = None,
-        with_data: bool = True,
+        with_data: bool = False,
     ) -> None:
         _validate_definition(definition)
         self.name = name
@@ -259,7 +276,7 @@ class CreateMaterializedViewOp(MigrateOperation):
         definition: str,
         *,
         schema: str | None = None,
-        with_data: bool = True,
+        with_data: bool = False,
     ) -> None:
         """Programmatic entry-point for ``op.create_materialized_view()``."""
         op = CreateMaterializedViewOp(
@@ -295,6 +312,8 @@ class DropMaterializedViewOp(MigrateOperation):
         name: str,
         *,
         schema: str | None = None,
+        # Note: named cascade for Alembic op consistency; corresponds to
+        # cascade_on_drop in ViewMixin and create_view().
         cascade: bool = True,
         definition: str | None = None,
         with_data: bool = True,
@@ -362,7 +381,7 @@ class ReplaceMaterializedViewOp(MigrateOperation):
         definition: str,
         *,
         schema: str | None = None,
-        with_data: bool = True,
+        with_data: bool = False,
         old_definition: str | None = None,
     ) -> None:
         _validate_definition(definition)
@@ -380,7 +399,7 @@ class ReplaceMaterializedViewOp(MigrateOperation):
         definition: str,
         *,
         schema: str | None = None,
-        with_data: bool = True,
+        with_data: bool = False,
         old_definition: str | None = None,
     ) -> None:
         """Programmatic entry-point for ``op.replace_materialized_view()``."""
@@ -463,9 +482,15 @@ class RefreshMaterializedViewOp(MigrateOperation):
         return operations.invoke(op)
 
     def reverse(self) -> "RefreshMaterializedViewOp":
-        """Return self; refreshing a view is its own inverse."""
-        return RefreshMaterializedViewOp(
-            self.name, schema=self.schema, concurrently=self.concurrently
+        """REFRESH MATERIALIZED VIEW is not meaningfully reversible.
+
+        You cannot "un-refresh" a materialized view, so reverse()
+        refuses rather than silently emit another REFRESH in the
+        downgrade. Implement the downgrade step manually if needed.
+        """
+        raise NotImplementedError(
+            "REFRESH MATERIALIZED VIEW is not meaningfully reversible; "
+            "remove it from downgrade() or implement manually."
         )
 
     def to_diff_tuple(self) -> tuple:

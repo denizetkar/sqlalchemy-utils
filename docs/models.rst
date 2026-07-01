@@ -10,4 +10,5 @@ Timestamp
 
 generic_repr
 ------------
+
 .. autofunction:: sqlalchemy_utils.models.generic_repr

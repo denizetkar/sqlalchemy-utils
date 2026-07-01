@@ -299,7 +299,62 @@ def test_table_args_schema_fallback():
     assert vr.schema == 'reporting'
 
 
+def test_resolve_schema_list_style():
+    """`_resolve_schema` handles list-style __table_args__.
+
+    Regression test for BUG-8: when __table_args__ is a list whose
+    final element is a dict containing 'schema' (e.g.
+    ``__table_args__ = [{"schema": "public"}]``), `_resolve_schema`
+    previously returned None because it only checked
+    ``isinstance(table_args, tuple)``.
+
+    SQLAlchemy's declarative scanner rejects a bare list as
+    ``__table_args__`` at class-creation time, so the list is assigned
+    after declaration to simulate programmatic / runtime mutation. The
+    same code path is also exercised when ``__table_args__`` is a list
+    that originated from a ``@declared_attr``.
+    """
+    Base = declarative_base()
+
+    class ListView(ViewMixin, Base):
+        __tablename__ = 'list_style_view'
+        __view_selectable__ = sa.select(_src(sa.column('id', sa.Integer)))
+        id: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
+
+    ListView.__table_args__ = [{"schema": "public"}]
+    ListView.__declare_last__()
+    assert ListView._resolve_schema() == "public"
+
+
 def test_no_global_listener_flag():
     """Module-level _VIEW_READONLY_LISTENER_INSTALLED removed."""
     from sqlalchemy_utils import view_mixin as vm
     assert not hasattr(vm, '_VIEW_READONLY_LISTENER_INSTALLED')
+
+
+def test_declare_last_forwarding():
+    """ViewMixin coexists with a cooperative mixin that also defines
+    ``__declare_last__`` without raising TypeError.
+
+    Regression test for BUG-5: the forwarding loop called
+    ``base.__declare_last__(cls)`` passing ``cls`` as a second positional
+    argument to a classmethod already bound to ``base``, producing
+    ``TypeError: __declare_last__() takes 1 positional argument but 2
+    were given``.
+    """
+
+    class CooperativeMixin:
+        @classmethod
+        def __declare_last__(cls):
+            pass
+
+    Base = declarative_base()
+
+    class MyView(ViewMixin, CooperativeMixin, Base):
+        __tablename__ = 'my_view'
+        __view_selectable__ = sa.select(_src(sa.column('id', sa.Integer)))
+        id: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
+
+    MyView.__declare_last__()
+
+    assert MyView.__table__ is not None
