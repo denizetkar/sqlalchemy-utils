@@ -316,7 +316,7 @@ class DropMaterializedViewOp(MigrateOperation):
         # cascade_on_drop in ViewMixin and create_view().
         cascade: bool = True,
         definition: str | None = None,
-        with_data: bool = True,
+        with_data: bool = False,
     ) -> None:
         self.name = name
         self.schema = schema
@@ -333,7 +333,7 @@ class DropMaterializedViewOp(MigrateOperation):
         schema: str | None = None,
         cascade: bool = True,
         definition: str | None = None,
-        with_data: bool = True,
+        with_data: bool = False,
     ) -> None:
         """Programmatic entry-point for ``op.drop_materialized_view()``."""
         op = DropMaterializedViewOp(

@@ -662,6 +662,16 @@ class TestDropMaterializedViewOp:
         with pytest.raises(NotImplementedError, match="no definition stored"):
             op.reverse()
 
+    def test_drop_mv_with_data_default_false(self):
+        """DropMaterializedViewOp defaults to with_data=False (IFACE-5).
+
+        The renderer does not emit with_data for drop MV; only ``reverse()``
+        consumes it (to seed the re-create). Defaulting to False keeps
+        drop→reverse consistent with CreateMaterializedViewOp (also False).
+        """
+        op = DropMaterializedViewOp("mv")
+        assert op.with_data is False
+
     def test_sql_cascade(self):
         op = DropMaterializedViewOp("mv1", cascade=True)
         sqls = _capture_sql(op)
