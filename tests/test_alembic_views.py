@@ -129,13 +129,46 @@ def _ddl_sql_for_metadata(metadata: sa.MetaData, dialect=None) -> list[str]:
     return statements
 
 
-def _create_view_listener_from_metadata(metadata: sa.MetaData):
-    """Find the CreateView DDL element registered on metadata."""
+_CMP_TEST_VIEW_NAMES = [
+    "cmp_test_view", "cmp_test_mv", "cmp_test_view2",
+    "cmp_test_changed", "cmp_test_mv_changed", "cmp_test_view_bad",
+]
+
+
+def _drop_views(connection, names) -> None:
+    for view_name in names:
+        try:
+            connection.execute(
+                sa.text(f"DROP MATERIALIZED VIEW IF EXISTS {view_name} CASCADE")
+            )
+        except sa.exc.ProgrammingError:
+            connection.rollback()
+        try:
+            connection.execute(sa.text(f"DROP VIEW IF EXISTS {view_name} CASCADE"))
+        except sa.exc.ProgrammingError:
+            connection.rollback()
+    connection.commit()
+
+
+def _find_view_listener(metadata: sa.MetaData, materialized: Optional[bool] = None):
+    """Find a CreateView DDL element registered on *metadata*.
+
+    *materialized*=None returns any CreateView listener; True/False
+    filters on the listener's ``materialized`` attribute.
+    """
     listeners = list(metadata.dispatch.after_create)
+
+    def _listener_materialized(listener) -> Optional[bool]:
+        cv = getattr(listener, "__self__", None)
+        if isinstance(cv, CreateView):
+            return cv.materialized
+        return getattr(listener, "materialized", None)
+
     found = [
         listener
         for listener in listeners
         if isinstance(getattr(listener, "__self__", None), CreateView)
+        and (materialized is None or _listener_materialized(listener) is materialized)
     ]
     if found:
         return found[0]
@@ -145,25 +178,7 @@ def _create_view_listener_from_metadata(metadata: sa.MetaData):
         if hasattr(listener, "name")
         and hasattr(listener, "replace")
         and hasattr(listener, "selectable")
-    ]
-    return found[0] if found else None
-
-
-def _materialized_view_listener_from_metadata(metadata: sa.MetaData):
-    """Find the materialized-view CreateView DDL element on metadata."""
-    listeners = list(metadata.dispatch.after_create)
-    found = [
-        listener
-        for listener in listeners
-        if isinstance(getattr(listener, "__self__", None), CreateView)
-        and getattr(listener, "__self__", None).materialized
-    ]
-    if found:
-        return found[0]
-    found = [
-        listener
-        for listener in listeners
-        if hasattr(listener, "materialized") and listener.materialized
+        and (materialized is None or _listener_materialized(listener) is materialized)
     ]
     return found[0] if found else None
 
@@ -1061,7 +1076,7 @@ class TestOpValidation:
             sa.select(sa.table("src", sa.column("id", sa.Integer))),
             metadata,
         )
-        runtime_ddl = _materialized_view_listener_from_metadata(metadata)
+        runtime_ddl = _find_view_listener(metadata, materialized=True)
         assert runtime_ddl is not None
 
         engine = sa.create_engine("sqlite:///:memory:")
@@ -1319,36 +1334,13 @@ def _drop_base_table(connection):
     connection.commit()
 
 
-def _drop_test_views(connection):
-    """Drop any leftover test views/materialized views."""
-    for view_name in [
-        "cmp_test_view",
-        "cmp_test_mv",
-        "cmp_test_view2",
-        "cmp_test_changed",
-        "cmp_test_mv_changed",
-        "cmp_test_view_bad",
-    ]:
-        try:
-            connection.execute(
-                sa.text(f"DROP MATERIALIZED VIEW IF EXISTS {view_name} CASCADE")
-            )
-        except sa.exc.ProgrammingError:
-            connection.rollback()
-        try:
-            connection.execute(sa.text(f"DROP VIEW IF EXISTS {view_name} CASCADE"))
-        except sa.exc.ProgrammingError:
-            connection.rollback()
-    connection.commit()
-
-
 class TestComparatorCreateView:
     """New view detected → CreateViewOp generated."""
 
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_new_view_generates_create_view_op(self, connection):
         _create_base_table(connection)
-        _drop_test_views(connection)
+        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
 
         metadata = sa.MetaData()
         metadata.info["sqlalchemy_utils_views"] = [
@@ -1364,7 +1356,7 @@ class TestComparatorCreateView:
         assert len(view_ops) == 1
         assert view_ops[0].name == "cmp_test_view"
 
-        _drop_test_views(connection)
+        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
         _drop_base_table(connection)
 
 
@@ -1374,7 +1366,7 @@ class TestComparatorDropView:
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_removed_view_generates_drop_view_op(self, connection):
         _create_base_table(connection)
-        _drop_test_views(connection)
+        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
 
         connection.execute(
             sa.text(
@@ -1397,7 +1389,7 @@ class TestComparatorDropView:
         assert len(drop_ops) == 1
         assert drop_ops[0].name == "cmp_test_view"
 
-        _drop_test_views(connection)
+        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
         _drop_base_table(connection)
 
 
@@ -1407,7 +1399,7 @@ class TestComparatorReplaceView:
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_changed_view_generates_replace_view_op(self, connection):
         _create_base_table(connection)
-        _drop_test_views(connection)
+        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
 
         connection.execute(
             sa.text(
@@ -1432,7 +1424,7 @@ class TestComparatorReplaceView:
         assert replace_ops[0].name == "cmp_test_changed"
         assert replace_ops[0].old_definition is not None
 
-        _drop_test_views(connection)
+        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
         _drop_base_table(connection)
 
 
@@ -1442,7 +1434,7 @@ class TestComparatorCreateMV:
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_new_mv_generates_create_mv_op(self, connection):
         _create_base_table(connection)
-        _drop_test_views(connection)
+        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
 
         metadata = sa.MetaData()
         metadata.info["sqlalchemy_utils_views"] = [
@@ -1462,7 +1454,7 @@ class TestComparatorCreateMV:
         assert mv_ops[0].name == "cmp_test_mv"
         assert mv_ops[0].with_data is False
 
-        _drop_test_views(connection)
+        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
         _drop_base_table(connection)
 
 
@@ -1472,7 +1464,7 @@ class TestComparatorDropMV:
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_removed_mv_generates_drop_mv_op(self, connection):
         _create_base_table(connection)
-        _drop_test_views(connection)
+        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
 
         connection.execute(
             sa.text(
@@ -1493,7 +1485,7 @@ class TestComparatorDropMV:
         assert len(drop_mv_ops) == 1
         assert drop_mv_ops[0].name == "cmp_test_mv"
 
-        _drop_test_views(connection)
+        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
         _drop_base_table(connection)
 
 
@@ -1503,7 +1495,7 @@ class TestComparatorReplaceMV:
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_changed_mv_generates_replace_mv_op(self, connection):
         _create_base_table(connection)
-        _drop_test_views(connection)
+        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
 
         connection.execute(
             sa.text(
@@ -1532,7 +1524,7 @@ class TestComparatorReplaceMV:
         assert replace_ops[0].with_data is False
         assert replace_ops[0].old_definition is not None
 
-        _drop_test_views(connection)
+        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
         _drop_base_table(connection)
 
 
@@ -1542,7 +1534,7 @@ class TestComparatorNoChanges:
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_no_changes_no_ops(self, connection):
         _create_base_table(connection)
-        _drop_test_views(connection)
+        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
 
         connection.execute(
             sa.text(
@@ -1573,7 +1565,7 @@ class TestComparatorNoChanges:
             f"Expected no ops for matching view, got: {matching_view_ops}"
         )
 
-        _drop_test_views(connection)
+        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
         _drop_base_table(connection)
 
     def test_empty_metadata(self):
@@ -1646,7 +1638,7 @@ class TestComparatorSavepointRollback:
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_canonicalized_view_does_not_persist(self, connection):
         _create_base_table(connection)
-        _drop_test_views(connection)
+        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
 
         metadata = sa.MetaData()
         metadata.info["sqlalchemy_utils_views"] = [
@@ -1671,7 +1663,7 @@ class TestComparatorDDLError:
 
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_invalid_view_skipped_with_warning(self, connection):
-        _drop_test_views(connection)
+        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
         _drop_base_table(connection)
 
         metadata = sa.MetaData()
@@ -1735,7 +1727,7 @@ class TestProgrammingErrorPropagates:
 
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_programming_error_propagates(self, connection):
-        _drop_test_views(connection)
+        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
         _drop_base_table(connection)
 
         metadata = sa.MetaData()
@@ -1760,22 +1752,6 @@ _BUG2_VIEW_NAMES = ["bug2_view_x"]
 _BUG3_VIEW_NAMES = ["bug3_view_a", "bug3_view_b"]
 
 
-def _drop_bug_views(connection):
-    """Drop any leftover views created by the BUG-2 / BUG-3 regression tests."""
-    for view_name in _BUG2_VIEW_NAMES + _BUG3_VIEW_NAMES:
-        try:
-            connection.execute(
-                sa.text(f"DROP MATERIALIZED VIEW IF EXISTS {view_name} CASCADE")
-            )
-        except sa.exc.ProgrammingError:
-            connection.rollback()
-        try:
-            connection.execute(sa.text(f"DROP VIEW IF EXISTS {view_name} CASCADE"))
-        except sa.exc.ProgrammingError:
-            connection.rollback()
-    connection.commit()
-
-
 class TestCanonicalizeViewOnViewDeps:
     """BUG-3 regression: view-on-view dependencies must survive savepoint.
 
@@ -1793,7 +1769,7 @@ class TestCanonicalizeViewOnViewDeps:
     @pytest.mark.infrastructure
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_dependent_view_chain_both_created(self, connection):
-        _drop_bug_views(connection)
+        _drop_views(connection, _BUG2_VIEW_NAMES + _BUG3_VIEW_NAMES)
         _drop_base_table(connection)
         try:
             metadata = sa.MetaData()
@@ -1826,7 +1802,7 @@ class TestCanonicalizeViewOnViewDeps:
                 f"got {sorted(created_names)}"
             )
         finally:
-            _drop_bug_views(connection)
+            _drop_views(connection, _BUG2_VIEW_NAMES + _BUG3_VIEW_NAMES)
             _drop_base_table(connection)
 
 
@@ -1847,7 +1823,7 @@ class TestCanonicalizeSkipDoesNotDrop:
     @pytest.mark.infrastructure
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_failing_canonicalization_does_not_emit_drop(self, connection):
-        _drop_bug_views(connection)
+        _drop_views(connection, _BUG2_VIEW_NAMES + _BUG3_VIEW_NAMES)
         _drop_base_table(connection)
         try:
             # Pre-create the view in the DB with an old, valid definition.
@@ -1878,7 +1854,7 @@ class TestCanonicalizeSkipDoesNotDrop:
                 f"{[(op.name, op.schema) for op in drop_ops]}"
             )
         finally:
-            _drop_bug_views(connection)
+            _drop_views(connection, _BUG2_VIEW_NAMES + _BUG3_VIEW_NAMES)
             _drop_base_table(connection)
 
 
@@ -2349,7 +2325,7 @@ class TestDependNoneDbViews:
         vr = ViewRecord(name="solo", selectable="SELECT 1 AS col")
         assert resolve_create_order([vr], db_views=None) == [vr]
         assert resolve_drop_order([vr], db_views=None) == [vr]
-        assert _build_dependency_graph([vr], None) == {"solo": set()}
+        assert _build_dependency_graph([vr], {}) == {"solo": set()}
 
 
 class TestDependWordBoundary:
@@ -2582,22 +2558,17 @@ def run_autogenerate(metadata: sa.MetaData, connection, alembic_config) -> str:
     return code
 
 
-def assert_has_op(migration_code: str, op_name: str) -> None:
-    """Assert that *migration_code* contains ``op.<op_name>(``."""
-    token = f"op.{op_name}("
-    if token not in migration_code:
-        raise AssertionError(
-            f"Expected migration to contain '{token}' but it was not found.\n"
-            f"Migration code:\n{migration_code}"
-        )
+def assert_op(migration_code: str, op_name: str, expected: bool = True) -> None:
+    """Assert presence/absence of ``op.<op_name>(`` in *migration_code*.
 
-
-def assert_no_op(migration_code: str, op_name: str) -> None:
-    """Assert that *migration_code* does NOT contain ``op.<op_name>(``."""
+    *expected*=True asserts the op IS present; *expected*=False asserts it
+    is NOT present.
+    """
     token = f"op.{op_name}("
-    if token in migration_code:
+    present = token in migration_code
+    if present is not expected:
         raise AssertionError(
-            f"Expected migration NOT to contain '{token}' but it was found.\n"
+            f"Expected op.{op_name}( presence={expected} but got {present}.\n"
             f"Migration code:\n{migration_code}"
         )
 
@@ -2637,32 +2608,11 @@ _int_base_table = sa.Table(
     sa.Column("value", sa.Integer),
 )
 
-
-def _int_drop_test_views(connection):
-    """Drop views created by integration tests."""
-    _int_view_names = [
-        "int_test_new_view",
-        "int_test_new_mv",
-        "int_test_drop_view",
-        "int_test_drop_mv",
-        "int_test_change_view",
-        "int_test_change_mv",
-        "int_test_same_view",
-        "int_test_view_a",
-        "int_test_view_b",
-    ]
-    for view_name in _int_view_names:
-        try:
-            connection.execute(
-                sa.text(f"DROP MATERIALIZED VIEW IF EXISTS {view_name} CASCADE")
-            )
-        except sa.exc.ProgrammingError:
-            connection.rollback()
-        try:
-            connection.execute(sa.text(f"DROP VIEW IF EXISTS {view_name} CASCADE"))
-        except sa.exc.ProgrammingError:
-            connection.rollback()
-    connection.commit()
+_INT_TEST_VIEW_NAMES = [
+    "int_test_new_view", "int_test_new_mv", "int_test_drop_view",
+    "int_test_drop_mv", "int_test_change_view", "int_test_change_mv",
+    "int_test_same_view", "int_test_view_a", "int_test_view_b",
+]
 
 
 class TestIntegrationNewView:
@@ -2670,7 +2620,7 @@ class TestIntegrationNewView:
 
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_new_view_detected_and_rendered(self, connection, alembic_config):
-        _int_drop_test_views(connection)
+        _drop_views(connection, _INT_TEST_VIEW_NAMES)
         _drop_base_table(connection)
         _create_base_table(connection)
         try:
@@ -2680,10 +2630,10 @@ class TestIntegrationNewView:
                 "int_test_new_view", sa.select(_int_base_table.c.id), metadata
             )
             code = run_autogenerate(metadata, connection, alembic_config)
-            assert_has_op(code, "create_view")
+            assert_op(code, "create_view")
             assert "int_test_new_view" in code
         finally:
-            _int_drop_test_views(connection)
+            _drop_views(connection, _INT_TEST_VIEW_NAMES)
             _drop_base_table(connection)
 
 
@@ -2692,7 +2642,7 @@ class TestIntegrationNewMV:
 
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_new_mv_detected_and_rendered(self, connection, alembic_config):
-        _int_drop_test_views(connection)
+        _drop_views(connection, _INT_TEST_VIEW_NAMES)
         _drop_base_table(connection)
         _create_base_table(connection)
         try:
@@ -2702,10 +2652,10 @@ class TestIntegrationNewMV:
                 "int_test_new_mv", sa.select(_int_base_table.c.id), metadata
             )
             code = run_autogenerate(metadata, connection, alembic_config)
-            assert_has_op(code, "create_materialized_view")
+            assert_op(code, "create_materialized_view")
             assert "int_test_new_mv" in code
         finally:
-            _int_drop_test_views(connection)
+            _drop_views(connection, _INT_TEST_VIEW_NAMES)
             _drop_base_table(connection)
 
 
@@ -2714,7 +2664,7 @@ class TestIntegrationRemoval:
 
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_removed_view_generates_drop(self, connection, alembic_config):
-        _int_drop_test_views(connection)
+        _drop_views(connection, _INT_TEST_VIEW_NAMES)
         _drop_base_table(connection)
         _create_base_table(connection)
         connection.execute(
@@ -2727,14 +2677,14 @@ class TestIntegrationRemoval:
             register_view_comparator()
             metadata = sa.MetaData()
             code = run_autogenerate(metadata, connection, alembic_config)
-            assert_has_op(code, "drop_view")
+            assert_op(code, "drop_view")
         finally:
-            _int_drop_test_views(connection)
+            _drop_views(connection, _INT_TEST_VIEW_NAMES)
             _drop_base_table(connection)
 
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_removed_mv_generates_drop(self, connection, alembic_config):
-        _int_drop_test_views(connection)
+        _drop_views(connection, _INT_TEST_VIEW_NAMES)
         _drop_base_table(connection)
         _create_base_table(connection)
         connection.execute(
@@ -2748,9 +2698,9 @@ class TestIntegrationRemoval:
             register_view_comparator()
             metadata = sa.MetaData()
             code = run_autogenerate(metadata, connection, alembic_config)
-            assert_has_op(code, "drop_materialized_view")
+            assert_op(code, "drop_materialized_view")
         finally:
-            _int_drop_test_views(connection)
+            _drop_views(connection, _INT_TEST_VIEW_NAMES)
             _drop_base_table(connection)
 
 
@@ -2759,7 +2709,7 @@ class TestIntegrationDefinitionChange:
 
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_changed_view_generates_replace(self, connection, alembic_config):
-        _int_drop_test_views(connection)
+        _drop_views(connection, _INT_TEST_VIEW_NAMES)
         _drop_base_table(connection)
         _create_base_table(connection)
         connection.execute(
@@ -2777,14 +2727,14 @@ class TestIntegrationDefinitionChange:
                 metadata,
             )
             code = run_autogenerate(metadata, connection, alembic_config)
-            assert_has_op(code, "replace_view")
+            assert_op(code, "replace_view")
         finally:
-            _int_drop_test_views(connection)
+            _drop_views(connection, _INT_TEST_VIEW_NAMES)
             _drop_base_table(connection)
 
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_changed_mv_generates_replace(self, connection, alembic_config):
-        _int_drop_test_views(connection)
+        _drop_views(connection, _INT_TEST_VIEW_NAMES)
         _drop_base_table(connection)
         _create_base_table(connection)
         connection.execute(
@@ -2803,9 +2753,9 @@ class TestIntegrationDefinitionChange:
                 metadata,
             )
             code = run_autogenerate(metadata, connection, alembic_config)
-            assert_has_op(code, "replace_materialized_view")
+            assert_op(code, "replace_materialized_view")
         finally:
-            _int_drop_test_views(connection)
+            _drop_views(connection, _INT_TEST_VIEW_NAMES)
             _drop_base_table(connection)
 
 
@@ -2814,7 +2764,7 @@ class TestIntegrationNoOp:
 
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_unchanged_view_no_ops(self, connection, alembic_config):
-        _int_drop_test_views(connection)
+        _drop_views(connection, _INT_TEST_VIEW_NAMES)
         _drop_base_table(connection)
         _create_base_table(connection)
         connection.execute(
@@ -2830,11 +2780,11 @@ class TestIntegrationNoOp:
                 "int_test_same_view", sa.select(_int_base_table.c.id), metadata
             )
             code = run_autogenerate(metadata, connection, alembic_config)
-            assert_no_op(code, "create_view")
-            assert_no_op(code, "drop_view")
-            assert_no_op(code, "replace_view")
+            assert_op(code, "create_view", expected=False)
+            assert_op(code, "drop_view", expected=False)
+            assert_op(code, "replace_view", expected=False)
         finally:
-            _int_drop_test_views(connection)
+            _drop_views(connection, _INT_TEST_VIEW_NAMES)
             _drop_base_table(connection)
 
 
@@ -2845,7 +2795,7 @@ class TestIntegrationDependencyOrdering:
     def test_dependent_view_created_after_dependency(
         self, connection, alembic_config
     ):
-        _int_drop_test_views(connection)
+        _drop_views(connection, _INT_TEST_VIEW_NAMES)
         _drop_base_table(connection)
         _create_base_table(connection)
         connection.execute(
@@ -2869,10 +2819,10 @@ class TestIntegrationDependencyOrdering:
             metadata.info.setdefault("sqlalchemy_utils_views", []).append(vr_b)
 
             code = run_autogenerate(metadata, connection, alembic_config)
-            assert_has_op(code, "create_view")
+            assert_op(code, "create_view")
             assert "int_test_view_b" in code
         finally:
-            _int_drop_test_views(connection)
+            _drop_views(connection, _INT_TEST_VIEW_NAMES)
             _drop_base_table(connection)
 
 
@@ -2883,48 +2833,34 @@ class TestIntegrationDependencyOrdering:
 class TestPublicAPIImportable:
     """Public API symbols are importable from sqlalchemy_utils.alembic."""
 
-    def test_import_create_view_op(self):
-        from sqlalchemy_utils.alembic import CreateViewOp as ImportedCreateViewOp
+    @pytest.mark.parametrize(
+        "op_import_path,op_name,args,kwargs,expected_definition",
+        [
+            ("sqlalchemy_utils.alembic:CreateViewOp", "test_view", ("test_view", "SELECT 1"), {}, "SELECT 1"),
+            ("sqlalchemy_utils.alembic:DropViewOp", "test_view", ("test_view",), {}, None),
+            ("sqlalchemy_utils.alembic:ReplaceViewOp", "test_view", ("test_view", "SELECT 2"), {}, "SELECT 2"),
+            ("sqlalchemy_utils.alembic:CreateMaterializedViewOp", "test_mv", ("test_mv", "SELECT 1"), {}, "SELECT 1"),
+            ("sqlalchemy_utils.alembic:DropMaterializedViewOp", "test_mv", ("test_mv",), {"cascade": False}, None),
+            ("sqlalchemy_utils.alembic:ReplaceMaterializedViewOp", "test_mv", ("test_mv", "SELECT 2"), {}, "SELECT 2"),
+        ],
+        ids=[
+            "create_view_op", "drop_view_op", "replace_view_op",
+            "create_materialized_view_op", "drop_materialized_view_op",
+            "replace_materialized_view_op",
+        ],
+    )
+    def test_import_op(
+        self, op_import_path, op_name, args, kwargs, expected_definition
+    ):
+        import importlib
 
-        op = ImportedCreateViewOp("test_view", "SELECT 1")
-        assert op.name == "test_view"
-        assert op.definition == "SELECT 1"
+        module_path, _, attr = op_import_path.partition(":")
+        op_class = getattr(importlib.import_module(module_path), attr)
 
-    def test_import_drop_view_op(self):
-        from sqlalchemy_utils.alembic import DropViewOp as ImportedDropViewOp
-
-        op = ImportedDropViewOp("test_view")
-        assert op.name == "test_view"
-
-    def test_import_replace_view_op(self):
-        from sqlalchemy_utils.alembic import ReplaceViewOp as ImportedReplaceViewOp
-
-        op = ImportedReplaceViewOp("test_view", "SELECT 2")
-        assert op.name == "test_view"
-
-    def test_import_create_materialized_view_op(self):
-        from sqlalchemy_utils.alembic import (
-            CreateMaterializedViewOp as ImportedCreateMVOp,
-        )
-
-        op = ImportedCreateMVOp("test_mv", "SELECT 1")
-        assert op.name == "test_mv"
-
-    def test_import_drop_materialized_view_op(self):
-        from sqlalchemy_utils.alembic import (
-            DropMaterializedViewOp as ImportedDropMVOp,
-        )
-
-        op = ImportedDropMVOp("test_mv", cascade=False)
-        assert op.name == "test_mv"
-
-    def test_import_replace_materialized_view_op(self):
-        from sqlalchemy_utils.alembic import (
-            ReplaceMaterializedViewOp as ImportedReplaceMVOp,
-        )
-
-        op = ImportedReplaceMVOp("test_mv", "SELECT 2")
-        assert op.name == "test_mv"
+        op = op_class(*args, **kwargs)
+        assert op.name == op_name
+        if expected_definition is not None:
+            assert op.definition == expected_definition
 
     def test_internal_import_view_record(self):
         from sqlalchemy_utils.view_record import ViewRecord as VR
@@ -2941,15 +2877,6 @@ class TestPublicAPIImportable:
             resolve_drop_order,
             ViewRecord,
         )
-
-
-class TestPublicAPIFromTopLevel:
-    """Public API accessible from sqlalchemy_utils top-level."""
-
-    def test_internal_import_ops_from_alembic_view_record(self):
-        from sqlalchemy_utils.view_record import ViewRecord as VR
-
-        assert VR is not None
 
 
 class TestPublicAPIExports:
@@ -3155,7 +3082,7 @@ class TestViewMixinIntegration:
 
         ReplaceView.__declare_last__()
 
-        create_view_ddl = _create_view_listener_from_metadata(Base.metadata)
+        create_view_ddl = _find_view_listener(Base.metadata)
         assert create_view_ddl is not None
         assert create_view_ddl.replace is True
 
@@ -3422,77 +3349,110 @@ class TestInterfaceAuditFixes:
 class TestCascadeOnDropWarning:
     """When autogenerate drops a view that has dependents, warn the user."""
 
-    def test_warns_when_dropping_view_with_dependents(self):
-        """compare_views should log a warning when dropping a view that
-        other views depend on."""
-        from unittest.mock import MagicMock, patch
+    @pytest.fixture
+    def cascade_mock_setup(self):
         import sqlalchemy_utils.alembic.comparator as comparator_module
 
-        # Model has no views; DB has one view that another view depends on
-        metadata = MagicMock()
-        metadata.info = {"sqlalchemy_utils_views": []}
+        def _run(db_views: dict, dependent_views: dict):
+            metadata = MagicMock()
+            metadata.info = {"sqlalchemy_utils_views": []}
 
-        autogen_context = MagicMock()
-        autogen_context.connection = MagicMock()
-        autogen_context.connection.dialect.name = 'postgresql'
-        autogen_context.metadata = metadata
+            autogen_context = MagicMock()
+            autogen_context.connection = MagicMock()
+            autogen_context.connection.dialect.name = "postgresql"
+            autogen_context.metadata = metadata
 
-        upgrade_ops = MagicMock()
-        upgrade_ops.ops = []
+            upgrade_ops = MagicMock()
+            upgrade_ops.ops = []
 
-        # DB has view "base_view" which is depended on by "dependent_view"
-        with patch.object(comparator_module, 'get_database_views', return_value={"base_view": "SELECT 1 AS col"}), \
-             patch.object(comparator_module, 'get_database_materialized_views', return_value={}), \
-             patch.object(comparator_module, '_canonicalize_all_views', return_value=({}, {}, set())), \
-             patch.object(comparator_module, 'get_dependent_views', return_value={"dependent_view": "SELECT * FROM base_view"}), \
-             patch.object(comparator_module, 'log') as mock_log:
-            comparator_module.compare_views(autogen_context, upgrade_ops, [None])
+            with patch.object(
+                comparator_module, "get_database_views",
+                return_value=db_views,
+            ), patch.object(
+                comparator_module, "get_database_materialized_views",
+                return_value={},
+            ), patch.object(
+                comparator_module, "_canonicalize_all_views",
+                return_value=({}, {}, set()),
+            ), patch.object(
+                comparator_module, "get_dependent_views",
+                return_value=dependent_views,
+            ), patch.object(
+                comparator_module, "log",
+            ) as mock_log:
+                comparator_module.compare_views(
+                    autogen_context, upgrade_ops, [None]
+                )
+            return upgrade_ops, mock_log
 
-        # Warning should have been logged
-        warning_calls = [c for c in mock_log.warning.call_args_list if 'base_view' in str(c) and 'dependent' in str(c).lower()]
+        return _run
+
+    def test_warns_when_dropping_view_with_dependents(self, cascade_mock_setup):
+        """compare_views should log a warning when dropping a view that
+        other views depend on."""
+        upgrade_ops, mock_log = cascade_mock_setup(
+            db_views={"base_view": "SELECT 1 AS col"},
+            dependent_views={"dependent_view": "SELECT * FROM base_view"},
+        )
+
+        warning_calls = [
+            c for c in mock_log.warning.call_args_list
+            if "base_view" in str(c) and "dependent" in str(c).lower()
+        ]
         assert len(warning_calls) > 0, (
             f"Expected warning about dependents when dropping base_view, "
             f"got warnings: {mock_log.warning.call_args_list}"
         )
 
-    def test_does_not_warn_when_dropping_view_without_dependents(self):
+    def test_does_not_warn_when_dropping_view_without_dependents(
+        self, cascade_mock_setup
+    ):
         """compare_views should NOT warn when dropping a view with no dependents."""
-        from unittest.mock import MagicMock, patch
-        import sqlalchemy_utils.alembic.comparator as comparator_module
+        upgrade_ops, mock_log = cascade_mock_setup(
+            db_views={"lonely_view": "SELECT 1 AS col"},
+            dependent_views={},
+        )
 
-        metadata = MagicMock()
-        metadata.info = {"sqlalchemy_utils_views": []}
-
-        autogen_context = MagicMock()
-        autogen_context.connection = MagicMock()
-        autogen_context.connection.dialect.name = 'postgresql'
-        autogen_context.metadata = metadata
-
-        upgrade_ops = MagicMock()
-        upgrade_ops.ops = []
-
-        with patch.object(comparator_module, 'get_database_views', return_value={"lonely_view": "SELECT 1 AS col"}), \
-             patch.object(comparator_module, 'get_database_materialized_views', return_value={}), \
-             patch.object(comparator_module, '_canonicalize_all_views', return_value=({}, {}, set())), \
-             patch.object(comparator_module, 'get_dependent_views', return_value={}), \
-             patch.object(comparator_module, 'log') as mock_log:
-            comparator_module.compare_views(autogen_context, upgrade_ops, [None])
-
-        # No warning about dependents should be logged
-        warning_calls = [c for c in mock_log.warning.call_args_list if 'dependent' in str(c).lower()]
+        warning_calls = [
+            c for c in mock_log.warning.call_args_list
+            if "dependent" in str(c).lower()
+        ]
         assert len(warning_calls) == 0, (
             f"Should not warn about dependents for lonely_view, got: {warning_calls}"
         )
 
-    def test_drop_op_still_generated_even_with_dependents(self):
+    def test_drop_op_still_generated_even_with_dependents(
+        self, cascade_mock_setup
+    ):
         """The DropViewOp should still be generated even if the view has dependents
         (warn, don't block)."""
-        from unittest.mock import MagicMock, patch
-        import sqlalchemy_utils.alembic.comparator as comparator_module
         from sqlalchemy_utils.alembic.operations import DropViewOp
 
+        upgrade_ops, _mock_log = cascade_mock_setup(
+            db_views={"base_view": "SELECT 1 AS col"},
+            dependent_views={"dependent_view": "SELECT * FROM base_view"},
+        )
+
+        drop_ops = [op for op in upgrade_ops.ops if isinstance(op, DropViewOp)]
+        assert any(op.name == "base_view" for op in drop_ops), (
+            f"DropViewOp for base_view should still be generated, got ops: {upgrade_ops.ops}"
+        )
+
+
+# ===========================================================================
+# IFACE-7: cascade_on_drop propagation
+# ===========================================================================
+
+class TestCascadeOnDropPropagation:
+    """compare_views should propagate ViewRecord.cascade_on_drop to the
+    generated DropViewOp / DropMaterializedViewOp ``cascade`` param
+    (IFACE-7), rather than hardcoding ``cascade=True``.
+    """
+
+    @staticmethod
+    def _make_context(model_views):
         metadata = MagicMock()
-        metadata.info = {"sqlalchemy_utils_views": []}
+        metadata.info = {"sqlalchemy_utils_views": model_views}
 
         autogen_context = MagicMock()
         autogen_context.connection = MagicMock()
@@ -3501,18 +3461,99 @@ class TestCascadeOnDropWarning:
 
         upgrade_ops = MagicMock()
         upgrade_ops.ops = []
+        return autogen_context, upgrade_ops
 
-        with patch.object(comparator_module, 'get_database_views', return_value={"base_view": "SELECT 1 AS col"}), \
-             patch.object(comparator_module, 'get_database_materialized_views', return_value={}), \
-             patch.object(comparator_module, '_canonicalize_all_views', return_value=({}, {}, set())), \
-             patch.object(comparator_module, 'get_dependent_views', return_value={"dependent_view": "SELECT * FROM base_view"}), \
+    def test_drop_view_propagates_cascade_false(self):
+        """A DB-only view whose model ViewRecord has cascade_on_drop=False
+        must produce a DropViewOp(cascade=False)."""
+        from unittest.mock import patch
+        import sqlalchemy_utils.alembic.comparator as comparator_module
+
+        # Model declares the view with cascade_on_drop=False but the view
+        # is NOT canonicalized (skipped set empty); DB has it -> drop emitted.
+        vr = ViewRecord(
+            name="v_no_cascade",
+            selectable="SELECT 1 AS col",
+            schema=None,
+            cascade_on_drop=False,
+        )
+        autogen_context, upgrade_ops = self._make_context([vr])
+
+        with patch.object(comparator_module, 'get_database_views',
+                          return_value={"v_no_cascade": "SELECT 1 AS col"}), \
+             patch.object(comparator_module, 'get_database_materialized_views',
+                          return_value={}), \
+             patch.object(comparator_module, '_canonicalize_all_views',
+                           return_value=({}, {}, set())), \
+             patch.object(comparator_module, 'get_dependent_views',
+                           return_value={}), \
              patch.object(comparator_module, 'log'):
             comparator_module.compare_views(autogen_context, upgrade_ops, [None])
 
-        # DropViewOp should still be in the ops list
         drop_ops = [op for op in upgrade_ops.ops if isinstance(op, DropViewOp)]
-        assert any(op.name == "base_view" for op in drop_ops), (
-            f"DropViewOp for base_view should still be generated, got ops: {upgrade_ops.ops}"
+        assert len(drop_ops) == 1, f"expected one DropViewOp, got {drop_ops}"
+        assert drop_ops[0].name == "v_no_cascade"
+        assert drop_ops[0].cascade is False, (
+            f"DropViewOp.cascade should be False when ViewRecord."
+            f"cascade_on_drop=False, got {drop_ops[0].cascade!r}"
+        )
+
+    def test_drop_view_defaults_to_true_when_no_record(self):
+        """A DB-only view with no model ViewRecord defaults to cascade=True
+        (the DropViewOp default)."""
+        from unittest.mock import patch
+        import sqlalchemy_utils.alembic.comparator as comparator_module
+
+        autogen_context, upgrade_ops = self._make_context([])
+
+        with patch.object(comparator_module, 'get_database_views',
+                          return_value={"orphan_view": "SELECT 1 AS col"}), \
+             patch.object(comparator_module, 'get_database_materialized_views',
+                          return_value={}), \
+             patch.object(comparator_module, '_canonicalize_all_views',
+                           return_value=({}, {}, set())), \
+             patch.object(comparator_module, 'get_dependent_views',
+                           return_value={}), \
+             patch.object(comparator_module, 'log'):
+            comparator_module.compare_views(autogen_context, upgrade_ops, [None])
+
+        drop_ops = [op for op in upgrade_ops.ops if isinstance(op, DropViewOp)]
+        assert len(drop_ops) == 1
+        assert drop_ops[0].cascade is True
+
+    def test_drop_materialized_view_propagates_cascade_false(self):
+        """A DB-only materialized view whose model ViewRecord has
+        cascade_on_drop=False must produce a DropMaterializedViewOp(cascade=False)."""
+        from unittest.mock import patch
+        import sqlalchemy_utils.alembic.comparator as comparator_module
+
+        vr = ViewRecord(
+            name="mv_no_cascade",
+            selectable="SELECT 1 AS col",
+            schema=None,
+            materialized=True,
+            cascade_on_drop=False,
+        )
+        autogen_context, upgrade_ops = self._make_context([vr])
+
+        with patch.object(comparator_module, 'get_database_views',
+                          return_value={}), \
+             patch.object(comparator_module, 'get_database_materialized_views',
+                           return_value={"mv_no_cascade": "SELECT 1 AS col"}), \
+             patch.object(comparator_module, '_canonicalize_all_views',
+                           return_value=({}, {}, set())), \
+             patch.object(comparator_module, 'get_dependent_views',
+                           return_value={}), \
+             patch.object(comparator_module, 'log'):
+            comparator_module.compare_views(autogen_context, upgrade_ops, [None])
+
+        drop_ops = [op for op in upgrade_ops.ops
+                    if isinstance(op, DropMaterializedViewOp)]
+        assert len(drop_ops) == 1, f"expected one DropMaterializedViewOp, got {drop_ops}"
+        assert drop_ops[0].name == "mv_no_cascade"
+        assert drop_ops[0].cascade is False, (
+            f"DropMaterializedViewOp.cascade should be False when "
+            f"ViewRecord.cascade_on_drop=False, got {drop_ops[0].cascade!r}"
         )
 
 

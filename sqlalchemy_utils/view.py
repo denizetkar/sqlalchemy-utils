@@ -32,7 +32,7 @@ def _quote_qualified_name(dialect, name, schema=None):
 class CreateView(DDLElement):
     """DDL element for CREATE VIEW (or CREATE OR REPLACE VIEW)."""
 
-    def __init__(self, name, selectable, materialized=False, replace=False, schema=None):
+    def __init__(self, name, *, selectable, materialized=False, replace=False, schema=None):
         if materialized and replace:
             raise ValueError('Cannot use CREATE OR REPLACE with materialized views')
         self.name = name
@@ -58,7 +58,7 @@ def compile_create_materialized_view(element, compiler, **kw):
 class DropView(DDLElement):
     """DDL element for DROP VIEW (or DROP MATERIALIZED VIEW)."""
 
-    def __init__(self, name, materialized=False, cascade=True, schema=None):
+    def __init__(self, name, *, materialized=False, cascade=True, schema=None):
         self.name = name
         self.materialized = materialized
         self.cascade = cascade
@@ -149,7 +149,7 @@ def _register_view_ddl(
         'after_create',
         CreateView(
             name,
-            selectable,
+            selectable=selectable,
             materialized=materialized,
             replace=replace,
             schema=schema,

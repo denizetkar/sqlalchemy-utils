@@ -44,8 +44,6 @@ def _build_dependency_graph(
     *db_views* represents views that already exist in the database — they
     are potential dependencies but are NOT included in the sort output.
     """
-    if db_views is None:
-        db_views = {}
     # All known view names (model + DB) for matching
     model_names: set[str] = {vr.name for vr in view_records}
     db_names: set[str] = set(db_views.keys()) - model_names  # only DB-only

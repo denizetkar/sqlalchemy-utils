@@ -372,6 +372,11 @@ def compare_views(
         # BUG-2: only drop views that are genuinely in the DB but NOT in the
         # model. Views in `skipped` failed canonicalization and must NOT be
         # dropped — they are still modeled, just not canonicalizable right now.
+        # IFACE-7: propagate cascade_on_drop from any matching ViewRecord so
+        # drops honor the model's cascade preference.
+        cascade_by_name = {
+            (vr.name, vr.schema): vr.cascade_on_drop for vr in schema_records
+        }
         for name in db_views:
             if name in model_view_defs or name in skipped:
                 continue
@@ -379,6 +384,7 @@ def compare_views(
                 DropViewOp(
                     name,
                     schema=schema,
+                    cascade=cascade_by_name.get((name, schema), True),
                     definition=db_views[name],
                 )
             )
@@ -395,6 +401,7 @@ def compare_views(
                 DropMaterializedViewOp(
                     name,
                     schema=schema,
+                    cascade=cascade_by_name.get((name, schema), True),
                     definition=db_mvs[name],
                 )
             )
