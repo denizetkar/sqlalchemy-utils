@@ -169,6 +169,88 @@ def _canonicalize_all_views(
     return view_defs, mv_defs, skipped
 
 
+def _diff_views(
+    model_defs: dict[str, str],
+    db_defs: dict[str, str],
+    schema: str | None,
+    is_materialized: bool,
+) -> list:
+    """Diff model view definitions against DB state, returning create/replace ops.
+
+    For each model view name: if absent from the DB, emit a Create op; if the
+    canonical definition differs from the DB, emit a Replace op. The op class
+    (``CreateViewOp``/``ReplaceViewOp`` vs ``CreateMaterializedViewOp``/
+    ``ReplaceMaterializedViewOp``) is selected by *is_materialized*.
+
+    Materialized-view ops are created with ``with_data=False`` (matches the
+    previous inline behavior — autogenerate emits ``WITH NO DATA``).
+    """
+    ops: list = []
+    for name, definition in model_defs.items():
+        if name not in db_defs:
+            if is_materialized:
+                ops.append(
+                    CreateMaterializedViewOp(
+                        name, definition, schema=schema, with_data=False
+                    )
+                )
+            else:
+                ops.append(CreateViewOp(name, definition, schema=schema))
+        elif db_defs[name].strip() != definition.strip():
+            if is_materialized:
+                ops.append(
+                    ReplaceMaterializedViewOp(
+                        name,
+                        definition,
+                        schema=schema,
+                        with_data=False,
+                        old_definition=db_defs[name],
+                    )
+                )
+            else:
+                ops.append(
+                    ReplaceViewOp(
+                        name,
+                        definition,
+                        schema=schema,
+                        old_definition=db_defs[name],
+                    )
+                )
+    return ops
+
+
+def _warn_if_dependents(
+    connection: sa.engine.Connection,
+    name: str,
+    schema: str | None,
+    kind_label: str,
+) -> None:
+    """Warn if dropping *name* would cascade to dependent views.
+
+    Queries ``get_dependent_views``; on failure logs a warning and proceeds
+    (treats dependents as empty). When dependents exist, logs a warning naming
+    *kind_label* (e.g. "view" or "materialized view") so the user knows the
+    CASCADE will silently drop them.
+    """
+    try:
+        dependents = get_dependent_views(connection, name, schema=schema)
+    except Exception as exc:
+        log.warning(
+            "Failed to query dependent views for %r: %s", name, exc
+        )
+        dependents = {}
+    if dependents:
+        log.warning(
+            "Dropping %s %r which has %d dependent view(s): %s. "
+            "CASCADE will drop them automatically. "
+            "Remove the dependent views from your model first if this is unintended.",
+            kind_label,
+            name,
+            len(dependents),
+            ", ".join(sorted(dependents.keys())),
+        )
+
+
 def compare_views(
     autogen_context: AutogenContext,
     upgrade_ops,
@@ -247,21 +329,9 @@ def compare_views(
         drop_ops: list = []
 
         # Regular views
-        for name, definition in model_view_defs.items():
-            if name not in db_views:
-                create_ops.append(
-                    CreateViewOp(name, definition, schema=schema)
-                )
-            elif db_views[name].strip() != definition.strip():
-                create_ops.append(
-                    ReplaceViewOp(
-                        name,
-                        definition,
-                        schema=schema,
-                        old_definition=db_views[name],
-                    )
-                )
-
+        create_ops.extend(
+            _diff_views(model_view_defs, db_views, schema, is_materialized=False)
+        )
         # BUG-2: only drop views that are genuinely in the DB but NOT in the
         # model. Views in `skipped` failed canonicalization and must NOT be
         # dropped — they are still modeled, just not canonicalizable right now.
@@ -275,40 +345,12 @@ def compare_views(
                     definition=db_views[name],
                 )
             )
-            try:
-                dependents = get_dependent_views(connection, name, schema=schema)
-            except Exception as exc:
-                log.warning(
-                    "Failed to query dependent views for %r: %s", name, exc
-                )
-                dependents = {}
-            if dependents:
-                log.warning(
-                    "Dropping view %r which has %d dependent view(s): %s. "
-                    "CASCADE will drop them automatically. "
-                    "Remove the dependent views from your model first if this is unintended.",
-                    name, len(dependents), ", ".join(sorted(dependents.keys())),
-                )
+            _warn_if_dependents(connection, name, schema, "view")
 
         # Materialized views
-        for name, definition in model_mv_defs.items():
-            if name not in db_mvs:
-                create_ops.append(
-                    CreateMaterializedViewOp(
-                        name, definition, schema=schema, with_data=False
-                    )
-                )
-            elif db_mvs[name].strip() != definition.strip():
-                create_ops.append(
-                    ReplaceMaterializedViewOp(
-                        name,
-                        definition,
-                        schema=schema,
-                        with_data=False,
-                        old_definition=db_mvs[name],
-                    )
-                )
-
+        create_ops.extend(
+            _diff_views(model_mv_defs, db_mvs, schema, is_materialized=True)
+        )
         for name in db_mvs:
             if name in model_mv_defs or name in skipped:
                 continue
@@ -319,20 +361,7 @@ def compare_views(
                     definition=db_mvs[name],
                 )
             )
-            try:
-                dependents = get_dependent_views(connection, name, schema=schema)
-            except Exception as exc:
-                log.warning(
-                    "Failed to query dependent views for %r: %s", name, exc
-                )
-                dependents = {}
-            if dependents:
-                log.warning(
-                    "Dropping materialized view %r which has %d dependent view(s): %s. "
-                    "CASCADE will drop them automatically. "
-                    "Remove the dependent views from your model first if this is unintended.",
-                    name, len(dependents), ", ".join(sorted(dependents.keys())),
-                )
+            _warn_if_dependents(connection, name, schema, "materialized view")
 
         # Order by dependency
         if create_ops:
