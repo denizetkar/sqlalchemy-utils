@@ -4,7 +4,7 @@ These tests exercise real PostgreSQL catalog queries and require a live PG
 instance. They are marked ``@pytest.mark.infrastructure`` and skip gracefully
 when PG is unavailable.
 
-BUG-1 regression: ``get_dependent_views`` previously referenced a nonexistent
+Regression: ``get_dependent_views`` previously referenced a nonexistent
 ``pg_depend.refobjname`` column, crashing with ``UndefinedColumn`` at runtime.
 Additionally, the dict key was the *referenced* view's name rather than the
 *dependent* view's name. These tests lock both behaviours.
@@ -112,7 +112,7 @@ def _teardown_schema(connection):
 def test_get_dependent_views_returns_correct_name(connection):
     """``get_dependent_views`` returns ``{dependent_name: definition}``.
 
-    Regression for BUG-1: the broken query referenced
+    Regression: the broken query referenced
     ``pg_depend.refobjname`` (nonexistent column) and used the *referenced*
     view's name as the dict key. After the fix, the key MUST be the
     *dependent* view's name (``_bug1_dep_view``), not the referenced view's

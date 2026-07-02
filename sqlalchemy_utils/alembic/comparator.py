@@ -50,8 +50,8 @@ log = logging.getLogger(__name__)
 
 # Outer savepoint name shared across all views in one canonicalization batch.
 # A single outer savepoint (RELEASEd never — always rolled back at the end)
-# fixes BUG-7 (per-view savepoint accumulation) and BUG-3 (A rolled back
-# before B is canonicalized → B's CREATE fails).
+# avoids per-view savepoint accumulation and ensures that a view rolled back
+# before a dependent is canonicalized does not break the dependent's CREATE.
 _OUTER_SAVEPOINT = "su_view_cmp"
 
 
@@ -89,7 +89,7 @@ def _canonicalize_all_views(
 
     Views that fail to CREATE are **skipped** — their names are returned in
     the ``skipped`` set so the caller can exclude them from drop detection
-    (BUG-2: a failed canonicalization must NOT produce a false DropViewOp).
+    (a failed canonicalization must NOT produce a false DropViewOp).
 
     Returns ``(view_defs, mv_defs, skipped)`` where ``view_defs`` /
     ``mv_defs`` map view name → canonical definition for regular /
@@ -104,7 +104,7 @@ def _canonicalize_all_views(
         return view_defs, mv_defs, skipped
 
     # Order by dependency so a view is created before any view that references
-    # it (BUG-3 fix: all views coexist inside the single outer savepoint).
+    # it (all views coexist inside the single outer savepoint).
     ordered = _safe_resolve(
         view_records,
         db_views_for_deps,
@@ -120,7 +120,7 @@ def _canonicalize_all_views(
             # the outer savepoint so dependents can see it); on failure
             # ROLLBACK TO (cleans the aborted sub-transaction without
             # touching already-created views). Releasing avoids savepoint
-            # accumulation (BUG-7).
+            # accumulation.
             inner_sp = f"{_OUTER_SAVEPOINT}_v"
             connection.execute(sa.text(f"SAVEPOINT {inner_sp}"))
             try:
@@ -136,7 +136,7 @@ def _canonicalize_all_views(
                     )
                     # ROLLBACK TO does not destroy the savepoint (PG
                     # semantics); RELEASE it so the next iteration can
-                    # create a fresh one (BUG-10).
+                    # create a fresh one.
                     connection.execute(
                         sa.text(f"RELEASE SAVEPOINT {inner_sp}")
                     )
@@ -366,8 +366,8 @@ def compare_views(
         db_mvs = db_mvs_by_schema[schema]
 
         # Batch-canonicalize all model views for this schema inside ONE outer
-        # savepoint (BUG-3/BUG-7). Views that fail to canonicalize are
-        # returned in `skipped` so drop detection can ignore them (BUG-2).
+        # savepoint. Views that fail to canonicalize are returned in
+        # `skipped` so drop detection can ignore them.
         schema_records = [
             vr for vr in model_records if _schema_matches(vr.schema, schema)
         ]
@@ -383,10 +383,10 @@ def compare_views(
         create_ops.extend(
             _diff_views(model_view_defs, db_views, schema, is_materialized=False)
         )
-        # BUG-2: only drop views that are genuinely in the DB but NOT in the
+        # Only drop views that are genuinely in the DB but NOT in the
         # model. Views in `skipped` failed canonicalization and must NOT be
         # dropped — they are still modeled, just not canonicalizable right now.
-        # IFACE-7: propagate cascade_on_drop from any matching ViewRecord so
+        # Propagate cascade_on_drop from any matching ViewRecord so
         # drops honor the model's cascade preference.
         cascade_by_name = {
             (vr.name, vr.schema): vr.cascade_on_drop for vr in schema_records

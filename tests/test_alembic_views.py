@@ -402,7 +402,7 @@ class TestViewRecordDefinitionMatches:
 
 
 # ===========================================================================
-# Characterization tests for selectable-to-string compilation (REDUND-1)
+# Characterization tests for selectable-to-string compilation
 #
 # These tests lock the EXACT output of the three (formerly redundant)
 # selectable-compilation paths so the consolidation refactor into
@@ -418,7 +418,7 @@ _CHAR_STR = "SELECT 1 AS col"
 class TestSelectableCompilationCharacterization:
     """Lock the output of the three selectable-compilation paths.
 
-    REDUND-1 consolidates three implementations into
+    This refactor consolidates three implementations into
     ``ViewRecord.compiled_definition(dialect=None)``. These tests ensure
     the consolidated method produces byte-identical output to the
     pre-refactor implementations.
@@ -740,7 +740,7 @@ class TestCreateMaterializedViewOp:
         assert op.with_data is False
 
     def test_with_data_default_false(self):
-        """CreateMaterializedViewOp defaults to with_data=False (IFACE-2).
+        """CreateMaterializedViewOp defaults to with_data=False.
 
         Manual and autogenerate behavior must be consistent: large MVs
         should not be populated by default during migrations.
@@ -794,7 +794,7 @@ class TestDropMaterializedViewOp:
             op.reverse()
 
     def test_drop_mv_with_data_default_false(self):
-        """DropMaterializedViewOp defaults to with_data=False (IFACE-5).
+        """DropMaterializedViewOp defaults to with_data=False.
 
         The renderer does not emit with_data for drop MV; only ``reverse()``
         consumes it (to seed the re-create). Defaulting to False keeps
@@ -1064,7 +1064,7 @@ class TestOpValidation:
     def test_create_mv_runtime_vs_op_consistency(self):
         """Runtime and op paths agree on WITH [NO] DATA when aligned.
 
-        Note: the migration op defaults to ``WITH NO DATA`` (IFACE-2) so
+        Note: the migration op defaults to ``WITH NO DATA`` so
         migrations don't block on large MVs; the runtime DDL listener still
         defaults to ``WITH DATA`` for app-level eager population. When the
         op is constructed with ``with_data=True`` the two paths emit the
@@ -1687,7 +1687,7 @@ class TestComparatorDDLError:
 
 
 # ===========================================================================
-# Regression: IFACE-8 (programming errors must propagate, not be swallowed)
+# Regression: programming errors must propagate, not be swallowed
 # ===========================================================================
 
 class _SelectableBreakingOnDialectCompile:
@@ -1716,7 +1716,7 @@ class _SelectableBreakingOnDialectCompile:
 
 
 class TestProgrammingErrorPropagates:
-    """IFACE-8: programming errors (TypeError/AttributeError/NameError) raised
+    """Programming errors (TypeError/AttributeError/NameError) raised
     during canonicalization must propagate to the caller, NOT be swallowed by
     the broad ``except Exception`` in ``_canonicalize_all_views``.
 
@@ -1744,7 +1744,7 @@ class TestProgrammingErrorPropagates:
 
 
 # ===========================================================================
-# Regression: BUG-2, BUG-3, BUG-7 (canonicalization savepoint refactor)
+# Regression: canonicalization savepoint refactor
 # ===========================================================================
 
 # Distinct names so tests don't collide with other view fixtures.
@@ -1753,7 +1753,7 @@ _BUG3_VIEW_NAMES = ["bug3_view_a", "bug3_view_b"]
 
 
 class TestCanonicalizeViewOnViewDeps:
-    """BUG-3 regression: view-on-view dependencies must survive savepoint.
+    """Regression: view-on-view dependencies must survive savepoint.
 
     When two model views depend on each other (B references A) and BOTH are
     new (not in the DB), each was previously canonicalized inside its own
@@ -1793,11 +1793,11 @@ class TestCanonicalizeViewOnViewDeps:
             ]
             created_names = {op.name for op in create_ops}
             assert "bug3_view_a" in created_names, (
-                f"BUG-3 regression: bug3_view_a missing from create ops; "
+                f"Regression: bug3_view_a missing from create ops; "
                 f"got {sorted(created_names)}"
             )
             assert "bug3_view_b" in created_names, (
-                f"BUG-3 regression: bug3_view_b missing from create ops "
+                f"Regression: bug3_view_b missing from create ops "
                 f"(likely rolled back A before canonicalizing B); "
                 f"got {sorted(created_names)}"
             )
@@ -1807,7 +1807,7 @@ class TestCanonicalizeViewOnViewDeps:
 
 
 class TestCanonicalizeSkipDoesNotDrop:
-    """BUG-2 regression: a view whose canonicalization fails must be SKIPPED,
+    """Regression: a view whose canonicalization fails must be SKIPPED,
     not dropped.
 
     If a model view references a nonexistent table, ``CREATE OR REPLACE VIEW``
@@ -1848,7 +1848,7 @@ class TestCanonicalizeSkipDoesNotDrop:
             ]
             bug2_drops = [op for op in drop_ops if op.name == "bug2_view_x"]
             assert bug2_drops == [], (
-                f"BUG-2 regression: false DropViewOp emitted for "
+                f"Regression: false DropViewOp emitted for "
                 f"bug2_view_x (canonicalization failed → should be SKIPPED, "
                 f"not dropped). Got drop ops: "
                 f"{[(op.name, op.schema) for op in drop_ops]}"
@@ -1859,10 +1859,10 @@ class TestCanonicalizeSkipDoesNotDrop:
 
 
 # ===========================================================================
-# Regression: BUG-10 (savepoint name reuse after ROLLBACK TO skips later views)
+# Regression: savepoint name reuse after ROLLBACK TO skips later views
 # ===========================================================================
 
-# Distinct names so the BUG-10 test does not collide with other view fixtures.
+# Distinct names so this regression test does not collide with other view fixtures.
 _BUG10_VIEW_NAMES = ["bug10_a", "bug10_b", "bug10_c"]
 
 # PG connection parameters reused from the test environment. These match the
@@ -1903,7 +1903,7 @@ def _bug10_pg_available() -> bool:
 
 
 def _drop_bug10_views(connection):
-    """Drop any leftover views created by the BUG-10 regression test."""
+    """Drop any leftover views created by this regression test."""
     for view_name in _BUG10_VIEW_NAMES:
         try:
             connection.execute(
@@ -1915,7 +1915,7 @@ def _drop_bug10_views(connection):
 
 
 class TestCanonicalizeFailureDoesNotSkipSubsequentViews:
-    """BUG-10 regression: a failed view must not cascade-skip later views.
+    """Regression: a failed view must not cascade-skip later views.
 
     The inner savepoint name ``"su_view_cmp_v"`` is constant across iterations.
     After a view CREATE fails, ``ROLLBACK TO SAVEPOINT su_view_cmp_v`` rolls
@@ -1976,19 +1976,19 @@ class TestCanonicalizeFailureDoesNotSkipSubsequentViews:
 
             # bug10_a failed to canonicalize → must NOT appear.
             assert "bug10_a" not in created_names, (
-                f"BUG-10: bug10_a should have been skipped (its CREATE "
+                f"Regression: bug10_a should have been skipped (its CREATE "
                 f"fails), but got {sorted(created_names)}"
             )
             # bug10_b and bug10_c come after the failure; they MUST still be
             # canonicalized. Before the fix the reused savepoint name caused
             # both to be silently dropped.
             assert "bug10_b" in created_names, (
-                f"BUG-10 regression: bug10_b missing from create ops "
+                f"Regression: bug10_b missing from create ops "
                 f"(savepoint name reuse after ROLLBACK TO likely skipped "
                 f"it); got {sorted(created_names)}"
             )
             assert "bug10_c" in created_names, (
-                f"BUG-10 regression: bug10_c missing from create ops "
+                f"Regression: bug10_c missing from create ops "
                 f"(savepoint name reuse after ROLLBACK TO likely skipped "
                 f"it); got {sorted(created_names)}"
             )
@@ -2352,7 +2352,7 @@ class TestDependWordBoundary:
         """A view named after a common SQL keyword (e.g. ``user``) still
         participates in dependency matching.
 
-        Regression test for BUG-11: the former ``_SQL_KEYWORDS`` filter
+        Regression test: the former ``_SQL_KEYWORDS`` filter
         silently dropped dependency edges for views with names like
         ``user``, ``data``, ``id``, ``name``.  Here ``summary`` references
         ``user`` as a real table, so ``user`` must be created first.
@@ -3440,13 +3440,13 @@ class TestCascadeOnDropWarning:
 
 
 # ===========================================================================
-# IFACE-7: cascade_on_drop propagation
+# cascade_on_drop propagation
 # ===========================================================================
 
 class TestCascadeOnDropPropagation:
     """compare_views should propagate ViewRecord.cascade_on_drop to the
     generated DropViewOp / DropMaterializedViewOp ``cascade`` param
-    (IFACE-7), rather than hardcoding ``cascade=True``.
+    rather than hardcoding ``cascade=True``.
     """
 
     @staticmethod
@@ -3558,13 +3558,13 @@ class TestCascadeOnDropPropagation:
 
 
 # ===========================================================================
-# Cross-schema same-name view handling (regression for BUG-4)
+# Cross-schema same-name view handling
 # ===========================================================================
 
 class TestCrossSchemaSameNameBothOps:
     """When two schemas each have a model view with the same name, both
     create ops must survive — the second must not overwrite the first
-    in the ``create_by_name`` / ``drop_by_name`` dicts (BUG-4).
+    in the ``create_by_name`` / ``drop_by_name`` dicts.
     """
 
     def test_cross_schema_same_name_both_ops(self):
@@ -3641,7 +3641,7 @@ class TestCrossSchemaSameNameBothOps:
 
 
 # ===========================================================================
-# Regression for BUG-6: schema=None asymmetric comparison
+# Regression: schema=None asymmetric comparison
 # ===========================================================================
 
 class TestSchemaNoneNoFalseDrop:
@@ -3709,21 +3709,21 @@ class TestSchemaNoneNoFalseDrop:
             op for op in drop_ops if op.name == "analytics_view"
         ]
         assert analytics_drops == [], (
-            f"BUG-6 regression: false DropViewOp emitted for "
+            f"Regression: false DropViewOp emitted for "
             f"analytics_view (schema=analytics) when schemas=[None]. "
             f"Got drop ops: {[(op.name, op.schema) for op in drop_ops]}"
         )
 
 
 # ===========================================================================
-# Regression: BUG-12 (MV canonicalization DROP must not use CASCADE)
+# Regression: MV canonicalization DROP must not use CASCADE
 # ===========================================================================
 
 _BUG12_VIEW_NAMES = ["bug12_mv", "bug12_dep_view"]
 
 
 def _drop_bug12_views(connection):
-    """Drop any leftover views/MVs created by the BUG-12 regression test."""
+    """Drop any leftover views/MVs created by this regression test."""
     # Drop dependent view first (depends on the MV).
     try:
         connection.execute(
@@ -3741,7 +3741,7 @@ def _drop_bug12_views(connection):
 
 
 class TestMvCanonicalizationNoCascade:
-    """BUG-12 regression: MV canonicalization DROP must NOT use CASCADE.
+    """Regression: MV canonicalization DROP must NOT use CASCADE.
 
     ``_build_create_sql`` emits ``DROP MATERIALIZED VIEW IF EXISTS ... CASCADE;
     CREATE MATERIALIZED VIEW ...`` to canonicalize a materialized view inside
@@ -3773,7 +3773,7 @@ class TestMvCanonicalizationNoCascade:
         does not manifest because the MV is created first and never dropped
         before the dependent view exists. The bug only triggers when the MV's
         canonicalization DROP runs after the dependent view was created. The
-        authoritative guard for BUG-12 is the SQL-string test below, which
+        authoritative guard is the SQL-string test below, which
         asserts ``_build_create_sql`` does not emit CASCADE regardless of
         ordering.
         """
@@ -3805,7 +3805,7 @@ class TestMvCanonicalizationNoCascade:
             ]
             created_names = {op.name for op in create_ops}
             assert "bug12_dep_view" in created_names, (
-                f"BUG-12 regression: bug12_dep_view missing from create "
+                f"Regression: bug12_dep_view missing from create "
                 f"ops (likely silently dropped by MV's CASCADE during "
                 f"canonicalization). Got: {sorted(created_names)}"
             )
@@ -3815,7 +3815,7 @@ class TestMvCanonicalizationNoCascade:
     def test_build_create_sql_no_cascade_for_materialized_view(self):
         """``_build_create_sql`` must NOT emit CASCADE for materialized views.
 
-        This is the authoritative behavior test for BUG-12: the generated
+        This is the authoritative behavior test: the generated
         canonicalization SQL for an MV must use a plain
         ``DROP MATERIALIZED VIEW IF EXISTS <name>`` (no CASCADE), followed by
         ``CREATE MATERIALIZED VIEW``. Inspecting the generated SQL string (not
@@ -3838,7 +3838,7 @@ class TestMvCanonicalizationNoCascade:
             sql = _build_create_sql(connection, vr)
 
         assert "CASCADE" not in sql.upper(), (
-            f"BUG-12 regression: _build_create_sql emits CASCADE for MV "
+            f"Regression: _build_create_sql emits CASCADE for MV "
             f"canonicalization DROP. This silently drops dependent objects "
             f"created earlier in the savepoint. SQL: {sql!r}"
         )

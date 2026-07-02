@@ -302,7 +302,7 @@ def test_table_args_schema_fallback():
 def test_resolve_schema_list_style():
     """`_resolve_schema` handles list-style __table_args__.
 
-    Regression test for BUG-8: when __table_args__ is a list whose
+    Regression test: when __table_args__ is a list whose
     final element is a dict containing 'schema' (e.g.
     ``__table_args__ = [{"schema": "public"}]``), `_resolve_schema`
     previously returned None because it only checked
@@ -336,7 +336,7 @@ def test_declare_last_forwarding():
     """ViewMixin coexists with a cooperative mixin that also defines
     ``__declare_last__`` without raising TypeError.
 
-    Regression test for BUG-5: the forwarding loop called
+    Regression test: the forwarding loop called
     ``base.__declare_last__(cls)`` passing ``cls`` as a second positional
     argument to a classmethod already bound to ``base``, producing
     ``TypeError: __declare_last__() takes 1 positional argument but 2
