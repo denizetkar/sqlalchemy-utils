@@ -56,14 +56,32 @@ class ViewRecord:
         """
         if not isinstance(other, ViewRecord):
             return NotImplemented
-        return self._selectable_key() == other._selectable_key()
+        return self.compiled_definition() == other.compiled_definition()
 
-    def _selectable_key(self) -> str:
-        """Render the selectable to a stable string for comparison."""
+    def compiled_definition(self, dialect=None) -> str:
+        """Compile the selectable to a SQL string for comparison/dependency detection.
+
+        If *dialect* is provided, compile against it; otherwise use default
+        compilation.  String selectables are returned as-is.
+
+        This is the single source of truth for selectable-to-string
+        compilation used by :meth:`definition_matches`,
+        :func:`sqlalchemy_utils.alembic.comparator._compile_selectable`
+        and :func:`sqlalchemy_utils.alembic.depend._definition_str`.
+        """
         sel = self.selectable
         if isinstance(sel, str):
             return sel
-        return str(sel.compile(compile_kwargs={"literal_binds": True}))
+        compile_kwargs = {"literal_binds": True}
+        if dialect is not None:
+            return str(
+                sel.compile(dialect=dialect, compile_kwargs=compile_kwargs)
+            )
+        return str(sel.compile(compile_kwargs=compile_kwargs))
+
+    def _selectable_key(self) -> str:
+        """Backward-compatible alias for :meth:`compiled_definition`."""
+        return self.compiled_definition()
 
     def __repr__(self) -> str:
         """Pretty string representation."""

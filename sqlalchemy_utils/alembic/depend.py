@@ -25,14 +25,10 @@ from sqlalchemy_utils.view_record import ViewRecord
 def _definition_str(view_record: ViewRecord) -> str:
     """Return the SQL definition string for *view_record*.
 
-    If ``selectable`` is already a string it is returned as-is; otherwise
-    it is compiled with ``literal_binds`` (matching
-    :meth:`ViewRecord._selectable_key`).
+    Delegates to :meth:`ViewRecord.compiled_definition` (no dialect) so
+    selectable-to-string compilation has a single implementation.
     """
-    sel = view_record.selectable
-    if isinstance(sel, str):
-        return sel
-    return str(sel.compile(compile_kwargs={"literal_binds": True}))
+    return view_record.compiled_definition()
 
 
 def _build_dependency_graph(

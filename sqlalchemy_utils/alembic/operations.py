@@ -99,7 +99,6 @@ class CreateViewOp(MigrateOperation):
         return DropViewOp(
             self.name,
             schema=self.schema,
-            materialized=False,
             cascade=True,
             definition=self.definition,
             replace=self.replace,
@@ -112,17 +111,13 @@ class CreateViewOp(MigrateOperation):
 
 @Operations.register_operation("drop_view")
 class DropViewOp(MigrateOperation):
-    """Operation that emits ``DROP [MATERIALIZED] VIEW IF EXISTS``."""
+    """Operation that emits ``DROP VIEW IF EXISTS``."""
 
     def __init__(
         self,
         name: str,
         *,
         schema: str | None = None,
-        # Internal-only: used by reverse() for round-trip. Autogenerate uses
-        # DropMaterializedViewOp for MV drops; op.drop_view rejects
-        # materialized=True. The renderer does not round-trip this flag.
-        materialized: bool = False,
         # Note: named cascade for Alembic op consistency; corresponds to
         # cascade_on_drop in ViewMixin and create_view().
         cascade: bool = True,
@@ -131,7 +126,6 @@ class DropViewOp(MigrateOperation):
     ) -> None:
         self.name = name
         self.schema = schema
-        self.materialized = materialized
         self.cascade = cascade
         self.definition = definition
         self.replace = replace
@@ -155,7 +149,6 @@ class DropViewOp(MigrateOperation):
         op = DropViewOp(
             name,
             schema=schema,
-            materialized=False,
             cascade=cascade,
             definition=definition,
         )
@@ -515,12 +508,11 @@ def _create_view_impl(operations: Operations, op: CreateViewOp) -> None:
 
 @Operations.implementation_for(DropViewOp)
 def _drop_view_impl(operations: Operations, op: DropViewOp) -> None:
-    """Execute ``DROP [MATERIALIZED] VIEW IF EXISTS`` via the migration connection."""
+    """Execute ``DROP VIEW IF EXISTS`` via the migration connection."""
     dialect = operations.get_bind().dialect
     qualified = _quote_qualified_name(dialect, op.name, op.schema)
-    mat_clause = "MATERIALIZED " if op.materialized else ""
     cascade_clause = " CASCADE" if op.cascade else ""
-    sql = f"DROP {mat_clause}VIEW IF EXISTS {qualified}{cascade_clause}"
+    sql = f"DROP VIEW IF EXISTS {qualified}{cascade_clause}"
     operations.execute(sa.text(sql))
 
 

@@ -55,15 +55,7 @@ _OUTER_SAVEPOINT = "su_view_cmp"
 
 
 def _compile_selectable(connection: sa.engine.Connection, view_record: ViewRecord) -> str:
-    sel = view_record.selectable
-    if isinstance(sel, str):
-        return sel
-    return str(
-        sel.compile(
-            dialect=connection.dialect,
-            compile_kwargs={"literal_binds": True},
-        )
-    )
+    return view_record.compiled_definition(dialect=connection.dialect)
 
 
 def _build_create_sql(connection: sa.engine.Connection, view_record: ViewRecord) -> str:
@@ -280,7 +272,6 @@ def compare_views(
                 DropViewOp(
                     name,
                     schema=schema,
-                    materialized=False,
                     definition=db_views[name],
                 )
             )

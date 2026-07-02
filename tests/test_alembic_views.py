@@ -387,6 +387,123 @@ class TestViewRecordDefinitionMatches:
 
 
 # ===========================================================================
+# Characterization tests for selectable-to-string compilation (REDUND-1)
+#
+# These tests lock the EXACT output of the three (formerly redundant)
+# selectable-compilation paths so the consolidation refactor into
+# ``ViewRecord.compiled_definition`` cannot change observable behavior.
+# ===========================================================================
+
+# A canonical selectable whose compiled form is stable across dialects.
+_CHAR_SEL = sa.select(sa.literal_column("1").label("col"))
+_CHAR_SEL_EXPECTED = "SELECT 1 AS col"
+_CHAR_STR = "SELECT 1 AS col"
+
+
+class TestSelectableCompilationCharacterization:
+    """Lock the output of the three selectable-compilation paths.
+
+    REDUND-1 consolidates three implementations into
+    ``ViewRecord.compiled_definition(dialect=None)``. These tests ensure
+    the consolidated method produces byte-identical output to the
+    pre-refactor implementations.
+    """
+
+    # --- ViewRecord._selectable_key (no dialect) ---
+
+    def test_selectable_key_string_selectable(self):
+        vr = ViewRecord(name="v", selectable=_CHAR_STR)
+        assert vr._selectable_key() == _CHAR_STR
+
+    def test_selectable_key_sa_selectable_no_dialect(self):
+        vr = ViewRecord(name="v", selectable=_CHAR_SEL)
+        assert vr._selectable_key() == _CHAR_SEL_EXPECTED
+
+    # --- depend._definition_str (no dialect) ---
+
+    def test_definition_str_string_selectable(self):
+        from sqlalchemy_utils.alembic.depend import _definition_str
+
+        vr = ViewRecord(name="v", selectable=_CHAR_STR)
+        assert _definition_str(vr) == _CHAR_STR
+
+    def test_definition_str_sa_selectable_no_dialect(self):
+        from sqlalchemy_utils.alembic.depend import _definition_str
+
+        vr = ViewRecord(name="v", selectable=_CHAR_SEL)
+        assert _definition_str(vr) == _CHAR_SEL_EXPECTED
+
+    # --- comparator._compile_selectable (with dialect) ---
+
+    def test_compile_selectable_string_selectable_with_dialect(self):
+        from sqlalchemy_utils.alembic.comparator import _compile_selectable
+
+        connection = MagicMock()
+        connection.dialect = sa.dialects.postgresql.dialect()
+        vr = ViewRecord(name="v", selectable=_CHAR_STR)
+        assert _compile_selectable(connection, vr) == _CHAR_STR
+
+    def test_compile_selectable_sa_selectable_with_pg_dialect(self):
+        from sqlalchemy_utils.alembic.comparator import _compile_selectable
+
+        connection = MagicMock()
+        connection.dialect = sa.dialects.postgresql.dialect()
+        vr = ViewRecord(name="v", selectable=_CHAR_SEL)
+        assert _compile_selectable(connection, vr) == _CHAR_SEL_EXPECTED
+
+    def test_compile_selectable_sa_selectable_with_sqlite_dialect(self):
+        from sqlalchemy_utils.alembic.comparator import _compile_selectable
+
+        connection = MagicMock()
+        connection.dialect = sa.dialects.sqlite.dialect()
+        vr = ViewRecord(name="v", selectable=_CHAR_SEL)
+        assert _compile_selectable(connection, vr) == _CHAR_SEL_EXPECTED
+
+    # --- Cross-path equivalence (no-dialect vs dialect-for-this-selectable)
+    #     For a dialect-agnostic selectable, all three paths must agree.
+
+    def test_all_three_paths_produce_identical_output_for_str(self):
+        from sqlalchemy_utils.alembic.comparator import _compile_selectable
+        from sqlalchemy_utils.alembic.depend import _definition_str
+
+        vr = ViewRecord(name="v", selectable=_CHAR_STR)
+        connection = MagicMock()
+        connection.dialect = sa.dialects.postgresql.dialect()
+        assert vr._selectable_key() == _definition_str(vr) == _compile_selectable(connection, vr)
+
+    def test_all_three_paths_produce_identical_output_for_sa_selectable(self):
+        from sqlalchemy_utils.alembic.comparator import _compile_selectable
+        from sqlalchemy_utils.alembic.depend import _definition_str
+
+        vr = ViewRecord(name="v", selectable=_CHAR_SEL)
+        connection = MagicMock()
+        connection.dialect = sa.dialects.postgresql.dialect()
+        assert vr._selectable_key() == _definition_str(vr) == _compile_selectable(connection, vr)
+
+    # --- Dialect-sensitive selectable: confirm the dialect path is actually
+    #     used (not silently ignored). A selectable that raises when compiled
+    #     with a dialect proves _compile_selectable passes the dialect through.
+
+    def test_compile_selectable_passes_dialect_through(self):
+        """If _compile_selectable did not pass the dialect, this selectable
+        would compile fine; because it does pass the dialect, a TypeError is
+        raised — locking the dialect-passing behavior."""
+        from sqlalchemy_utils.alembic.comparator import _compile_selectable
+
+        class _DialectSensitiveSelectable:
+            def compile(self, **kw):
+                if "dialect" in kw:
+                    raise TypeError("dialect was passed")
+                return "SELECT 1 AS col"
+
+        connection = MagicMock()
+        connection.dialect = sa.dialects.postgresql.dialect()
+        vr = ViewRecord(name="v", selectable=_DialectSensitiveSelectable())
+        with pytest.raises(TypeError, match="dialect was passed"):
+            _compile_selectable(connection, vr)
+
+
+# ===========================================================================
 # pg_catalog
 # ===========================================================================
 
@@ -531,9 +648,8 @@ class TestDropViewOp:
     """DropViewOp instantiation, reverse, SQL, and classmethod."""
 
     def test_instantiation(self):
-        op = DropViewOp("v1", materialized=False, cascade=True)
+        op = DropViewOp("v1", cascade=True)
         assert op.name == "v1"
-        assert op.materialized is False
         assert op.cascade is True
 
     def test_drop_view_rejects_materialized_kwarg(self):
@@ -564,7 +680,7 @@ class TestDropViewOp:
         assert sqls == ["DROP VIEW IF EXISTS v1"]
 
     def test_sql_materialized(self):
-        op = DropViewOp("v1", materialized=True)
+        op = DropMaterializedViewOp("v1")
         sqls = _capture_sql(op)
         assert sqls == ["DROP MATERIALIZED VIEW IF EXISTS v1 CASCADE"]
 
@@ -2777,7 +2893,7 @@ class TestPublicAPIImportable:
     def test_import_drop_view_op(self):
         from sqlalchemy_utils.alembic import DropViewOp as ImportedDropViewOp
 
-        op = ImportedDropViewOp("test_view", materialized=False)
+        op = ImportedDropViewOp("test_view")
         assert op.name == "test_view"
 
     def test_import_replace_view_op(self):
