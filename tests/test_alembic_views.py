@@ -34,6 +34,7 @@ from sqlalchemy_utils import (
     create_view,
 )
 from sqlalchemy_utils.alembic.comparator import (
+    _build_create_sql,
     _canonicalize_all_views,
     _schema_matches,
     compare_views,
@@ -2245,17 +2246,22 @@ class TestDependWordBoundary:
         names = [v.name for v in result]
         assert names.index("log") < names.index("report")
 
-    def test_skips_sql_keywords(self):
-        """A view named after a SQL keyword is skipped in dependency matching."""
-        views = [
-            ViewRecord(name="user", selectable="SELECT 1 AS id"),
-            ViewRecord(
-                name="data",
-                selectable="SELECT account_id AS user FROM accounts",
-            ),
-        ]
-        graph = _build_dependency_graph(views, db_views={})
-        assert "user" not in graph.get("data", set())
+    def test_keyword_named_view_has_dependency_tracked(self):
+        """A view named after a common SQL keyword (e.g. ``user``) still
+        participates in dependency matching.
+
+        Regression test for BUG-11: the former ``_SQL_KEYWORDS`` filter
+        silently dropped dependency edges for views with names like
+        ``user``, ``data``, ``id``, ``name``.  Here ``summary`` references
+        ``user`` as a real table, so ``user`` must be created first.
+        """
+        summary_view = ViewRecord(
+            name="summary", selectable="SELECT * FROM user"
+        )
+        user_view = ViewRecord(name="user", selectable="SELECT 1 AS col")
+        result = resolve_create_order([summary_view, user_view], db_views={})
+        names = [v.name for v in result]
+        assert names.index("user") < names.index("summary")
 
 
 # ===========================================================================
@@ -3540,3 +3546,136 @@ class TestSchemaNoneNoFalseDrop:
             f"analytics_view (schema=analytics) when schemas=[None]. "
             f"Got drop ops: {[(op.name, op.schema) for op in drop_ops]}"
         )
+
+
+# ===========================================================================
+# Regression: BUG-12 (MV canonicalization DROP must not use CASCADE)
+# ===========================================================================
+
+_BUG12_VIEW_NAMES = ["bug12_mv", "bug12_dep_view"]
+
+
+def _drop_bug12_views(connection):
+    """Drop any leftover views/MVs created by the BUG-12 regression test."""
+    # Drop dependent view first (depends on the MV).
+    try:
+        connection.execute(
+            sa.text("DROP VIEW IF EXISTS bug12_dep_view CASCADE")
+        )
+    except sa.exc.SQLAlchemyError:
+        connection.rollback()
+    try:
+        connection.execute(
+            sa.text("DROP MATERIALIZED VIEW IF EXISTS bug12_mv CASCADE")
+        )
+    except sa.exc.SQLAlchemyError:
+        connection.rollback()
+    connection.commit()
+
+
+class TestMvCanonicalizationNoCascade:
+    """BUG-12 regression: MV canonicalization DROP must NOT use CASCADE.
+
+    ``_build_create_sql`` emits ``DROP MATERIALIZED VIEW IF EXISTS ... CASCADE;
+    CREATE MATERIALIZED VIEW ...`` to canonicalize a materialized view inside
+    a savepoint. The CASCADE is dangerous: it silently drops every dependent
+    object. If a regular view was created earlier in the same savepoint (due
+    to wrong ordering or any other reason), the CASCADE on the MV DROP wipes
+    it out, so the dependent view is never canonicalized and gets a false
+    DropViewOp (or simply goes missing from create ops).
+
+    The CASCADE is needed at *runtime* (``operations.py:_replace_materialized_view_impl``
+    — out of scope here) for REPLACE semantics, but during canonicalization we
+    only need to create the MV temporarily to read its definition back from
+    pg_catalog. A plain ``DROP MATERIALIZED VIEW IF EXISTS`` is sufficient.
+    """
+
+    @pytest.mark.infrastructure
+    @pytest.mark.usefixtures("postgresql_dsn")
+    def test_mv_canonicalization_does_not_drop_dependents(self, connection):
+        """A dependent regular view survives the MV's canonicalization DROP.
+
+        Both the MV ``bug12_mv`` and the dependent regular view
+        ``bug12_dep_view`` (``SELECT * FROM bug12_mv``) are new (not in DB).
+        After ``compare_views`` runs, both should appear as CreateViewOp /
+        CreateMaterializedViewOp — the dependent view must NOT have been
+        silently dropped by the MV's CASCADE during canonicalization.
+
+        NOTE: This test exercises the integration path. When dependency
+        ordering is correct (MV created before the dependent view), the bug
+        does not manifest because the MV is created first and never dropped
+        before the dependent view exists. The bug only triggers when the MV's
+        canonicalization DROP runs after the dependent view was created. The
+        authoritative guard for BUG-12 is the SQL-string test below, which
+        asserts ``_build_create_sql`` does not emit CASCADE regardless of
+        ordering.
+        """
+        _drop_bug12_views(connection)
+        try:
+            metadata = sa.MetaData()
+            metadata.info["sqlalchemy_utils_views"] = [
+                ViewRecord(
+                    name="bug12_mv",
+                    selectable=sa.select(sa.text("1 AS id")),
+                    schema=None,
+                    materialized=True,
+                ),
+                ViewRecord(
+                    name="bug12_dep_view",
+                    selectable=sa.select(sa.text("* FROM bug12_mv")),
+                    schema=None,
+                ),
+            ]
+
+            upgrade_ops = _run_comparator(connection, metadata, schemas=[None])
+
+            create_ops = [
+                op
+                for op in upgrade_ops.ops
+                if isinstance(
+                    op, (CreateViewOp, CreateMaterializedViewOp)
+                )
+            ]
+            created_names = {op.name for op in create_ops}
+            assert "bug12_dep_view" in created_names, (
+                f"BUG-12 regression: bug12_dep_view missing from create "
+                f"ops (likely silently dropped by MV's CASCADE during "
+                f"canonicalization). Got: {sorted(created_names)}"
+            )
+        finally:
+            _drop_bug12_views(connection)
+
+    def test_build_create_sql_no_cascade_for_materialized_view(self):
+        """``_build_create_sql`` must NOT emit CASCADE for materialized views.
+
+        This is the authoritative behavior test for BUG-12: the generated
+        canonicalization SQL for an MV must use a plain
+        ``DROP MATERIALIZED VIEW IF EXISTS <name>`` (no CASCADE), followed by
+        ``CREATE MATERIALIZED VIEW``. Inspecting the generated SQL string (not
+        the source) is the correct way to lock this behavior.
+        """
+        connection = MagicMock()
+        connection.dialect = sa.dialects.postgresql.dialect()
+        # _compile_selectable is invoked inside _build_create_sql; stub it out
+        # by patching so the SQL can be built without a real DB round-trip.
+        with patch(
+            "sqlalchemy_utils.alembic.comparator._compile_selectable",
+            return_value="SELECT 1 AS id",
+        ):
+            vr = ViewRecord(
+                name="bug12_mv",
+                selectable="SELECT 1 AS id",
+                schema=None,
+                materialized=True,
+            )
+            sql = _build_create_sql(connection, vr)
+
+        assert "CASCADE" not in sql.upper(), (
+            f"BUG-12 regression: _build_create_sql emits CASCADE for MV "
+            f"canonicalization DROP. This silently drops dependent objects "
+            f"created earlier in the savepoint. SQL: {sql!r}"
+        )
+        assert "DROP MATERIALIZED VIEW IF EXISTS" in sql.upper(), (
+            f"Expected plain DROP MATERIALIZED VIEW IF EXISTS in SQL: {sql!r}"
+        )
+

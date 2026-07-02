@@ -76,7 +76,7 @@ def _build_create_sql(connection: sa.engine.Connection, view_record: ViewRecord)
         # PG has no CREATE OR REPLACE MATERIALIZED VIEW; drop first.
         # The drop happens inside the outer savepoint so it never persists.
         return (
-            f"DROP MATERIALIZED VIEW IF EXISTS {prefix}{name} CASCADE; "
+            f"DROP MATERIALIZED VIEW IF EXISTS {prefix}{name}; "
             f"CREATE MATERIALIZED VIEW {prefix}{name} "
             f"AS {definition} WITH NO DATA"
         )
