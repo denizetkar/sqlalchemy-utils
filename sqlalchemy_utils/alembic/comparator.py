@@ -29,6 +29,7 @@ from alembic.autogenerate import comparators
 from alembic.autogenerate.api import AutogenContext
 
 from sqlalchemy_utils.view_record import ViewRecord
+from sqlalchemy_utils.view import _quote_qualified_name
 from sqlalchemy_utils.alembic.pg_catalog import (
     get_database_views,
     get_database_materialized_views,
@@ -61,18 +62,17 @@ def _compile_selectable(connection: sa.engine.Connection, view_record: ViewRecor
 def _build_create_sql(connection: sa.engine.Connection, view_record: ViewRecord) -> str:
     """Build the CREATE (OR REPLACE) VIEW / MATERIALIZED VIEW statement."""
     definition = _compile_selectable(connection, view_record)
-    ip = connection.dialect.identifier_preparer
-    prefix = f"{ip.quote(view_record.schema)}." if view_record.schema else ""
-    name = ip.quote(view_record.name)
+    dialect = connection.dialect
+    qualified = _quote_qualified_name(dialect, view_record.name, view_record.schema)
     if view_record.materialized:
         # PG has no CREATE OR REPLACE MATERIALIZED VIEW; drop first.
         # The drop happens inside the outer savepoint so it never persists.
         return (
-            f"DROP MATERIALIZED VIEW IF EXISTS {prefix}{name}; "
-            f"CREATE MATERIALIZED VIEW {prefix}{name} "
+            f"DROP MATERIALIZED VIEW IF EXISTS {qualified}; "
+            f"CREATE MATERIALIZED VIEW {qualified} "
             f"AS {definition} WITH NO DATA"
         )
-    return f"CREATE OR REPLACE VIEW {prefix}{name} AS {definition}"
+    return f"CREATE OR REPLACE VIEW {qualified} AS {definition}"
 
 
 def _canonicalize_all_views(

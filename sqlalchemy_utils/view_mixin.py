@@ -2,12 +2,10 @@ import logging
 
 import sqlalchemy as sa
 
-from sqlalchemy_utils.view_record import ViewRecord
 from sqlalchemy_utils.exceptions import ViewReadonlyError
 from sqlalchemy_utils.view import (
     create_table_from_selectable,
-    CreateView,
-    DropView,
+    _register_view_ddl,
     refresh_materialized_view,
 )
 
@@ -183,40 +181,17 @@ class ViewMixin:
                         selectable_type,
                     )
 
-        sa.event.listen(
-            metadata,
-            'after_create',
-            CreateView(cls.__tablename__, selectable, materialized=is_materialized, replace=replace, schema=view_schema),
-        )
-        sa.event.listen(
-            metadata,
-            'before_drop',
-            DropView(cls.__tablename__, materialized=is_materialized, cascade=cascade_on_drop, schema=view_schema),
-        )
-
-        if is_materialized and indexes:
-
-            @sa.event.listens_for(metadata, 'after_create')
-            def create_indexes(target, connection, **kw):
-                # The backing table is built with metadata=None (see
-                # create_table_from_selectable above), so it is NOT registered
-                # on this metadata and a table-scoped listener would never
-                # fire during metadata.create_all(). We therefore listen on
-                # the metadata and filter to only act for this view's table.
-                if target is not table:
-                    return
-                for idx in table.indexes:
-                    idx.create(connection)
-
-        view_records = metadata.info.setdefault('sqlalchemy_utils_views', [])
-        view_records.append(ViewRecord(
+        _register_view_ddl(
+            metadata=metadata,
             name=cls.__tablename__,
             selectable=selectable,
-            schema=view_schema,
             materialized=is_materialized,
             replace=replace,
             cascade_on_drop=cascade_on_drop,
-        ))
+            schema=view_schema,
+            table=table,
+            indexes=indexes if indexes else None,
+        )
 
         if not sa.event.contains(sa.orm.Session, 'before_flush', _view_before_flush):
             sa.event.listen(sa.orm.Session, 'before_flush', _view_before_flush)

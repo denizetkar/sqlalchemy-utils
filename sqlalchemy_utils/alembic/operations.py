@@ -22,25 +22,7 @@ import warnings
 import sqlalchemy as sa
 from alembic.operations import MigrateOperation, Operations
 
-
-# ---------------------------------------------------------------------------
-# Helpers (identifier quoting — see view.py for the same pattern)
-# ---------------------------------------------------------------------------
-
-def _quote_identifier(dialect, name: str) -> str:
-    """Quote *name* using the dialect's identifier preparer."""
-    return dialect.identifier_preparer.quote(name)
-
-
-def _quote_qualified_name(dialect, name: str, schema: str | None) -> str:
-    """Return a schema-qualified, properly quoted identifier.
-
-    When *schema* is given the result is ``"schema"."name"`` (both parts
-    quoted by the dialect's identifier preparer); otherwise just ``"name"``.
-    """
-    if schema:
-        return f"{_quote_identifier(dialect, schema)}.{_quote_identifier(dialect, name)}"
-    return _quote_identifier(dialect, name)
+from sqlalchemy_utils.view import _quote_identifier, _quote_qualified_name
 
 
 def _validate_definition(definition: str) -> None:

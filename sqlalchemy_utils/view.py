@@ -8,6 +8,27 @@ from sqlalchemy_utils.functions import get_columns
 from sqlalchemy_utils.view_record import ViewRecord
 
 
+# ---------------------------------------------------------------------------
+# Identifier-quoting helpers (single source of truth; re-exported by
+# sqlalchemy_utils.alembic.operations and used by alembic.comparator).
+# ---------------------------------------------------------------------------
+
+def _quote_identifier(dialect, name):
+    """Quote *name* using the dialect's identifier preparer."""
+    return dialect.identifier_preparer.quote(name)
+
+
+def _quote_qualified_name(dialect, name, schema=None):
+    """Return a schema-qualified, properly quoted identifier.
+
+    When *schema* is given the result is ``"schema"."name"`` (both parts
+    quoted by the dialect's identifier preparer); otherwise just ``"name"``.
+    """
+    if schema:
+        return f"{_quote_identifier(dialect, schema)}.{_quote_identifier(dialect, name)}"
+    return _quote_identifier(dialect, name)
+
+
 class CreateView(DDLElement):
     """DDL element for CREATE VIEW (or CREATE OR REPLACE VIEW)."""
 
@@ -24,12 +45,12 @@ class CreateView(DDLElement):
 @compiler.compiles(CreateView)
 def compile_create_materialized_view(element, compiler, **kw):
     """Compile ``CreateView`` to ``CREATE [OR REPLACE] [MATERIALIZED] VIEW``."""
-    schema_prefix = f'{compiler.dialect.identifier_preparer.quote(element.schema)}.' if element.schema else ''
-    return 'CREATE {}{}VIEW {}{} AS {}'.format(
+    ip = compiler.dialect.identifier_preparer
+    qualified = _quote_qualified_name(compiler.dialect, element.name, element.schema)
+    return 'CREATE {}{}VIEW {} AS {}'.format(
         'OR REPLACE ' if element.replace else '',
         'MATERIALIZED ' if element.materialized else '',
-        schema_prefix,
-        compiler.dialect.identifier_preparer.quote(element.name),
+        qualified,
         compiler.sql_compiler.process(element.selectable, literal_binds=True),
     )
 
@@ -47,11 +68,10 @@ class DropView(DDLElement):
 @compiler.compiles(DropView)
 def compile_drop_materialized_view(element, compiler, **kw):
     """Compile ``DropView`` to ``DROP [MATERIALIZED] VIEW IF EXISTS [...]``."""
-    schema_prefix = f'{compiler.dialect.identifier_preparer.quote(element.schema)}.' if element.schema else ''
-    sql = 'DROP {}VIEW IF EXISTS {}{}'.format(
+    qualified = _quote_qualified_name(compiler.dialect, element.name, element.schema)
+    sql = 'DROP {}VIEW IF EXISTS {}'.format(
         'MATERIALIZED ' if element.materialized else '',
-        schema_prefix,
-        compiler.dialect.identifier_preparer.quote(element.name),
+        qualified,
     )
     if element.cascade:
         sql += ' CASCADE'
@@ -101,6 +121,71 @@ def create_table_from_selectable(
     return table
 
 
+def _register_view_ddl(
+    metadata,
+    name,
+    selectable,
+    materialized,
+    replace,
+    cascade_on_drop,
+    schema,
+    table=None,
+    indexes=None,
+):
+    """Register CREATE/DROP DDL listeners and a ViewRecord on *metadata*.
+
+    Shared by :func:`create_view`, :func:`create_materialized_view`, and
+    :class:`~sqlalchemy_utils.view_mixin.ViewMixin.__declare_last__` to avoid
+    triplicated listener registration and ViewRecord construction.
+
+    When *materialized* is ``True`` and *indexes* (or *table* with indexes) is
+    provided, a metadata-scoped ``after_create`` listener is registered that
+    creates each index after the view's backing table is created. This is
+    required because the backing table is built with ``metadata=None`` (so a
+    table-scoped listener would never fire during ``metadata.create_all()``).
+    """
+    sa.event.listen(
+        metadata,
+        'after_create',
+        CreateView(
+            name,
+            selectable,
+            materialized=materialized,
+            replace=replace,
+            schema=schema,
+        ),
+    )
+    sa.event.listen(
+        metadata,
+        'before_drop',
+        DropView(
+            name,
+            materialized=materialized,
+            cascade=cascade_on_drop,
+            schema=schema,
+        ),
+    )
+
+    if materialized and table is not None and table.indexes:
+
+        @sa.event.listens_for(metadata, 'after_create')
+        def create_indexes(target, connection, **kw):
+            if target is not table:
+                return
+            for idx in table.indexes:
+                idx.create(connection)
+
+    view_records = metadata.info.setdefault('sqlalchemy_utils_views', [])
+    view_records.append(ViewRecord(
+        name=name,
+        selectable=selectable,
+        schema=schema,
+        materialized=materialized,
+        replace=replace,
+        cascade_on_drop=cascade_on_drop,
+    ))
+
+
 def create_materialized_view(
     name,
     selectable,
@@ -145,40 +230,17 @@ def create_materialized_view(
         schema=schema,
     )
 
-    sa.event.listen(
-        metadata,
-        'after_create',
-        CreateView(name, selectable, materialized=True, schema=schema),
-    )
-
-    @sa.event.listens_for(metadata, 'after_create')
-    def create_indexes(target, connection, **kw):
-        # The table is built with metadata=None (see create_table_from_selectable
-        # above), so it is NOT registered on this metadata and a table-scoped
-        # listener would never fire during metadata.create_all(). We therefore
-        # listen on the metadata and filter to only act for this view's table.
-        if target is not table:
-            return
-        for idx in table.indexes:
-            idx.create(connection)
-
-    sa.event.listen(
-        metadata,
-        'before_drop',
-        DropView(
-            name, materialized=True, cascade=cascade_on_drop, schema=schema
-        ),
-    )
-
-    view_records = metadata.info.setdefault('sqlalchemy_utils_views', [])
-    view_records.append(ViewRecord(
+    _register_view_ddl(
+        metadata=metadata,
         name=name,
         selectable=selectable,
-        schema=schema,
         materialized=True,
         replace=False,
         cascade_on_drop=cascade_on_drop,
-    ))
+        schema=schema,
+        table=table,
+        indexes=indexes,
+    )
     return table
 
 
@@ -240,25 +302,16 @@ def create_view(
         name=name, selectable=selectable, metadata=None, schema=schema
     )
 
-    sa.event.listen(
-        metadata,
-        'after_create',
-        CreateView(name, selectable, replace=replace, schema=schema),
-    )
-
-    sa.event.listen(
-        metadata, 'before_drop', DropView(name, cascade=cascade_on_drop, schema=schema)
-    )
-
-    view_records = metadata.info.setdefault('sqlalchemy_utils_views', [])
-    view_records.append(ViewRecord(
+    _register_view_ddl(
+        metadata=metadata,
         name=name,
         selectable=selectable,
-        schema=schema,
         materialized=False,
         replace=replace,
         cascade_on_drop=cascade_on_drop,
-    ))
+        schema=schema,
+        table=table,
+    )
     return table
 
 
@@ -276,11 +329,10 @@ class RefreshMaterializedView(Executable, ClauseElement):
 @compiler.compiles(RefreshMaterializedView)
 def compile_refresh_materialized_view(element, compiler, **kw):
     """Compile ``RefreshMaterializedView`` to ``REFRESH MATERIALIZED VIEW``."""
-    schema_prefix = f'{compiler.dialect.identifier_preparer.quote(element.schema)}.' if element.schema else ''
-    return 'REFRESH MATERIALIZED VIEW {concurrently}{schema_prefix}{name}'.format(
+    qualified = _quote_qualified_name(compiler.dialect, element.name, element.schema)
+    return 'REFRESH MATERIALIZED VIEW {concurrently}{name}'.format(
         concurrently='CONCURRENTLY ' if element.concurrently else '',
-        schema_prefix=schema_prefix,
-        name=compiler.dialect.identifier_preparer.quote(element.name),
+        name=qualified,
     )
 
 
