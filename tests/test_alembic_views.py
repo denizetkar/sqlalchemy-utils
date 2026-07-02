@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
+import socket
 import subprocess
 import sys
 import textwrap
@@ -1751,6 +1753,146 @@ class TestCanonicalizeSkipDoesNotDrop:
         finally:
             _drop_bug_views(connection)
             _drop_base_table(connection)
+
+
+# ===========================================================================
+# Regression: BUG-10 (savepoint name reuse after ROLLBACK TO skips later views)
+# ===========================================================================
+
+# Distinct names so the BUG-10 test does not collide with other view fixtures.
+_BUG10_VIEW_NAMES = ["bug10_a", "bug10_b", "bug10_c"]
+
+# PG connection parameters reused from the test environment. These match the
+# socket-probe pattern from tests/test_pg_catalog_dependents.py so the test
+# skips gracefully (rather than erroring) when PG is unavailable.
+_BUG10_PG_HOST = os.environ.get(
+    "SQLALCHEMY_UTILS_TEST_POSTGRESQL_HOST", "localhost"
+)
+_BUG10_PG_PORT = int(
+    os.environ.get("SQLALCHEMY_UTILS_TEST_POSTGRESQL_PORT", "55432")
+)
+_BUG10_PG_USER = os.environ.get(
+    "SQLALCHEMY_UTILS_TEST_POSTGRESQL_USER", "postgres"
+)
+_BUG10_PG_PASSWORD = os.environ.get(
+    "SQLALCHEMY_UTILS_TEST_POSTGRESQL_PASSWORD", ""
+)
+_BUG10_PG_DB = os.environ.get(
+    "SQLALCHEMY_UTILS_TEST_DB", "sqlalchemy_utils_test"
+)
+_BUG10_DSN = (
+    f"postgresql+psycopg2://{_BUG10_PG_USER}:{_BUG10_PG_PASSWORD}"
+    f"@{_BUG10_PG_HOST}:{_BUG10_PG_PORT}/{_BUG10_PG_DB}"
+)
+
+
+def _bug10_pg_available() -> bool:
+    """Return True if a TCP connection to the PG port succeeds."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(1.0)
+    try:
+        sock.connect((_BUG10_PG_HOST, _BUG10_PG_PORT))
+    except OSError:
+        return False
+    finally:
+        sock.close()
+    return True
+
+
+def _drop_bug10_views(connection):
+    """Drop any leftover views created by the BUG-10 regression test."""
+    for view_name in _BUG10_VIEW_NAMES:
+        try:
+            connection.execute(
+                sa.text(f"DROP VIEW IF EXISTS {view_name} CASCADE")
+            )
+        except sa.exc.SQLAlchemyError:
+            connection.rollback()
+    connection.commit()
+
+
+class TestCanonicalizeFailureDoesNotSkipSubsequentViews:
+    """BUG-10 regression: a failed view must not cascade-skip later views.
+
+    The inner savepoint name ``"su_view_cmp_v"`` is constant across iterations.
+    After a view CREATE fails, ``ROLLBACK TO SAVEPOINT su_view_cmp_v`` rolls
+    the sub-transaction back but does NOT destroy the savepoint (PG semantics).
+    The next iteration then issues ``SAVEPOINT su_view_cmp_v`` again, which PG
+    rejects with "savepoint already exists" — caught by the except clause — so
+    every subsequent view in the batch is silently dropped from the migration.
+
+    After the fix (RELEASE SAVEPOINT after ROLLBACK TO), views B and C that
+    follow a failing view A MUST still produce ``CreateViewOp``.
+    """
+
+    @pytest.mark.infrastructure
+    def test_failed_canonicalization_does_not_skip_subsequent_views(self):
+        if not _bug10_pg_available():
+            pytest.skip(
+                f"PostgreSQL not reachable at "
+                f"{_BUG10_PG_HOST}:{_BUG10_PG_PORT}"
+            )
+        engine = sa.create_engine(_BUG10_DSN, future=True)
+        connection = engine.connect()
+        try:
+            _drop_bug10_views(connection)
+
+            # view_a references a nonexistent table → CREATE fails inside the
+            # canonicalization savepoint. view_b and view_c are trivially valid
+            # (no table dependency) so they MUST still be canonicalized.
+            metadata = sa.MetaData()
+            metadata.info["sqlalchemy_utils_views"] = [
+                ViewRecord(
+                    name="bug10_a",
+                    selectable=sa.select(sa.text("* FROM bug10_nonexistent")),
+                    schema=None,
+                    materialized=False,
+                ),
+                ViewRecord(
+                    name="bug10_b",
+                    selectable=sa.select(sa.text("1 AS col")),
+                    schema=None,
+                    materialized=False,
+                ),
+                ViewRecord(
+                    name="bug10_c",
+                    selectable=sa.select(sa.text("2 AS col")),
+                    schema=None,
+                    materialized=False,
+                ),
+            ]
+
+            upgrade_ops = _run_comparator(
+                connection, metadata, schemas=[None]
+            )
+
+            create_ops = [
+                op for op in upgrade_ops.ops if isinstance(op, CreateViewOp)
+            ]
+            created_names = {op.name for op in create_ops}
+
+            # bug10_a failed to canonicalize → must NOT appear.
+            assert "bug10_a" not in created_names, (
+                f"BUG-10: bug10_a should have been skipped (its CREATE "
+                f"fails), but got {sorted(created_names)}"
+            )
+            # bug10_b and bug10_c come after the failure; they MUST still be
+            # canonicalized. Before the fix the reused savepoint name caused
+            # both to be silently dropped.
+            assert "bug10_b" in created_names, (
+                f"BUG-10 regression: bug10_b missing from create ops "
+                f"(savepoint name reuse after ROLLBACK TO likely skipped "
+                f"it); got {sorted(created_names)}"
+            )
+            assert "bug10_c" in created_names, (
+                f"BUG-10 regression: bug10_c missing from create ops "
+                f"(savepoint name reuse after ROLLBACK TO likely skipped "
+                f"it); got {sorted(created_names)}"
+            )
+        finally:
+            _drop_bug10_views(connection)
+            connection.close()
+            engine.dispose()
 
 
 class TestComparatorNonPGDialect:

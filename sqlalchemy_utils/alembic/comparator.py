@@ -144,6 +144,12 @@ def _canonicalize_all_views(
                     connection.execute(
                         sa.text(f"ROLLBACK TO SAVEPOINT {inner_sp}")
                     )
+                    # ROLLBACK TO does not destroy the savepoint (PG
+                    # semantics); RELEASE it so the next iteration can
+                    # create a fresh one (BUG-10).
+                    connection.execute(
+                        sa.text(f"RELEASE SAVEPOINT {inner_sp}")
+                    )
                 except (sa.exc.SQLAlchemyError, sa.exc.DBAPIError, OSError):
                     pass
                 skipped.add(vr.name)
