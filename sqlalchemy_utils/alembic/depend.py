@@ -5,9 +5,10 @@ Provides ``resolve_create_order`` and ``resolve_drop_order`` which sort
 views are created / dropped in a safe order even when they reference each
 other.
 
-Dependency detection uses simple word-boundary matching (``\\b{name}\\b``)
-against the stringified view definition.  This is intentionally v1 — no
-cross-schema or SQL-AST parsing yet.
+Dependency detection uses word-boundary matching against the stringified
+view definition.  Cross-schema name matching is supported at the
+comparator level (all schemas' view names are pooled); SQL-AST parsing
+is not yet implemented.
 """
 from __future__ import annotations
 

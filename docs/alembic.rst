@@ -9,7 +9,7 @@ called **before** ``context.configure()``.
 
 ::
 
-    from sqlalchemy_utils.alembic.comparator import register_view_comparator
+    from sqlalchemy_utils import register_view_comparator
     register_view_comparator()
 
 Operations reference
@@ -87,6 +87,13 @@ env.py snippet (additions to your existing env.py)
 
     # ... rest of usual alembic setup ...
 
+.. note::
+
+   For view-backed models (``ViewMixin``), ``__view_schema__`` takes
+   precedence over ``__table_args__['schema']``. The autogenerate
+   comparator and migration operations emit the resolved schema for the
+   view's ``CREATE``/``DROP``/``REFRESH`` statements.
+
 
 **SA2 Core (non-ORM) pattern**::
 
@@ -140,6 +147,14 @@ Downgrade generation
 Each operation class implements ``reverse()`` for automatic downgrade
 generation.  Calls without a stored ``definition`` or ``old_definition``
 raise ``NotImplementedError``.  See the API reference below for details.
+
+.. note::
+
+   ``RefreshMaterializedViewOp.reverse()`` always raises
+   ``NotImplementedError`` because ``REFRESH MATERIALIZED VIEW`` is not
+   reversible (a refresh only repopulates data; there is no SQL
+   "un-refresh"). Remove ``refresh_materialized_view`` ops from downgrade
+   scripts manually rather than relying on autogenerate to reverse them.
 
 API reference
 -------------

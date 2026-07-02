@@ -302,6 +302,20 @@ def compare_views(
     (populated by `create_view()`, `create_materialized_view()`, and
     `ViewMixin.__declare_last__`), canonicalizes each model view via
     savepoint simulation, and diffs against the live database.
+
+    :param autogen_context:
+        The Alembic :class:`~alembic.autogenerate.api.AutogenContext`
+        providing the live database connection and model metadata.
+    :param upgrade_ops:
+        The :class:`~alembic.runtime.migration.OpContainer` into which
+        detected ``CreateViewOp`` / ``DropViewOp`` / ``ReplaceViewOp``
+        (and materialized variants) are appended.
+    :param schemas:
+        Iterable of schema names to compare. ``None`` is treated as
+        ``[None]`` (i.e. the connection's default schema only); pass an
+        explicit list of schema names to compare non-default schemas.
+    :returns: ``None``. Detected differences are appended to
+        *upgrade_ops* in place.
     """
     connection = autogen_context.connection
     metadata = autogen_context.metadata

@@ -75,7 +75,9 @@ def get_dependent_views(connection: sa.engine.Connection, view_name: str, schema
     Args:
         connection: SQLAlchemy Connection object.
         view_name: Name of the view to check dependents for.
-        schema: Optional schema name. If None, searches all non-system schemas.
+        schema: Optional schema name. If None, returns dependents in any
+            schema. Note: matching is by view name only; same-named views
+            in different schemas are not distinguished when schema is None.
 
     Returns:
         Dictionary mapping dependent view name to its definition.

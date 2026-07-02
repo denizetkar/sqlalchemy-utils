@@ -30,7 +30,10 @@ def _quote_qualified_name(dialect, name, schema=None):
 
 
 class CreateView(DDLElement):
-    """DDL element for CREATE VIEW (or CREATE OR REPLACE VIEW)."""
+    """DDL element for CREATE VIEW (or CREATE OR REPLACE VIEW).
+
+    :raises ValueError: if both ``materialized`` and ``replace`` are True.
+    """
 
     def __init__(self, name, *, selectable, materialized=False, replace=False, schema=None):
         if materialized and replace:
@@ -220,6 +223,15 @@ def create_materialized_view(
     Same as for ``create_view`` except that a ``CREATE MATERIALIZED VIEW``
     statement is emitted instead of a ``CREATE VIEW``.
 
+    .. note::
+        The runtime DDL path (this function, ``metadata.create_all()``, and
+        the ``CreateView`` DDL element) emits a plain
+        ``CREATE MATERIALIZED VIEW``; PostgreSQL defaults to ``WITH DATA``
+        so the materialized view is populated immediately. Only the Alembic
+        ``op.create_materialized_view`` operation supports an explicit
+        ``WITH NO DATA`` clause (via ``with_data=False``, which is also the
+        autogenerate default).
+
     """
     table = create_table_from_selectable(
         name=name,
@@ -316,7 +328,7 @@ def create_view(
 
 
 class RefreshMaterializedView(Executable, ClauseElement):
-    """DDL element for REFRESH MATERIALIZED VIEW."""
+    """Executable SQL construct for REFRESH MATERIALIZED VIEW."""
 
     inherit_cache = True
 

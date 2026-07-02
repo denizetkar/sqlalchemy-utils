@@ -1,7 +1,7 @@
 """
 Alembic autogenerate renderers for view migration operations.
 
-Registers 6 renderer functions with ``alembic.autogenerate.renderers.dispatch_for``
+Registers 7 renderer functions with ``alembic.autogenerate.renderers.dispatch_for``
 so that Alembic's autogenerate can render view operations as Python code strings
 in migration scripts.
 """

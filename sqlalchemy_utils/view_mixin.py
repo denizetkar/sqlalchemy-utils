@@ -43,7 +43,8 @@ class ViewMixin:
     **Methods:**
 
     * ``refresh(session, concurrently=False)`` — Refresh a materialized view.
-      Raises ``sa.exc.InvalidRequestError`` for non-materialized views.
+      Raises a plain ``sa.exc.InvalidRequestError`` (not
+      :exc:`ViewReadonlyError`) for non-materialized views.
 
     **Implementation note:** ``cls.__table__.metadata`` is a throwaway
     ``MetaData()`` instance so that ``create_all()`` does not emit both
@@ -228,6 +229,10 @@ class ViewMixin:
         :param concurrently: If ``True``, refresh with ``CONCURRENTLY``.
 
         :raises sa.exc.InvalidRequestError: If the view is not materialized.
+            Note this is a plain ``InvalidRequestError`` (not
+            :exc:`sqlalchemy_utils.exceptions.ViewReadonlyError`); the latter
+            is only raised for write attempts (flushes) on view-backed
+            instances.
         """
         if not cls.__view_materialized__:
             raise sa.exc.InvalidRequestError(

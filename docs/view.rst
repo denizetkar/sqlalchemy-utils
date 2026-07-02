@@ -18,6 +18,11 @@ refresh_materialized_view
 -------------------------
 .. autofunction:: sqlalchemy_utils.view.refresh_materialized_view
 
+create_table_from_selectable
+----------------------------
+
+.. autofunction:: sqlalchemy_utils.view.create_table_from_selectable
+
 ViewMixin
 ---------
 
@@ -29,6 +34,13 @@ ViewReadonlyError
 -----------------
 
 .. autoexception:: sqlalchemy_utils.exceptions.ViewReadonlyError
+
+.. note::
+
+   :class:`sqlalchemy_utils.view_record.ViewRecord` (the metadata-attached
+   record describing a registered view) is documented in
+   :doc:`alembic <alembic>` since it is primarily consumed by the Alembic
+   autogenerate integration.
 
 DDL constructs
 --------------
