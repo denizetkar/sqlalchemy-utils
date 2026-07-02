@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 
 
-def _query_view_catalog(connection, table: str, name_col: str, schema: str | None = None) -> dict[str, str]:
+def _query_view_catalog(connection: sa.engine.Connection, table: str, name_col: str, schema: str | None = None) -> dict[str, str]:
     """Query a pg_catalog view table for names and definitions.
 
     Args:
@@ -33,7 +33,7 @@ def _query_view_catalog(connection, table: str, name_col: str, schema: str | Non
     return {getattr(row, name_col): row.definition for row in result}
 
 
-def get_database_views(connection, schema: str | None = None) -> dict[str, str]:
+def get_database_views(connection: sa.engine.Connection, schema: str | None = None) -> dict[str, str]:
     """Query pg_views catalog for view names and definitions.
 
     Args:
@@ -51,7 +51,7 @@ def get_database_views(connection, schema: str | None = None) -> dict[str, str]:
     return _query_view_catalog(connection, "pg_views", "viewname", schema)
 
 
-def get_database_materialized_views(connection, schema: str | None = None) -> dict[str, str]:
+def get_database_materialized_views(connection: sa.engine.Connection, schema: str | None = None) -> dict[str, str]:
     """Query pg_matviews catalog for materialized view names and definitions.
 
     Args:
@@ -69,7 +69,7 @@ def get_database_materialized_views(connection, schema: str | None = None) -> di
     return _query_view_catalog(connection, "pg_matviews", "matviewname", schema)
 
 
-def get_dependent_views(connection, view_name: str, schema: str | None = None) -> dict[str, str]:
+def get_dependent_views(connection: sa.engine.Connection, view_name: str, schema: str | None = None) -> dict[str, str]:
     """Query pg_depend for views that depend on the given view.
 
     Args:
@@ -85,24 +85,39 @@ def get_dependent_views(connection, view_name: str, schema: str | None = None) -
     params: dict[str, str] = {"view_name": view_name}
     if schema:
         params["schema"] = schema
-    # ``pg_depend`` has no ``refobjname`` column — its columns are
-    # ``classid, objid, objsubid, refclassid, refobjid, refobjsubid, deptype``.
-    # To resolve the *referenced* object's name we join ``pg_class ref`` on
-    # ``dep.refobjid = ref.oid`` and filter on ``ref.relname``. The dependent
-    # view's name comes from ``c.relname`` (the view that owns the rewrite
-    # rule recorded in ``pg_depend``).
-    sql = sa.text(
+    # ``pg_depend`` columns: classid, objid, objsubid, refclassid, refobjid,
+    # refobjsubid, deptype. To resolve the referenced object's name we join
+    # ``pg_class ref`` on ``dep.refobjid = ref.oid`` and filter on
+    # ``ref.relname``. The dependent view's name comes from ``c.relname``.
+    # Join ``pg_namespace`` on both sides to qualify by schema, preventing
+    # cross-schema name collisions. A UNION joins regular views (pg_views)
+    # and materialized views (pg_matviews) so both dependent kinds are
+    # returned. ``pg_views``/``pg_matviews`` carry both the dependent view's
+    # schema (schemaname) and definition (definition); the join ties the
+    # dependent class row to its catalog entry via (schema, name).
+    base_select = (
         "SELECT c.relname AS dependent_name, "
-        "v.definition AS dependent_definition "
+        "v.definition AS dependent_definition, "
+        "v.schemaname AS dependent_schema "
         "FROM pg_depend dep "
         "JOIN pg_rewrite r ON dep.objid = r.oid "
         "JOIN pg_class c ON r.ev_class = c.oid "
+        "JOIN pg_namespace cn ON c.relnamespace = cn.oid "
         "JOIN pg_class ref ON dep.refobjid = ref.oid "
-        "JOIN pg_views v ON c.relname = v.viewname "
+        "JOIN pg_namespace refn ON ref.relnamespace = refn.oid "
+        "{view_catalog_join} "
         "WHERE ref.relname = :view_name "
         "AND dep.refobjid != dep.objid "
-        "AND c.relname != :view_name"
+        "AND c.relname != :view_name "
+        "AND cn.nspname = v.schemaname"
         + schema_clause
     )
+    views_select = base_select.format(
+        view_catalog_join="JOIN pg_views v ON c.relname = v.viewname"
+    )
+    matviews_select = base_select.format(
+        view_catalog_join="JOIN pg_matviews v ON c.relname = v.matviewname"
+    )
+    sql = sa.text(f"{views_select} UNION {matviews_select}")
     result = connection.execute(sql, params)
     return {row.dependent_name: row.dependent_definition for row in result}

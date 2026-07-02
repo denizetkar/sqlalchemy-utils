@@ -22,6 +22,9 @@ from sqlalchemy_utils.alembic.pg_catalog import (
     get_database_views,
     get_dependent_views,
 )
+from sqlalchemy_utils.alembic.pg_catalog import (
+    get_database_materialized_views,
+)
 
 
 PG_HOST = os.environ.get("SQLALCHEMY_UTILS_TEST_POSTGRESQL_HOST", "localhost")
@@ -149,3 +152,150 @@ def test_get_dependent_views_returns_correct_name(connection):
         )
     finally:
         _teardown_schema(connection)
+
+
+def _setup_bug13(connection):
+    """Create a base view and a materialized view that depends on it."""
+    connection.execute(
+        sa.text(
+            "CREATE TABLE IF NOT EXISTS _bug13_base (id SERIAL PRIMARY KEY)"
+        )
+    )
+    connection.execute(
+        sa.text(
+            "CREATE OR REPLACE VIEW _bug13_base_view AS "
+            "SELECT id FROM _bug13_base"
+        )
+    )
+    connection.execute(
+        sa.text(
+            "CREATE MATERIALIZED VIEW IF NOT EXISTS _bug13_mv AS "
+            "SELECT id FROM _bug13_base_view"
+        )
+    )
+    connection.commit()
+
+
+def _teardown_bug13(connection):
+    try:
+        connection.execute(sa.text("DROP MATERIALIZED VIEW IF EXISTS _bug13_mv"))
+    except sa.exc.SQLAlchemyError:
+        connection.rollback()
+    try:
+        connection.execute(sa.text("DROP VIEW IF EXISTS _bug13_base_view CASCADE"))
+    except sa.exc.SQLAlchemyError:
+        connection.rollback()
+    try:
+        connection.execute(sa.text("DROP TABLE IF EXISTS _bug13_base CASCADE"))
+    except sa.exc.SQLAlchemyError:
+        connection.rollback()
+    connection.commit()
+
+
+def test_get_dependent_views_includes_materialized_views(connection):
+    """``get_dependent_views`` must include materialized views.
+
+    The query must join both ``pg_views`` and ``pg_matviews``; materialized
+    views depending on a regular view must be returned.
+    """
+    _setup_bug13(connection)
+    try:
+        mvs = get_database_materialized_views(connection)
+        assert "_bug13_mv" in mvs, (
+            "MV _bug13_mv should be in pg_matviews; got: "
+            f"{sorted(mvs.keys())}"
+        )
+
+        dependents = get_dependent_views(connection, "_bug13_base_view")
+
+        assert "_bug13_mv" in dependents, (
+            "expected materialized view '_bug13_mv' as dependent of "
+            "'_bug13_base_view'; got: "
+            f"{sorted(dependents.keys())}"
+        )
+        assert "_bug13_base_view" not in dependents
+    finally:
+        _teardown_bug13(connection)
+
+
+def _setup_bug14(connection):
+    """Real dependent in schema A; same-named view with different body in B.
+
+    A name-only join (``c.relname = v.viewname``) cannot tell the two apart
+    and would surface B's definition for A's dependent. Schema-qualified
+    joins must return A's definition only.
+    """
+    for schema in ("_bug14_a", "_bug14_b", "_bug_a", "_bug_b"):
+        connection.execute(sa.text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
+    connection.execute(sa.text("CREATE SCHEMA _bug14_a"))
+    connection.execute(sa.text("CREATE SCHEMA _bug14_b"))
+    connection.execute(sa.text("CREATE SCHEMA _bug_a"))
+    connection.execute(sa.text("CREATE SCHEMA _bug_b"))
+
+    connection.execute(
+        sa.text("CREATE TABLE _bug14_a.t (id SERIAL PRIMARY KEY)")
+    )
+    connection.execute(
+        sa.text(
+            "CREATE VIEW _bug14_a.base_view AS SELECT id FROM _bug14_a.t"
+        )
+    )
+    connection.execute(
+        sa.text(
+            "CREATE VIEW _bug_a.dep_view AS "
+            "SELECT id FROM _bug14_a.base_view"
+        )
+    )
+    connection.execute(
+        sa.text("CREATE TABLE _bug_b.other (id INT)"))
+    connection.execute(
+        sa.text(
+            "CREATE OR REPLACE VIEW _bug_b.dep_view AS "
+            "SELECT id FROM _bug_b.other"
+        )
+    )
+    connection.commit()
+
+
+def _teardown_bug14(connection):
+    for schema in ("_bug14_a", "_bug14_b", "_bug_a", "_bug_b"):
+        try:
+            connection.execute(sa.text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
+        except sa.exc.SQLAlchemyError:
+            connection.rollback()
+    connection.commit()
+
+
+def test_get_dependent_views_no_cross_schema_false_matches(connection):
+    """No false positive when same view name exists in another schema.
+
+    ``_bug_a.dep_view`` is a real dependent of ``_bug14_a.base_view``.
+    ``_bug_b.dep_view`` has the same name but a different body. A name-only
+    join would conflate them; schema-qualified joins must return only
+    ``_bug_a.dep_view``'s definition (referencing ``_bug14_a.base_view``).
+    """
+    _setup_bug14(connection)
+    try:
+        dependents = get_dependent_views(connection, "base_view", schema="_bug_a")
+
+        assert "dep_view" in dependents, (
+            "expected dependent 'dep_view'; got: "
+            f"{sorted(dependents.keys())}"
+        )
+        definition = dependents["dep_view"]
+        assert "_bug14_a.base_view" in definition, (
+            "dependent definition must reference _bug14_a.base_view; got: "
+            f"{definition!r}"
+        )
+        assert "_bug_b.other" not in definition, (
+            "cross-schema definition leaked into dependent; got: "
+            f"{definition!r}"
+        )
+
+        unscoped = get_dependent_views(connection, "base_view")
+        assert "_bug_b.other" not in unscoped.get("dep_view", ""), (
+            "cross-schema definition leaked into unscoped dependent; got: "
+            f"{unscoped.get('dep_view', '')!r}"
+        )
+    finally:
+        _teardown_bug14(connection)
