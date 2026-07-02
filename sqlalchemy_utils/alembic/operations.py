@@ -499,10 +499,11 @@ class RefreshMaterializedViewOp(MigrateOperation):
 @Operations.implementation_for(CreateViewOp)
 def _create_view_impl(operations: Operations, op: CreateViewOp) -> None:
     """Execute ``CREATE [OR REPLACE] VIEW`` via the migration connection."""
+    if op.replace:
+        return _replace_view_impl(operations, op)
     dialect = operations.get_bind().dialect
     qualified = _quote_qualified_name(dialect, op.name, op.schema)
-    replace_clause = "OR REPLACE " if op.replace else ""
-    sql = f"CREATE {replace_clause}VIEW {qualified} AS {op.definition}"
+    sql = f"CREATE VIEW {qualified} AS {op.definition}"
     operations.execute(sa.text(sql))
 
 

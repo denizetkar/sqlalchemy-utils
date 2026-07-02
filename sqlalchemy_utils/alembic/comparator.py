@@ -105,14 +105,12 @@ def _canonicalize_all_views(
 
     # Order by dependency so a view is created before any view that references
     # it (BUG-3 fix: all views coexist inside the single outer savepoint).
-    try:
-        ordered = resolve_create_order(view_records, db_views_for_deps)
-    except ValueError:
-        log.warning(
-            "Circular view dependency detected; "
-            "canonicalizing views in model-definition order"
-        )
-        ordered = view_records
+    ordered = _safe_resolve(
+        view_records,
+        db_views_for_deps,
+        resolve_create_order,
+        "canonicalizing",
+    )
 
     schema = view_records[0].schema
     connection.execute(sa.text(f"SAVEPOINT {_OUTER_SAVEPOINT}"))
@@ -251,6 +249,45 @@ def _warn_if_dependents(
         )
 
 
+def _safe_resolve(records, db, resolver_fn, action_label):
+    """Resolve view ordering, falling back to model order on cycle.
+
+    Wraps *resolver_fn* (e.g. :func:`resolve_create_order`) in a
+    try/except :class:`ValueError`. If a circular dependency is detected,
+    logs a warning naming *action_label* (e.g. ``"canonicalizing"``,
+    ``"creating"``, ``"dropping"``) and returns *records* unchanged.
+    """
+    try:
+        return resolver_fn(records, db)
+    except ValueError:
+        log.warning(
+            "Circular view dependency detected; "
+            "%s views in model-definition order",
+            action_label,
+        )
+        return records
+
+
+def _order_ops(ops, records, db, resolver_fn, action_label):
+    """Order *ops* by dependency using *resolver_fn*.
+
+    Builds a ``{(name, schema): op}`` mapping from *ops*, resolves the
+    ordering of *records* via :func:`_safe_resolve`, appends each matching
+    op (in dependency order) to the result, then appends any remaining
+    (DB-only) ops. Returns the ordered list of ops.
+    """
+    by_name = {(op.name, op.schema): op for op in ops}
+    ordered_records = _safe_resolve(records, db, resolver_fn, action_label)
+    result = []
+    for vr in ordered_records:
+        key = (vr.name, vr.schema)
+        if key in by_name:
+            result.append(by_name.pop(key))
+    for op in by_name.values():
+        result.append(op)
+    return result
+
+
 def compare_views(
     autogen_context: AutogenContext,
     upgrade_ops,
@@ -365,45 +402,26 @@ def compare_views(
 
         # Order by dependency
         if create_ops:
-            create_by_name = {(op.name, op.schema): op for op in create_ops}
-            try:
-                ordered_records = resolve_create_order(model_records, all_db)
-            except ValueError:
-                log.warning(
-                    "Circular view dependency detected; "
-                    "creating views in model-definition order"
+            upgrade_ops.ops.extend(
+                _order_ops(
+                    create_ops,
+                    model_records,
+                    all_db,
+                    resolve_create_order,
+                    "creating",
                 )
-                ordered_records = model_records
-
-            for vr in ordered_records:
-                key = (vr.name, vr.schema)
-                if key in create_by_name:
-                    op = create_by_name.pop(key)
-                    upgrade_ops.ops.append(op)
-
-            for op in create_by_name.values():
-                upgrade_ops.ops.append(op)
+            )
 
         if drop_ops:
-            drop_by_name = {(op.name, op.schema): op for op in drop_ops}
-            try:
-                ordered_records = resolve_drop_order(model_records, all_db)
-            except ValueError:
-                log.warning(
-                    "Circular view dependency detected; "
-                    "dropping views in model-definition order"
+            upgrade_ops.ops.extend(
+                _order_ops(
+                    drop_ops,
+                    model_records,
+                    all_db,
+                    resolve_drop_order,
+                    "dropping",
                 )
-                ordered_records = model_records
-
-            for vr in ordered_records:
-                key = (vr.name, vr.schema)
-                if key in drop_by_name:
-                    op = drop_by_name.pop(key)
-                    upgrade_ops.ops.append(op)
-
-            # Drop any DB-only views not in model_records
-            for op in drop_by_name.values():
-                upgrade_ops.ops.append(op)
+            )
 
     seen: set = set()
     deduped: list = []

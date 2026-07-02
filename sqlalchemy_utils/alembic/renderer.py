@@ -22,12 +22,40 @@ from sqlalchemy_utils.alembic.operations import (
 )
 
 
+def _schema_part(op) -> str:
+    """Render the ``schema=`` kwarg fragment when ``op.schema`` is set."""
+    return f", schema={op.schema!r}" if op.schema is not None else ""
+
+
+def _cascade_part(op) -> str:
+    """Render the ``cascade=False`` kwarg fragment when cascade is disabled."""
+    return "" if op.cascade else ", cascade=False"
+
+
+def _with_data_part(op) -> str:
+    """Render the ``with_data=True`` kwarg fragment when with_data is enabled."""
+    return "" if not op.with_data else ", with_data=True"
+
+
+def _definition_part(op) -> str:
+    """Render the ``definition=`` kwarg fragment when ``op.definition`` is set."""
+    return f", definition={op.definition!r}" if op.definition is not None else ""
+
+
+def _old_def_part(op) -> str:
+    """Render the ``old_definition=`` kwarg fragment when ``op.old_definition`` is set."""
+    return (
+        f", old_definition={op.old_definition!r}"
+        if op.old_definition is not None
+        else ""
+    )
+
+
 @renderers.dispatch_for(CreateViewOp)
 def render_create_view(autogen_context: AutogenContext, op: CreateViewOp) -> str:
     """Render a CreateViewOp as op.create_view(...) code."""
-    schema_part = f", schema={op.schema!r}" if op.schema is not None else ""
     replace_part = ", replace=True" if op.replace else ""
-    return f"op.create_view({op.name!r}, {op.definition!r}{schema_part}{replace_part})"
+    return f"op.create_view({op.name!r}, {op.definition!r}{_schema_part(op)}{replace_part})"
 
 
 @renderers.dispatch_for(DropViewOp)
@@ -36,18 +64,19 @@ def render_drop_view(autogen_context: AutogenContext, op: DropViewOp) -> str:
     # materialized flag intentionally not rendered: DropViewOp is for
     # regular views only; MV drops use DropMaterializedViewOp, and
     # op.drop_view rejects materialized=True.
-    schema_part = f", schema={op.schema!r}" if op.schema is not None else ""
-    cascade_part = "" if op.cascade else ", cascade=False"
-    definition_part = f", definition={op.definition!r}" if op.definition is not None else ""
-    return f"op.drop_view({op.name!r}{schema_part}{cascade_part}{definition_part})"
+    return (
+        f"op.drop_view({op.name!r}{_schema_part(op)}"
+        f"{_cascade_part(op)}{_definition_part(op)})"
+    )
 
 
 @renderers.dispatch_for(ReplaceViewOp)
 def render_replace_view(autogen_context: AutogenContext, op: ReplaceViewOp) -> str:
     """Render a ReplaceViewOp as op.replace_view(...) code."""
-    schema_part = f", schema={op.schema!r}" if op.schema is not None else ""
-    old_def_part = f", old_definition={op.old_definition!r}" if op.old_definition is not None else ""
-    return f"op.replace_view({op.name!r}, {op.definition!r}{schema_part}{old_def_part})"
+    return (
+        f"op.replace_view({op.name!r}, {op.definition!r}"
+        f"{_schema_part(op)}{_old_def_part(op)})"
+    )
 
 
 @renderers.dispatch_for(CreateMaterializedViewOp)
@@ -55,9 +84,10 @@ def render_create_materialized_view(
     autogen_context: AutogenContext, op: CreateMaterializedViewOp
 ) -> str:
     """Render a CreateMaterializedViewOp as op.create_materialized_view(...) code."""
-    schema_part = f", schema={op.schema!r}" if op.schema is not None else ""
-    with_data_part = "" if not op.with_data else ", with_data=True"
-    return f"op.create_materialized_view({op.name!r}, {op.definition!r}{schema_part}{with_data_part})"
+    return (
+        f"op.create_materialized_view({op.name!r}, {op.definition!r}"
+        f"{_schema_part(op)}{_with_data_part(op)})"
+    )
 
 
 @renderers.dispatch_for(DropMaterializedViewOp)
@@ -65,10 +95,10 @@ def render_drop_materialized_view(
     autogen_context: AutogenContext, op: DropMaterializedViewOp
 ) -> str:
     """Render a DropMaterializedViewOp as op.drop_materialized_view(...) code."""
-    schema_part = f", schema={op.schema!r}" if op.schema is not None else ""
-    cascade_part = "" if op.cascade else ", cascade=False"
-    definition_part = f", definition={op.definition!r}" if op.definition is not None else ""
-    return f"op.drop_materialized_view({op.name!r}{schema_part}{cascade_part}{definition_part})"
+    return (
+        f"op.drop_materialized_view({op.name!r}{_schema_part(op)}"
+        f"{_cascade_part(op)}{_definition_part(op)})"
+    )
 
 
 @renderers.dispatch_for(ReplaceMaterializedViewOp)
@@ -76,10 +106,10 @@ def render_replace_materialized_view(
     autogen_context: AutogenContext, op: ReplaceMaterializedViewOp
 ) -> str:
     """Render a ReplaceMaterializedViewOp as op.replace_materialized_view(...) code."""
-    schema_part = f", schema={op.schema!r}" if op.schema is not None else ""
-    with_data_part = "" if not op.with_data else ", with_data=True"
-    old_def_part = f", old_definition={op.old_definition!r}" if op.old_definition is not None else ""
-    return f"op.replace_materialized_view({op.name!r}, {op.definition!r}{schema_part}{with_data_part}{old_def_part})"
+    return (
+        f"op.replace_materialized_view({op.name!r}, {op.definition!r}"
+        f"{_schema_part(op)}{_with_data_part(op)}{_old_def_part(op)})"
+    )
 
 
 @renderers.dispatch_for(RefreshMaterializedViewOp)
@@ -87,6 +117,8 @@ def render_refresh_materialized_view(
     autogen_context: AutogenContext, op: RefreshMaterializedViewOp
 ) -> str:
     """Render a RefreshMaterializedViewOp as op.refresh_materialized_view(...) code."""
-    schema_part = f", schema={op.schema!r}" if op.schema is not None else ""
     concurrently_part = ", concurrently=True" if op.concurrently else ""
-    return f"op.refresh_materialized_view({op.name!r}{schema_part}{concurrently_part})"
+    return (
+        f"op.refresh_materialized_view({op.name!r}"
+        f"{_schema_part(op)}{concurrently_part})"
+    )
