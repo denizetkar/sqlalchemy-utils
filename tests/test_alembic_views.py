@@ -1811,12 +1811,14 @@ class TestAbortedTransactionBreaksEarly:
             f"{[(rec.levelname, rec.message) for rec in caplog.records]}"
         )
 
-        # 2. The loop broke early — view_b (abort_b) was never processed.
-        #    It must NOT appear in `skipped` (it was simply not reached),
-        #    and it must NOT appear in view_defs (it was never canonicalized).
-        assert "abort_b" not in skipped, (
-            f"abort_b should not be in skipped (loop broke before reaching "
-            f"it); skipped={skipped}"
+        # 2. The loop broke early — view_b (abort_b) was never canonicalized.
+        #    Because the loop broke before reaching it, abort_b is added to
+        #    `skipped` so drop detection does not emit a false DropViewOp for
+        #    a view that is still modeled but merely un-processed.
+        assert "abort_b" in skipped, (
+            f"abort_b should be in skipped (loop broke before reaching it; "
+            f"unreached views are added to skipped to avoid false drops); "
+            f"skipped={skipped}"
         )
         assert "abort_b" not in view_defs, (
             f"abort_b should not be in view_defs (loop broke before "
@@ -1835,6 +1837,116 @@ class TestAbortedTransactionBreaksEarly:
         assert not abort_b_creates, (
             f"Loop should have broken before attempting abort_b, but "
             f"executed: {abort_b_creates}"
+        )
+
+    def test_aborted_transaction_no_false_drop_in_compare_views(self, caplog):
+        """Regression: an aborted transaction must NOT cause a false DropViewOp.
+
+        When view A's CREATE fails and the SELECT 1 probe raises (poisoned
+        outer savepoint), the canonicalization loop breaks early. View B is
+        never reached. Without adding B to ``skipped``, drop detection sees
+        B as "in DB but not in model" and emits a false ``DropViewOp`` —
+        data loss.
+
+        This test exercises the FULL ``compare_views`` path (not just
+        ``_canonicalize_all_views``): it builds a mock autogen_context +
+        upgrade_ops, mocks the connection + pg_catalog helpers, and asserts
+        NO ``DropViewOp`` is emitted for view B.
+        """
+        # Two model views, both present in the DB mock.
+        view_records = [
+            ViewRecord(
+                name="view_a",
+                selectable="SELECT 1 AS col",
+                schema=None,
+                materialized=False,
+            ),
+            ViewRecord(
+                name="view_b",
+                selectable="SELECT 2 AS col",
+                schema=None,
+                materialized=False,
+            ),
+        ]
+
+        metadata = sa.MetaData()
+        metadata.info["sqlalchemy_utils_views"] = view_records
+
+        class _PoisonedTransaction(sa.exc.SQLAlchemyError):
+            """Raised by the probe (SELECT 1) to simulate a poisoned tx."""
+
+            def __init__(self):
+                super().__init__(
+                    "current transaction is aborted, "
+                    "commands ignored until end of transaction block"
+                )
+
+        call_log: list[str] = []
+
+        def _execute(stmt):
+            text = getattr(stmt, "text", str(stmt))
+            call_log.append(text)
+            stripped = text.strip()
+
+            # view_a CREATE fails — triggers the inner except block.
+            if stripped.startswith("CREATE OR REPLACE VIEW view_a"):
+                raise sa.exc.ProgrammingError(
+                    statement=text,
+                    params=None,
+                    orig=Exception("relation does not exist"),
+                )
+
+            # The probe after view_a's failure: poisoned transaction.
+            if stripped == "SELECT 1":
+                raise _PoisonedTransaction()
+
+            # All other statements (SAVEPOINT, ROLLBACK TO, RELEASE) succeed.
+            return MagicMock()
+
+        connection = MagicMock()
+        connection.dialect = sa.dialects.postgresql.dialect()
+        connection.execute.side_effect = _execute
+
+        autogen_context = MagicMock(spec=AutogenContext)
+        autogen_context.connection = connection
+        autogen_context.metadata = metadata
+
+        upgrade_ops = alembic_ops.UpgradeOps([])
+
+        # The DB mock reports BOTH views as existing — so without the fix,
+        # view_b (un-processed, un-skipped) would be seen as "in DB but not
+        # in model" → false DropViewOp.
+        db_views_mock = {
+            "view_a": "SELECT 1 AS col",
+            "view_b": "SELECT 2 AS col",
+        }
+
+        with caplog.at_level(
+            logging.WARNING, logger="sqlalchemy_utils.alembic.comparator"
+        ), patch(
+            "sqlalchemy_utils.alembic.comparator.get_database_views",
+            return_value=db_views_mock,
+        ), patch(
+            "sqlalchemy_utils.alembic.comparator.get_database_materialized_views",
+            return_value={},
+        ), patch(
+            "sqlalchemy_utils.alembic.comparator.get_dependent_views",
+            return_value={},
+        ):
+            compare_views(autogen_context, upgrade_ops, schemas=[None])
+
+        # Collect all DropViewOp (regular + materialized) emitted.
+        drop_ops = [
+            op for op in upgrade_ops.ops
+            if isinstance(op, (DropViewOp, DropMaterializedViewOp))
+        ]
+        drop_names = {op.name for op in drop_ops}
+
+        # The critical assertion: NO DropViewOp for view_b.
+        assert "view_b" not in drop_names, (
+            f"view_b must NOT be dropped — the loop broke before processing "
+            f"it, so it must be in `skipped` (not a false drop). "
+            f"Drop ops emitted: {drop_names}"
         )
 
 

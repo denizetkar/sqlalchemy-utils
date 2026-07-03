@@ -157,6 +157,12 @@ def _canonicalize_all_views(
                         "remaining views", vr.name
                     )
                     processed.add(vr.name)
+                    # Unreached views must land in `skipped` so drop
+                    # detection does not treat them as DB-only and emit a
+                    # false DropViewOp (data loss).
+                    for remaining_vr in ordered:
+                        if remaining_vr.name not in processed:
+                            skipped.add(remaining_vr.name)
                     break
             processed.add(vr.name)
 
