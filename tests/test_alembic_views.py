@@ -2043,6 +2043,155 @@ class TestCanonicalizeFailureDoesNotSkipSubsequentViews:
             engine.dispose()
 
 
+# ===========================================================================
+# Regression: outer savepoint poisoned by a DB-level error breaks early
+# ===========================================================================
+
+
+class TestAbortedTransactionBreaksEarly:
+    """A poisoned outer savepoint must break the canonicalization loop.
+
+    After a view CREATE fails and ``ROLLBACK TO`` + ``RELEASE`` of the inner
+    savepoint is attempted, the *outer* savepoint may itself be in an aborted
+    state (e.g. when the DB-level error poisoned the transaction, or when the
+    inner RELEASE itself failed). In that case every subsequent
+    ``SAVEPOINT`` statement will fail, and without a probe the loop would
+    silently skip every remaining view (adding them all to ``skipped``).
+
+    The fix: after the inner ``except`` block, probe with ``SELECT 1``. If the
+    probe fails, log a warning containing "aborted state" and break early so
+    the remaining views are simply not processed (rather than being silently
+    added to ``skipped``).
+
+    This is a mock-based test (no PostgreSQL required): a fake connection
+    succeeds on the first view's savepoint/CREATE-failure/rollback/release
+    sequence, then raises on the ``SELECT 1`` probe, simulating a poisoned
+    transaction.
+    """
+
+    def test_aborted_transaction_breaks_early(self, caplog):
+        # Two views: view_a's CREATE fails, view_b should never be reached
+        # because the probe after view_a's failure detects the poisoned
+        # transaction and breaks the loop.
+        view_records = [
+            ViewRecord(
+                name="abort_a",
+                selectable="SELECT id FROM nonexistent_table_a",
+                schema=None,
+                materialized=False,
+            ),
+            ViewRecord(
+                name="abort_b",
+                selectable="SELECT 1 AS col",
+                schema=None,
+                materialized=False,
+            ),
+        ]
+
+        # The mock connection captures every `execute(sa.text(...))` call and
+        # returns a side effect based on the SQL text. The sequence of SQL
+        # statements issued by _canonicalize_all_views is:
+        #   1. SAVEPOINT su_view_cmp                       (outer)
+        #   2. SAVEPOINT su_view_cmp_v                    (view_a inner)
+        #   3. CREATE OR REPLACE VIEW abort_a AS ...      (FAILS — view_a)
+        #   4. ROLLBACK TO SAVEPOINT su_view_cmp_v        (view_a cleanup)
+        #   5. RELEASE SAVEPOINT su_view_cmp_v            (view_a cleanup)
+        #   6. SELECT 1                                   (PROBE — FAILS)
+        #   --- loop breaks; view_b is never touched ---
+        #   7. ROLLBACK TO SAVEPOINT su_view_cmp          (finally)
+        # After the loop, get_database_views / get_database_materialized_views
+        # are called — stubbed via patch to return empty dicts.
+        call_log: list[str] = []
+
+        class _PoisonedTransaction(sa.exc.SQLAlchemyError):
+            """Raised by the probe (SELECT 1) to simulate a poisoned tx."""
+
+            def __init__(self):
+                super().__init__(
+                    "current transaction is aborted, "
+                    "commands ignored until end of transaction block"
+                )
+
+        def _execute(stmt):
+            text = getattr(stmt, "text", str(stmt))
+            call_log.append(text)
+            stripped = text.strip()
+
+            # view_a CREATE fails — this is the trigger for the inner except.
+            if stripped.startswith("CREATE OR REPLACE VIEW abort_a"):
+                raise sa.exc.ProgrammingError(
+                    statement=text,
+                    params=None,
+                    orig=Exception("relation does not exist"),
+                )
+
+            # The probe: SELECT 1 after the inner except. This simulates a
+            # poisoned outer savepoint.
+            if stripped == "SELECT 1":
+                raise _PoisonedTransaction()
+
+            # All other statements (SAVEPOINT, ROLLBACK TO, RELEASE, the
+            # outer ROLLBACK TO) succeed.
+            return MagicMock()
+
+        connection = MagicMock()
+        connection.dialect = sa.dialects.postgresql.dialect()
+        connection.execute.side_effect = _execute
+
+        with caplog.at_level(
+            logging.WARNING, logger="sqlalchemy_utils.alembic.comparator"
+        ), patch(
+            "sqlalchemy_utils.alembic.comparator.get_database_views",
+            return_value={},
+        ), patch(
+            "sqlalchemy_utils.alembic.comparator.get_database_materialized_views",
+            return_value={},
+        ):
+            view_defs, mv_defs, skipped = _canonicalize_all_views(
+                connection, view_records, db_views_for_deps=None
+            )
+
+        # 1. A warning containing "aborted state" was logged.
+        abort_warnings = [
+            rec
+            for rec in caplog.records
+            if rec.levelno >= logging.WARNING
+            and ("aborted state" in rec.message
+                 or "aborting canonicalization" in rec.message)
+        ]
+        assert abort_warnings, (
+            f"Expected a warning about aborted state / aborting "
+            f"canonicalization after the probe failed. Got log records: "
+            f"{[(rec.levelname, rec.message) for rec in caplog.records]}"
+        )
+
+        # 2. The loop broke early — view_b (abort_b) was never processed.
+        #    It must NOT appear in `skipped` (it was simply not reached),
+        #    and it must NOT appear in view_defs (it was never canonicalized).
+        assert "abort_b" not in skipped, (
+            f"abort_b should not be in skipped (loop broke before reaching "
+            f"it); skipped={skipped}"
+        )
+        assert "abort_b" not in view_defs, (
+            f"abort_b should not be in view_defs (loop broke before "
+            f"canonicalizing it); view_defs={view_defs}"
+        )
+        # abort_a WAS attempted and failed — it should be in skipped.
+        assert "abort_a" in skipped, (
+            f"abort_a failed to canonicalize and must be in skipped; "
+            f"skipped={skipped}"
+        )
+
+        # 3. No CREATE statement for abort_b was ever issued (loop broke).
+        abort_b_creates = [
+            sql for sql in call_log if "abort_b" in sql and "CREATE" in sql
+        ]
+        assert not abort_b_creates, (
+            f"Loop should have broken before attempting abort_b, but "
+            f"executed: {abort_b_creates}"
+        )
+
+
 class TestComparatorNonPGDialect:
     """compare_views warns on non-PostgreSQL dialects."""
 

@@ -99,6 +99,7 @@ def _canonicalize_all_views(
     view_defs: dict[str, str] = {}
     mv_defs: dict[str, str] = {}
     skipped: set[str] = set()
+    processed: set[str] = set()
 
     if not view_records:
         return view_defs, mv_defs, skipped
@@ -144,6 +145,23 @@ def _canonicalize_all_views(
                     pass
                 skipped.add(vr.name)
 
+                # Probe: is the outer savepoint still usable? A DB-level
+                # error may have poisoned the transaction, in which case
+                # every subsequent SAVEPOINT will fail and every remaining
+                # view would be silently skipped. Break early with a
+                # warning instead.
+                try:
+                    connection.execute(sa.text("SELECT 1"))
+                except (sa.exc.SQLAlchemyError, sa.exc.DBAPIError, OSError):
+                    log.warning(
+                        "Outer savepoint is in aborted state after failing to "
+                        "canonicalize view '%s'; aborting canonicalization of "
+                        "remaining views", vr.name
+                    )
+                    processed.add(vr.name)
+                    break
+            processed.add(vr.name)
+
         # Batch-read canonical definitions from pg_catalog in one query per
         # kind (regular + materialized) rather than one per view.
         db_views = get_database_views(connection, schema)
@@ -152,7 +170,7 @@ def _canonicalize_all_views(
         connection.execute(sa.text(f"ROLLBACK TO SAVEPOINT {_OUTER_SAVEPOINT}"))
 
     for vr in ordered:
-        if vr.name in skipped:
+        if vr.name in skipped or vr.name not in processed:
             continue
         if vr.materialized:
             if vr.name in db_mvs:
