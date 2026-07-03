@@ -370,6 +370,7 @@ class ReplaceMaterializedViewOp(MigrateOperation):
         *,
         schema: str | None = None,
         with_data: bool = False,
+        cascade: bool = True,
         old_definition: str | None = None,
     ) -> None:
         _validate_definition(definition)
@@ -377,6 +378,7 @@ class ReplaceMaterializedViewOp(MigrateOperation):
         self.definition = definition
         self.schema = schema
         self.with_data = with_data
+        self.cascade = cascade
         self.old_definition = old_definition
 
     @classmethod
@@ -388,6 +390,7 @@ class ReplaceMaterializedViewOp(MigrateOperation):
         *,
         schema: str | None = None,
         with_data: bool = False,
+        cascade: bool = True,
         old_definition: str | None = None,
     ) -> None:
         """Programmatic entry-point for ``op.replace_materialized_view()``."""
@@ -396,6 +399,7 @@ class ReplaceMaterializedViewOp(MigrateOperation):
             definition,
             schema=schema,
             with_data=with_data,
+            cascade=cascade,
             old_definition=old_definition,
         )
         return operations.invoke(op)
@@ -417,6 +421,7 @@ class ReplaceMaterializedViewOp(MigrateOperation):
             self.old_definition,
             schema=self.schema,
             with_data=self.with_data,
+            cascade=self.cascade,
             old_definition=self.definition,
         )
 
@@ -557,7 +562,8 @@ def _replace_materialized_view_impl(
     qualified = _quote_qualified_name(dialect, op.name, op.schema)
     data_clause = "WITH DATA" if op.with_data else "WITH NO DATA"
 
-    drop_sql = f"DROP MATERIALIZED VIEW IF EXISTS {qualified} CASCADE"
+    cascade_clause = " CASCADE" if op.cascade else ""
+    drop_sql = f"DROP MATERIALIZED VIEW IF EXISTS {qualified}{cascade_clause}"
     create_sql = (
         f"CREATE MATERIALIZED VIEW {qualified} AS {op.definition} "
         f"{data_clause}"

@@ -108,7 +108,8 @@ def render_replace_materialized_view(
     """Render a ReplaceMaterializedViewOp as op.replace_materialized_view(...) code."""
     return (
         f"op.replace_materialized_view({op.name!r}, {op.definition!r}"
-        f"{_schema_part(op)}{_with_data_part(op)}{_old_def_part(op)})"
+        f"{_schema_part(op)}{_with_data_part(op)}{_cascade_part(op)}"
+        f"{_old_def_part(op)})"
     )
 
 

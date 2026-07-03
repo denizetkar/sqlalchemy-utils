@@ -172,6 +172,7 @@ def _diff_views(
     db_defs: dict[str, str],
     schema: str | None,
     is_materialized: bool,
+    cascade_by_name: dict[tuple[str, str | None], bool] | None = None,
 ) -> list:
     """Diff model view definitions against DB state, returning create/replace ops.
 
@@ -182,7 +183,15 @@ def _diff_views(
 
     Materialized-view ops are created with ``with_data=False`` (matches the
     previous inline behavior — autogenerate emits ``WITH NO DATA``).
+
+    ``cascade_by_name`` is consulted only for materialized-view Replace ops
+    so the user's ``cascade_on_drop`` preference propagates from the model
+    to the emitted ``ReplaceMaterializedViewOp``. Regular-view Replace ops
+    do not carry a ``cascade`` field (``CREATE OR REPLACE VIEW`` does not
+    drop). Missing entries default to ``True`` (behavior-preserving).
     """
+    if cascade_by_name is None:
+        cascade_by_name = {}
     ops: list = []
     for name, definition in model_defs.items():
         if name not in db_defs:
@@ -202,6 +211,7 @@ def _diff_views(
                         definition,
                         schema=schema,
                         with_data=False,
+                        cascade=cascade_by_name.get((name, schema), True),
                         old_definition=db_defs[name],
                     )
                 )
@@ -379,18 +389,23 @@ def compare_views(
         create_ops: list = []
         drop_ops: list = []
 
+        # Propagate cascade_on_drop from each ViewRecord so both replace
+        # and drop ops honor the model's cascade preference. Missing
+        # entries default to True (behavior-preserving).
+        cascade_by_name = {
+            (vr.name, vr.schema): vr.cascade_on_drop for vr in schema_records
+        }
+
         # Regular views
         create_ops.extend(
-            _diff_views(model_view_defs, db_views, schema, is_materialized=False)
+            _diff_views(
+                model_view_defs, db_views, schema,
+                is_materialized=False, cascade_by_name=cascade_by_name,
+            )
         )
         # Only drop views that are genuinely in the DB but NOT in the
         # model. Views in `skipped` failed canonicalization and must NOT be
         # dropped — they are still modeled, just not canonicalizable right now.
-        # Propagate cascade_on_drop from any matching ViewRecord so
-        # drops honor the model's cascade preference.
-        cascade_by_name = {
-            (vr.name, vr.schema): vr.cascade_on_drop for vr in schema_records
-        }
         for name in db_views:
             if name in model_view_defs or name in skipped:
                 continue
@@ -406,7 +421,10 @@ def compare_views(
 
         # Materialized views
         create_ops.extend(
-            _diff_views(model_mv_defs, db_mvs, schema, is_materialized=True)
+            _diff_views(
+                model_mv_defs, db_mvs, schema,
+                is_materialized=True, cascade_by_name=cascade_by_name,
+            )
         )
         for name in db_mvs:
             if name in model_mv_defs or name in skipped:

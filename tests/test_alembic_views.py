@@ -859,6 +859,51 @@ class TestReplaceMaterializedViewOp:
             "CREATE MATERIALIZED VIEW analytics.mv1 AS SELECT 2 WITH DATA"
         )
 
+    def test_replace_mv_cascade_field(self):
+        """ReplaceMaterializedViewOp stores ``cascade`` kwarg (default True).
+
+        Behavior-preserving default of ``True`` matches the historical
+        hardcoded ``DROP MATERIALIZED VIEW ... CASCADE``. Passing
+        ``cascade=False`` stores it as False so the impl can omit CASCADE.
+        """
+        op_default = ReplaceMaterializedViewOp("mv", "SELECT 1")
+        assert op_default.cascade is True
+
+        op_false = ReplaceMaterializedViewOp("mv", "SELECT 1", cascade=False)
+        assert op_false.cascade is False
+
+    def test_replace_mv_impl_respects_cascade_false(self):
+        """``_replace_materialized_view_impl`` omits CASCADE when op.cascade=False.
+
+        The impl historically hardcoded ``CASCADE`` in the DROP statement,
+        ignoring the user's ``cascade_on_drop`` preference. When
+        ``op.cascade=False``, the DROP must NOT contain the CASCADE keyword.
+        """
+        from sqlalchemy_utils.alembic.operations import (
+            _replace_materialized_view_impl,
+        )
+
+        op = ReplaceMaterializedViewOp("mv", "SELECT 1", cascade=False)
+        sqls = _capture_sql(op)
+        assert len(sqls) == 2
+        assert "CASCADE" not in sqls[0].upper(), (
+            f"DROP must not contain CASCADE when op.cascade=False. "
+            f"DROP SQL: {sqls[0]!r}"
+        )
+        assert sqls[0] == "DROP MATERIALIZED VIEW IF EXISTS mv"
+        assert sqls[1] == "CREATE MATERIALIZED VIEW mv AS SELECT 1 WITH NO DATA"
+
+    def test_replace_mv_impl_cascade_true_default(self):
+        """``_replace_materialized_view_impl`` emits CASCADE when op.cascade=True.
+
+        Locks the behavior-preserving default: a replace MV op without an
+        explicit ``cascade=`` kwarg still emits ``DROP ... CASCADE`` exactly
+        as before this field was added.
+        """
+        op = ReplaceMaterializedViewOp("mv", "SELECT 1")
+        sqls = _capture_sql(op)
+        assert sqls[0] == "DROP MATERIALIZED VIEW IF EXISTS mv CASCADE"
+
 
 # ---------------------------------------------------------------------------
 # Operations: keyword-only params (parametrized)
