@@ -237,7 +237,7 @@ class ViewMixin:
         return schema
 
     @classmethod
-    def refresh(cls, session, concurrently=False):
+    def refresh(cls, session, *, concurrently: bool = False):
         """Refresh a materialized view.
 
         :param session: An SQLAlchemy Session instance.
