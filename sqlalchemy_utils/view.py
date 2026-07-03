@@ -1,3 +1,5 @@
+from typing import Optional, Union
+
 import sqlalchemy as sa
 from sqlalchemy.ext import compiler
 from sqlalchemy.schema import DDLElement, PrimaryKeyConstraint
@@ -134,6 +136,7 @@ def _register_view_ddl(
     schema,
     table=None,
     indexes=None,
+    aliases=None,
 ):
     """Register CREATE/DROP DDL listeners and a ViewRecord on *metadata*.
 
@@ -186,19 +189,20 @@ def _register_view_ddl(
         materialized=materialized,
         replace=replace,
         cascade_on_drop=cascade_on_drop,
+        aliases=aliases,
     ))
 
 
 def create_materialized_view(
-    name,
-    selectable,
-    metadata,
+    name: str,
+    selectable: Union[str, ClauseElement],
+    metadata: sa.MetaData,
     *,
-    indexes=None,
-    aliases=None,
-    cascade_on_drop=True,
-    schema=None,
-):
+    indexes: Optional[list[sa.Index]] = None,
+    aliases: Optional[dict[str, str]] = None,
+    cascade_on_drop: bool = True,
+    schema: Optional[str] = None,
+) -> sa.Table:
     """Create a view on a given metadata
 
     :param name: The name of the view to create.
@@ -252,19 +256,20 @@ def create_materialized_view(
         schema=schema,
         table=table,
         indexes=indexes,
+        aliases=aliases,
     )
     return table
 
 
 def create_view(
-    name,
-    selectable,
-    metadata,
+    name: str,
+    selectable: Union[str, ClauseElement],
+    metadata: sa.MetaData,
     *,
-    cascade_on_drop=True,
-    replace=False,
-    schema=None,
-):
+    cascade_on_drop: bool = True,
+    replace: bool = False,
+    schema: Optional[str] = None,
+) -> sa.Table:
     """Create a view on a given metadata
 
     :param name: The name of the view to create.
@@ -348,7 +353,13 @@ def compile_refresh_materialized_view(element, compiler, **kw):
     )
 
 
-def refresh_materialized_view(session, name, *, schema=None, concurrently=False):
+def refresh_materialized_view(
+    session: sa.orm.Session,
+    name: str,
+    *,
+    schema: Optional[str] = None,
+    concurrently: bool = False,
+) -> None:
     """Refreshes an already existing materialized view
 
     :param session: An SQLAlchemy Session instance.

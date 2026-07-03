@@ -23,10 +23,12 @@ Usage in ``env.py``::
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 import sqlalchemy as sa
 from alembic.autogenerate import comparators
 from alembic.autogenerate.api import AutogenContext
+from alembic.operations.ops import UpgradeOps
 
 from sqlalchemy_utils.view_record import ViewRecord
 from sqlalchemy_utils.view import _quote_qualified_name
@@ -314,8 +316,8 @@ def _order_ops(ops, records, db, resolver_fn, action_label):
 
 def compare_views(
     autogen_context: AutogenContext,
-    upgrade_ops,
-    schemas,
+    upgrade_ops: UpgradeOps,
+    schemas: Optional[list[str]] = None,
 ) -> None:
     """Compare model-defined views against database state.
 

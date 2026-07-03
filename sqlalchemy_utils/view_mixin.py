@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import logging
+from typing import Optional
 
 import sqlalchemy as sa
 
@@ -39,6 +42,10 @@ class ViewMixin:
       :func:`sqlalchemy_utils.view.create_view` and
       :func:`sqlalchemy_utils.view.create_materialized_view`.
     * ``__view_replace__`` — ``True`` to emit ``CREATE OR REPLACE`` (default ``False``).
+    * ``__view_aliases__`` — Optional ``{column_name: alias}`` mapping used only
+      for materialized views (mirrors the ``aliases`` parameter of
+      :func:`sqlalchemy_utils.view.create_materialized_view`); ignored for
+      regular views (default ``None``).
 
     **Methods:**
 
@@ -74,6 +81,7 @@ class ViewMixin:
     __view_schema__ = None
     __view_cascade__ = True
     __view_replace__ = False
+    __view_aliases__: Optional[dict] = None
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -130,6 +138,11 @@ class ViewMixin:
         is_materialized = getattr(cls, '__view_materialized__', False)
         replace = getattr(cls, '__view_replace__', False)
         cascade_on_drop = getattr(cls, '__view_cascade__', True)
+        # Aliases are only meaningful for materialized views (regular views
+        # do not support column aliases via create_table_from_selectable).
+        aliases = None
+        if is_materialized:
+            aliases = getattr(cls, '__view_aliases__', None)
 
         declared_col_names = set()
         declared_col_types = {}
@@ -148,6 +161,7 @@ class ViewMixin:
             selectable=selectable,
             indexes=indexes if indexes else None,
             metadata=None,
+            aliases=aliases if is_materialized else None,
             schema=view_schema,
         )
         cls.__table__ = table
@@ -192,6 +206,7 @@ class ViewMixin:
             schema=view_schema,
             table=table,
             indexes=indexes if indexes else None,
+            aliases=aliases if is_materialized else None,
         )
 
         if not sa.event.contains(sa.orm.Session, 'before_flush', _view_before_flush):

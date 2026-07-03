@@ -23,6 +23,7 @@ class ViewRecord:
     materialized: bool = False
     replace: bool = False
     cascade_on_drop: bool = True
+    aliases: dict | None = None
 
     def __post_init__(self):
         if self.selectable is None:

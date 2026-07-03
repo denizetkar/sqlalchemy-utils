@@ -358,3 +358,56 @@ def test_declare_last_forwarding():
     MyView.__declare_last__()
 
     assert MyView.__table__ is not None
+
+
+def test_view_mixin_aliases():
+    """__view_aliases__ is threaded through to _register_view_ddl and the
+    backing table's column keys for materialized views."""
+    Base = declarative_base()
+
+    source = sa.Table(
+        'alias_src', Base.metadata,
+        sa.Column('old_col', sa.Integer, primary_key=True),
+    )
+
+    class AliasedMV(ViewMixin, Base):
+        __tablename__ = 'aliased_mv'
+        __view_selectable__ = sa.select(source.c.old_col)
+        __view_materialized__ = True
+        __view_aliases__ = {'old_col': 'new_col'}
+        new_col: Mapped[int] = mapped_column('old_col', sa.Integer, primary_key=True)
+
+    AliasedMV.__declare_last__()
+
+    assert 'new_col' in AliasedMV.__table__.columns
+    assert AliasedMV.__table__.columns['new_col'].name == 'old_col'
+
+    records = Base.metadata.info.get('sqlalchemy_utils_views', [])
+    vr = [r for r in records if r.name == 'aliased_mv'][0]
+    assert vr.materialized is True
+    assert vr.aliases == {'old_col': 'new_col'}
+
+
+def test_view_mixin_aliases_not_set_for_regular_views():
+    """__view_aliases__ is ignored for non-materialized views."""
+    Base = declarative_base()
+
+    class RegularView(ViewMixin, Base):
+        __tablename__ = 'regular_aliased_view'
+        __view_selectable__ = sa.select(_src(sa.column('id', sa.Integer)))
+        __view_aliases__ = {'id': 'should_be_ignored'}
+        id: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
+
+    RegularView.__declare_last__()
+
+    assert 'id' in RegularView.__table__.columns
+    assert 'should_be_ignored' not in RegularView.__table__.columns
+
+    records = Base.metadata.info.get('sqlalchemy_utils_views', [])
+    vr = [r for r in records if r.name == 'regular_aliased_view'][0]
+    assert vr.aliases is None
+
+
+def test_view_mixin_aliases_default_none():
+    """ViewMixin.__view_aliases__ defaults to None."""
+    assert ViewMixin.__view_aliases__ is None
