@@ -55,13 +55,9 @@ log = logging.getLogger(__name__)
 _OUTER_SAVEPOINT = "su_view_cmp"
 
 
-def _compile_selectable(connection: sa.engine.Connection, view_record: ViewRecord) -> str:
-    return view_record.compiled_definition(dialect=connection.dialect)
-
-
 def _build_create_sql(connection: sa.engine.Connection, view_record: ViewRecord) -> str:
     """Build the CREATE (OR REPLACE) VIEW / MATERIALIZED VIEW statement."""
-    definition = _compile_selectable(connection, view_record)
+    definition = view_record.compiled_definition(dialect=connection.dialect)
     dialect = connection.dialect
     qualified = _quote_qualified_name(dialect, view_record.name, view_record.schema)
     if view_record.materialized:

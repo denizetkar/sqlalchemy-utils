@@ -23,15 +23,6 @@ from sqlalchemy_utils.view_record import ViewRecord
 # ---------------------------------------------------------------------------
 
 
-def _definition_str(view_record: ViewRecord) -> str:
-    """Return the SQL definition string for *view_record*.
-
-    Delegates to :meth:`ViewRecord.compiled_definition` (no dialect) so
-    selectable-to-string compilation has a single implementation.
-    """
-    return view_record.compiled_definition()
-
-
 def _build_dependency_graph(
     view_records: list[ViewRecord],
     db_views: dict[str, str] | None,
@@ -53,7 +44,7 @@ def _build_dependency_graph(
     graph: dict[str, set[str]] = {}
 
     for vr in view_records:
-        definition = _definition_str(vr)
+        definition = vr.compiled_definition()
         deps: set[str] = set()
         for other_name in all_known:
             if other_name == vr.name:

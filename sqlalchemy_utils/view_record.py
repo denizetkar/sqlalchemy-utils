@@ -14,8 +14,8 @@ class ViewRecord:
 
     Equality is name-based: two ViewRecords with the same ``name`` and
     ``schema`` (and ``materialized`` flag) compare equal, regardless of the
-    underlying selectable SQL.  Use :meth:`definition_matches` to compare the
-    actual SQL definitions.
+    underlying selectable SQL.  Use :meth:`compiled_definition` to compare
+    the actual SQL definitions.
     """
     name: str
     selectable: Any
@@ -33,7 +33,7 @@ class ViewRecord:
 
         Intentionally name-based (name/schema/materialized only) so that
         ViewRecords can serve as stable dict/set keys even when the
-        underlying selectable SQL changes. Use :meth:`definition_matches`
+        underlying selectable SQL changes. Use :meth:`compiled_definition`
         to detect actual definition (selectable) changes.
         """
         if not isinstance(other, ViewRecord):
@@ -48,16 +48,6 @@ class ViewRecord:
         """Hash the ViewRecord for use in sets and dicts."""
         return hash((self.name, self.schema, self.materialized))
 
-    def definition_matches(self, other: 'ViewRecord') -> bool:
-        """Compare view definitions (selectable SQL) for equality.
-
-        Unlike __eq__ (which is name-based for dict/set key usage), this method
-        compares the actual SQL of the selectables to detect definition changes.
-        """
-        if not isinstance(other, ViewRecord):
-            return NotImplemented
-        return self.compiled_definition() == other.compiled_definition()
-
     def compiled_definition(self, dialect=None) -> str:
         """Compile the selectable to a SQL string for comparison/dependency detection.
 
@@ -65,9 +55,9 @@ class ViewRecord:
         compilation.  String selectables are returned as-is.
 
         This is the single source of truth for selectable-to-string
-        compilation used by :meth:`definition_matches`,
-        :func:`sqlalchemy_utils.alembic.comparator._compile_selectable`
-        and :func:`sqlalchemy_utils.alembic.depend._definition_str`.
+        compilation used by
+        :func:`sqlalchemy_utils.alembic.comparator._build_create_sql`
+        and :func:`sqlalchemy_utils.alembic.depend._build_dependency_graph`.
         """
         sel = self.selectable
         if isinstance(sel, str):
@@ -78,10 +68,6 @@ class ViewRecord:
                 sel.compile(dialect=dialect, compile_kwargs=compile_kwargs)
             )
         return str(sel.compile(compile_kwargs=compile_kwargs))
-
-    def _selectable_key(self) -> str:
-        """Backward-compatible alias for :meth:`compiled_definition`."""
-        return self.compiled_definition()
 
     def __repr__(self) -> str:
         """Pretty string representation."""

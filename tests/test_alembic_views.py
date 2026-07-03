@@ -376,148 +376,6 @@ class TestViewRecordRepr:
         assert "materialized=True" in str_repr
 
 
-class TestViewRecordDefinitionMatches:
-    """ViewRecord.definition_matches behavior."""
-
-    def test_matches_string_selectables(self):
-        vr1 = ViewRecord(name="v", selectable="SELECT 1 AS id")
-        vr2 = ViewRecord(name="v", selectable="SELECT 1 AS id")
-        assert vr1.definition_matches(vr2) is True
-
-        vr3 = ViewRecord(name="v", selectable="SELECT 2 AS id")
-        assert vr1.definition_matches(vr3) is False
-
-    def test_matches_sa_selectables(self):
-        sel1 = sa.select(sa.column("id", sa.Integer))
-        sel2 = sa.select(sa.column("id", sa.Integer))
-        vr1 = ViewRecord(name="v", selectable=sel1)
-        vr2 = ViewRecord(name="v", selectable=sel2)
-        assert vr1.definition_matches(vr2) is True
-
-    def test_matches_identical_selectable(self):
-        sel = sa.select(sa.column("id", sa.Integer))
-        vr1 = ViewRecord(name="v", selectable=sel)
-        vr2 = ViewRecord(name="v", selectable=sel)
-        assert vr1.definition_matches(vr2) is True
-
-
-# ===========================================================================
-# Characterization tests for selectable-to-string compilation
-#
-# These tests lock the EXACT output of the three (formerly redundant)
-# selectable-compilation paths so the consolidation refactor into
-# ``ViewRecord.compiled_definition`` cannot change observable behavior.
-# ===========================================================================
-
-# A canonical selectable whose compiled form is stable across dialects.
-_CHAR_SEL = sa.select(sa.literal_column("1").label("col"))
-_CHAR_SEL_EXPECTED = "SELECT 1 AS col"
-_CHAR_STR = "SELECT 1 AS col"
-
-
-class TestSelectableCompilationCharacterization:
-    """Lock the output of the three selectable-compilation paths.
-
-    This refactor consolidates three implementations into
-    ``ViewRecord.compiled_definition(dialect=None)``. These tests ensure
-    the consolidated method produces byte-identical output to the
-    pre-refactor implementations.
-    """
-
-    # --- ViewRecord._selectable_key (no dialect) ---
-
-    def test_selectable_key_string_selectable(self):
-        vr = ViewRecord(name="v", selectable=_CHAR_STR)
-        assert vr._selectable_key() == _CHAR_STR
-
-    def test_selectable_key_sa_selectable_no_dialect(self):
-        vr = ViewRecord(name="v", selectable=_CHAR_SEL)
-        assert vr._selectable_key() == _CHAR_SEL_EXPECTED
-
-    # --- depend._definition_str (no dialect) ---
-
-    def test_definition_str_string_selectable(self):
-        from sqlalchemy_utils.alembic.depend import _definition_str
-
-        vr = ViewRecord(name="v", selectable=_CHAR_STR)
-        assert _definition_str(vr) == _CHAR_STR
-
-    def test_definition_str_sa_selectable_no_dialect(self):
-        from sqlalchemy_utils.alembic.depend import _definition_str
-
-        vr = ViewRecord(name="v", selectable=_CHAR_SEL)
-        assert _definition_str(vr) == _CHAR_SEL_EXPECTED
-
-    # --- comparator._compile_selectable (with dialect) ---
-
-    def test_compile_selectable_string_selectable_with_dialect(self):
-        from sqlalchemy_utils.alembic.comparator import _compile_selectable
-
-        connection = MagicMock()
-        connection.dialect = sa.dialects.postgresql.dialect()
-        vr = ViewRecord(name="v", selectable=_CHAR_STR)
-        assert _compile_selectable(connection, vr) == _CHAR_STR
-
-    def test_compile_selectable_sa_selectable_with_pg_dialect(self):
-        from sqlalchemy_utils.alembic.comparator import _compile_selectable
-
-        connection = MagicMock()
-        connection.dialect = sa.dialects.postgresql.dialect()
-        vr = ViewRecord(name="v", selectable=_CHAR_SEL)
-        assert _compile_selectable(connection, vr) == _CHAR_SEL_EXPECTED
-
-    def test_compile_selectable_sa_selectable_with_sqlite_dialect(self):
-        from sqlalchemy_utils.alembic.comparator import _compile_selectable
-
-        connection = MagicMock()
-        connection.dialect = sa.dialects.sqlite.dialect()
-        vr = ViewRecord(name="v", selectable=_CHAR_SEL)
-        assert _compile_selectable(connection, vr) == _CHAR_SEL_EXPECTED
-
-    # --- Cross-path equivalence (no-dialect vs dialect-for-this-selectable)
-    #     For a dialect-agnostic selectable, all three paths must agree.
-
-    def test_all_three_paths_produce_identical_output_for_str(self):
-        from sqlalchemy_utils.alembic.comparator import _compile_selectable
-        from sqlalchemy_utils.alembic.depend import _definition_str
-
-        vr = ViewRecord(name="v", selectable=_CHAR_STR)
-        connection = MagicMock()
-        connection.dialect = sa.dialects.postgresql.dialect()
-        assert vr._selectable_key() == _definition_str(vr) == _compile_selectable(connection, vr)
-
-    def test_all_three_paths_produce_identical_output_for_sa_selectable(self):
-        from sqlalchemy_utils.alembic.comparator import _compile_selectable
-        from sqlalchemy_utils.alembic.depend import _definition_str
-
-        vr = ViewRecord(name="v", selectable=_CHAR_SEL)
-        connection = MagicMock()
-        connection.dialect = sa.dialects.postgresql.dialect()
-        assert vr._selectable_key() == _definition_str(vr) == _compile_selectable(connection, vr)
-
-    # --- Dialect-sensitive selectable: confirm the dialect path is actually
-    #     used (not silently ignored). A selectable that raises when compiled
-    #     with a dialect proves _compile_selectable passes the dialect through.
-
-    def test_compile_selectable_passes_dialect_through(self):
-        """If _compile_selectable did not pass the dialect, this selectable
-        would compile fine; because it does pass the dialect, a TypeError is
-        raised — locking the dialect-passing behavior."""
-        from sqlalchemy_utils.alembic.comparator import _compile_selectable
-
-        class _DialectSensitiveSelectable:
-            def compile(self, **kw):
-                if "dialect" in kw:
-                    raise TypeError("dialect was passed")
-                return "SELECT 1 AS col"
-
-        connection = MagicMock()
-        connection.dialect = sa.dialects.postgresql.dialect()
-        vr = ViewRecord(name="v", selectable=_DialectSensitiveSelectable())
-        with pytest.raises(TypeError, match="dialect was passed"):
-            _compile_selectable(connection, vr)
-
-
 # ===========================================================================
 # pg_catalog
 # ===========================================================================
@@ -1738,7 +1596,8 @@ class TestComparatorDDLError:
 class _SelectableBreakingOnDialectCompile:
     """A selectable-like object that compiles for dependency resolution but
     raises a real ``TypeError`` when ``compile`` is called with a ``dialect``
-    kwarg (the path used by ``_compile_selectable`` inside the savepoint try).
+    kwarg (the path used by ``compiled_definition(dialect=...)`` inside the
+    savepoint try).
 
     This reproduces a genuine programming error (wrong selectable type / a
     selectable that cannot be compiled against a live dialect) surfacing
@@ -1747,8 +1606,8 @@ class _SelectableBreakingOnDialectCompile:
 
     ``resolve_create_order`` calls ``sel.compile(compile_kwargs=...)`` WITHOUT
     a dialect (stringification only), so dependency resolution succeeds and
-    execution reaches the savepoint loop. ``_compile_selectable`` then calls
-    ``sel.compile(dialect=..., compile_kwargs=...)`` and the ``TypeError``
+    execution reaches the savepoint loop. ``_build_create_sql`` then calls
+    ``vr.compiled_definition(dialect=...)`` and the ``TypeError``
     fires inside the try/except under test.
     """
 
@@ -4017,10 +3876,10 @@ class TestMvCanonicalizationNoCascade:
         """
         connection = MagicMock()
         connection.dialect = sa.dialects.postgresql.dialect()
-        # _compile_selectable is invoked inside _build_create_sql; stub it out
+        # compiled_definition is invoked inside _build_create_sql; stub it out
         # by patching so the SQL can be built without a real DB round-trip.
         with patch(
-            "sqlalchemy_utils.alembic.comparator._compile_selectable",
+            "sqlalchemy_utils.alembic.comparator.ViewRecord.compiled_definition",
             return_value="SELECT 1 AS id",
         ):
             vr = ViewRecord(
