@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import sqlalchemy as sa
 
@@ -93,7 +92,7 @@ class ViewMixin:
     __view_schema__ = None
     __view_cascade__ = True
     __view_replace__ = False
-    __view_aliases__: Optional[dict] = None
+    __view_aliases__: dict | None = None
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)

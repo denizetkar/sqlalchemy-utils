@@ -1,4 +1,4 @@
-from typing import Optional, Union
+from __future__ import annotations
 
 import sqlalchemy as sa
 from sqlalchemy.ext import compiler
@@ -195,13 +195,13 @@ def _register_view_ddl(
 
 def create_materialized_view(
     name: str,
-    selectable: Union[str, ClauseElement],
+    selectable: str | ClauseElement,
     metadata: sa.MetaData,
-    indexes: Optional[list[sa.Index]] = None,
-    aliases: Optional[dict[str, str]] = None,
+    indexes: list[sa.Index] | None = None,
+    aliases: dict[str, str] | None = None,
     cascade_on_drop: bool = True,
     *,
-    schema: Optional[str] = None,
+    schema: str | None = None,
 ) -> sa.Table:
     """Create a view on a given metadata
 
@@ -235,6 +235,19 @@ def create_materialized_view(
         ``WITH NO DATA`` clause (via ``with_data=False``, which is also the
         autogenerate default).
 
+    Example::
+
+        metadata = sa.MetaData()
+        create_materialized_view(
+            "user_summary",
+            sa.select(
+                sa.func.count().label("n"),
+            ).select_from(sa.text("users")),
+            metadata,
+        )
+        # Run metadata.create_all(engine) to emit the CREATE MATERIALIZED VIEW.
+        # Refresh later with refresh_materialized_view(session, "user_summary").
+
     """
     table = create_table_from_selectable(
         name=name,
@@ -262,12 +275,12 @@ def create_materialized_view(
 
 def create_view(
     name: str,
-    selectable: Union[str, ClauseElement],
+    selectable: str | ClauseElement,
     metadata: sa.MetaData,
     cascade_on_drop: bool = True,
     replace: bool = False,
     *,
-    schema: Optional[str] = None,
+    schema: str | None = None,
 ) -> sa.Table:
     """Create a view on a given metadata
 
@@ -358,7 +371,7 @@ def refresh_materialized_view(
     name: str,
     concurrently: bool = False,
     *,
-    schema: Optional[str] = None,
+    schema: str | None = None,
 ) -> None:
     """Refreshes an already existing materialized view
 

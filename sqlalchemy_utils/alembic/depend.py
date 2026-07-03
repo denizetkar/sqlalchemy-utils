@@ -15,6 +15,8 @@ from __future__ import annotations
 import re
 from graphlib import TopologicalSorter, CycleError
 
+import sqlalchemy as sa
+
 from sqlalchemy_utils.view_record import ViewRecord
 
 
@@ -26,6 +28,8 @@ from sqlalchemy_utils.view_record import ViewRecord
 def _build_dependency_graph(
     view_records: list[ViewRecord],
     db_views: dict[str, str] | None,
+    *,
+    dialect: sa.engine.Dialect | None = None,
 ) -> dict[str, set[str]]:
     """Build a ``{name: {dep_name, ...}}`` mapping.
 
@@ -35,6 +39,12 @@ def _build_dependency_graph(
 
     *db_views* represents views that already exist in the database — they
     are potential dependencies but are NOT included in the sort output.
+
+    *dialect*, when provided, is forwarded to
+    :meth:`ViewRecord.compiled_definition` so the dependency scan matches
+    the dialect-qualified SQL that will actually be emitted (e.g.
+    schema-qualified identifiers rendered the same way the comparator
+    renders them).  When *None*, default compilation is used.
     """
     # All known view names (model + DB) for matching
     model_names: set[str] = {vr.name for vr in view_records}
@@ -44,7 +54,7 @@ def _build_dependency_graph(
     graph: dict[str, set[str]] = {}
 
     for vr in view_records:
-        definition = vr.compiled_definition()
+        definition = vr.compiled_definition(dialect=dialect)
         deps: set[str] = set()
         for other_name in all_known:
             if other_name == vr.name:
@@ -72,6 +82,7 @@ def _toposort(
     db_views: dict[str, str] | None,
     *,
     reverse: bool = False,
+    dialect: sa.engine.Dialect | None = None,
 ) -> list[ViewRecord]:
     """Core topological sort with cycle detection.
 
@@ -84,6 +95,10 @@ def _toposort(
         considered as pre-existing dependencies.
     reverse:
         If *True*, return drop order (dependents before dependencies).
+    dialect:
+        Optional SQLAlchemy dialect forwarded to
+        :meth:`ViewRecord.compiled_definition` so dependency detection
+        matches the dialect-qualified SQL emitted by the comparator.
 
     Returns
     -------
@@ -97,7 +112,7 @@ def _toposort(
     """
     if db_views is None:
         db_views = {}
-    graph = _build_dependency_graph(view_records, db_views)
+    graph = _build_dependency_graph(view_records, db_views, dialect=dialect)
     sorter = TopologicalSorter(graph)
 
     try:
@@ -132,6 +147,8 @@ def _toposort(
 def resolve_create_order(
     view_records: list[ViewRecord],
     db_views: dict[str, str] | None,
+    *,
+    dialect: sa.engine.Dialect | None = None,
 ) -> list[ViewRecord]:
     """Sort *view_records* so that dependencies come before dependents.
 
@@ -147,6 +164,11 @@ def resolve_create_order(
         exist in the database.  These are treated as pre-satisfied
         dependencies — a model view may depend on a DB view, but the DB
         view is not included in the output.
+    dialect:
+        Optional SQLAlchemy dialect forwarded to
+        :meth:`ViewRecord.compiled_definition` so dependency detection
+        scans the same dialect-qualified SQL the comparator emits.  When
+        *None*, default compilation is used.
 
     Returns
     -------
@@ -158,12 +180,14 @@ def resolve_create_order(
     ValueError
         If a circular dependency is detected.
     """
-    return _toposort(view_records, db_views, reverse=False)
+    return _toposort(view_records, db_views, reverse=False, dialect=dialect)
 
 
 def resolve_drop_order(
     view_records: list[ViewRecord],
     db_views: dict[str, str] | None,
+    *,
+    dialect: sa.engine.Dialect | None = None,
 ) -> list[ViewRecord]:
     """Sort *view_records* so that dependents come before dependencies.
 
@@ -177,6 +201,11 @@ def resolve_drop_order(
     db_views:
         Mapping of ``{view_name: sql_definition}`` for existing database
         views.  Used for dependency detection but not included in output.
+    dialect:
+        Optional SQLAlchemy dialect forwarded to
+        :meth:`ViewRecord.compiled_definition` so dependency detection
+        scans the same dialect-qualified SQL the comparator emits.  When
+        *None*, default compilation is used.
 
     Returns
     -------
@@ -188,4 +217,4 @@ def resolve_drop_order(
     ValueError
         If a circular dependency is detected.
     """
-    return _toposort(view_records, db_views, reverse=True)
+    return _toposort(view_records, db_views, reverse=True, dialect=dialect)

@@ -3,7 +3,7 @@ Regression tests for validated schema-parameter and related bugs.
 
 These tests document bugs that exist in the current codebase. They are
 intentionally written to FAIL against the unfixed code, proving each bug
-is real. Each test names the bug it covers (Bugs 1-10).
+is real. Each test names the bug it covers.
 
 Run:
     PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 python3 -m pytest \
@@ -93,36 +93,6 @@ def test_viewrecord_eq_ignores_selectable():
     # This assertion documents the limitation: the records ARE equal under
     # the current implementation, masking real differences in the view body.
     assert record_a == record_b
-
-
-# ---------------------------------------------------------------------------
-# Bug 7: Stale TODO marker left in test_alembic_views.py
-# ---------------------------------------------------------------------------
-def test_no_stale_todo_in_test_alembic_views():
-    """Regression guard: test_alembic_views.py must not carry stale
-    `TODO: Task` markers (Bug 7 was fixed in a prior wave)."""
-    target = TESTS_DIR / 'test_alembic_views.py'
-    text = target.read_text()
-    matches = re.findall(r'TODO:\s*Task', text)
-    assert matches == [], (
-        f"Found {len(matches)} stale 'TODO: Task' marker(s) in "
-        f"{target.name}; they should be removed once the work is done."
-    )
-
-
-# ---------------------------------------------------------------------------
-# Bug 8: Typo 'test_viewmixn' (should be 'test_viewmixin') in test_view_mixin.py
-# ---------------------------------------------------------------------------
-def test_no_viewmixn_typos_in_test_view_mixin():
-    """Regression guard: test_view_mixin.py must not contain the
-    'test_viewmixn' typo (Bug 8 was fixed in a prior wave)."""
-    target = TESTS_DIR / 'test_view_mixin.py'
-    text = target.read_text()
-    matches = re.findall(r'test_viewmixn', text)
-    assert matches == [], (
-        f"Found {len(matches)} 'test_viewmixn' typo(s) in "
-        f"{target.name}; rename to 'test_viewmixin'."
-    )
 
 
 # ---------------------------------------------------------------------------

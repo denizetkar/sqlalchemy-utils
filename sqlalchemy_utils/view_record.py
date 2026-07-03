@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Any, Optional, Union
 from dataclasses import dataclass
 
 import sqlalchemy as sa
@@ -20,7 +19,7 @@ class ViewRecord:
     to compare the actual SQL definitions.
     """
     name: str
-    selectable: Union[str, sa.sql.ClauseElement]
+    selectable: str | sa.sql.ClauseElement
     schema: str | None = None
     materialized: bool = False
     replace: bool = False
@@ -51,7 +50,7 @@ class ViewRecord:
         """Hash the ViewRecord for use in sets and dicts."""
         return hash((self.name, self.schema, self.materialized))
 
-    def compiled_definition(self, *, dialect: Optional[sa.engine.Dialect] = None) -> str:
+    def compiled_definition(self, *, dialect: sa.engine.Dialect | None = None) -> str:
         """Compile the selectable to a SQL string for comparison/dependency detection.
 
         If *dialect* is provided, compile against it; otherwise use default

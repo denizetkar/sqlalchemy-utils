@@ -23,7 +23,6 @@ Usage in ``env.py``::
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import sqlalchemy as sa
 from alembic.autogenerate import comparators
@@ -113,6 +112,7 @@ def _canonicalize_all_views(
         db_views_for_deps,
         resolve_create_order,
         "canonicalizing",
+        dialect=connection.dialect,
     )
 
     schema = view_records[0].schema
@@ -175,7 +175,20 @@ def _canonicalize_all_views(
         db_views = get_database_views(connection, schema)
         db_mvs = get_database_materialized_views(connection, schema)
     finally:
-        connection.execute(sa.text(f"ROLLBACK TO SAVEPOINT {_OUTER_SAVEPOINT}"))
+        # Roll back the outer savepoint so nothing persists.  Guarded
+        # because if the transaction is already poisoned (e.g. a DB-level
+        # error aborted the outer savepoint itself) the ROLLBACK TO would
+        # raise and mask the original exception propagated from the body.
+        try:
+            connection.execute(
+                sa.text(f"ROLLBACK TO SAVEPOINT {_OUTER_SAVEPOINT}")
+            )
+        except (sa.exc.SQLAlchemyError, sa.exc.DBAPIError, OSError) as exc:
+            log.warning(
+                "Failed to roll back outer savepoint %r: %s",
+                _OUTER_SAVEPOINT,
+                exc,
+            )
 
     for vr in ordered:
         if vr.name in skipped or vr.name not in processed:
@@ -285,16 +298,19 @@ def _warn_if_dependents(
         )
 
 
-def _safe_resolve(records, db, resolver_fn, action_label):
+def _safe_resolve(records, db, resolver_fn, action_label, *, dialect=None):
     """Resolve view ordering, falling back to model order on cycle.
 
     Wraps *resolver_fn* (e.g. :func:`resolve_create_order`) in a
     try/except :class:`ValueError`. If a circular dependency is detected,
     logs a warning naming *action_label* (e.g. ``"canonicalizing"``,
     ``"creating"``, ``"dropping"``) and returns *records* unchanged.
+
+    *dialect* is forwarded to ``resolver_fn`` so dependency detection
+    scans dialect-qualified SQL matching the comparator's emitted DDL.
     """
     try:
-        return resolver_fn(records, db)
+        return resolver_fn(records, db, dialect=dialect)
     except ValueError:
         log.warning(
             "Circular view dependency detected; "
@@ -304,16 +320,21 @@ def _safe_resolve(records, db, resolver_fn, action_label):
         return records
 
 
-def _order_ops(ops, records, db, resolver_fn, action_label):
+def _order_ops(ops, records, db, resolver_fn, action_label, *, dialect=None):
     """Order *ops* by dependency using *resolver_fn*.
 
     Builds a ``{(name, schema): op}`` mapping from *ops*, resolves the
     ordering of *records* via :func:`_safe_resolve`, appends each matching
     op (in dependency order) to the result, then appends any remaining
     (DB-only) ops. Returns the ordered list of ops.
+
+    *dialect* is forwarded to ``resolver_fn`` for dialect-aware dependency
+    detection.
     """
     by_name = {(op.name, op.schema): op for op in ops}
-    ordered_records = _safe_resolve(records, db, resolver_fn, action_label)
+    ordered_records = _safe_resolve(
+        records, db, resolver_fn, action_label, dialect=dialect
+    )
     result = []
     for vr in ordered_records:
         key = (vr.name, vr.schema)
@@ -327,7 +348,7 @@ def _order_ops(ops, records, db, resolver_fn, action_label):
 def compare_views(
     autogen_context: AutogenContext,
     upgrade_ops: UpgradeOps,
-    schemas: Optional[list[str]] = None,
+    schemas: list[str] | None = None,
 ) -> None:
     """Compare model-defined views against database state.
 
@@ -469,6 +490,7 @@ def compare_views(
                     all_db,
                     resolve_create_order,
                     "creating",
+                    dialect=connection.dialect,
                 )
             )
 
@@ -480,6 +502,7 @@ def compare_views(
                     all_db,
                     resolve_drop_order,
                     "dropping",
+                    dialect=connection.dialect,
                 )
             )
 

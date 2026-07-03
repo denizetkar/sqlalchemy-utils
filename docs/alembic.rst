@@ -9,7 +9,7 @@ called **before** ``context.configure()``.
 
 Requires ``pip install sqlalchemy-utils[alembic]``.
 
-::
+.. code-block:: python
 
     from sqlalchemy_utils import register_view_comparator
     register_view_comparator()
@@ -38,10 +38,15 @@ comparator for view DDL:
   ``pg_views``/``pg_matviews`` and uses savepoints.  On non-PostgreSQL
   dialects the comparator logs a warning and skips view diffing.
 
-  Offline mode (``alembic upgrade --sql``) is also unsupported: the
-  comparator needs a live connection to introspect ``pg_catalog`` and
-  create the model view inside a savepoint, so view diffing is skipped
-  when running with ``--sql``.
+  Offline mode (``alembic upgrade --sql``) for *autogenerate* is
+  unsupported: the comparator needs a live connection to introspect
+  ``pg_catalog`` and create the model view inside a savepoint, so view
+  diffing is skipped when running ``alembic revision --autogenerate``
+  with ``--sql``.  This limitation applies only to *autogenerate*;
+  **applying** already-generated migrations in ``--sql`` mode works
+  normally, because the migration operations themselves are plain DDL
+  that Alembic renders to a script without needing a database
+  connection.
 
 * What it detects:
 
@@ -106,7 +111,9 @@ env.py snippet (additions to your existing env.py)
    view's ``CREATE``/``DROP``/``REFRESH`` statements.
 
 
-**SA2 Core (non-ORM) pattern**::
+**SA2 Core (non-ORM) pattern**:
+
+.. code-block:: python
 
     import sqlalchemy as sa
     from sqlalchemy_utils import create_view, create_materialized_view
@@ -134,6 +141,11 @@ database), adopting the autogenerate integration needs a little care.
 2. **First autogenerate** should produce no view operations when your model
    definitions match the database definitions exactly.  Treat a clean
    autogenerate run as the signal that your models and schema are in sync.
+   Note that the comparator **canonicalizes** every model view by creating
+   it inside a savepoint, reading its definition back from
+   ``pg_views``/``pg_matviews``, then rolling back — so the definitions
+   are compared in their PostgreSQL-canonical form, not as written in
+   your model SQL.
 
 3. **If you cannot model them all at once**, review every generated
    ``drop_view`` op carefully before applying it.  The first run will propose
@@ -174,6 +186,24 @@ API reference
 
 .. autoclass:: sqlalchemy_utils.view_record.ViewRecord
    :members:
+
+Extending
+---------
+
+The integration is built on three standard Alembic extension points.
+``comparators.dispatch_for("schema")`` registers a function that Alembic
+calls during ``--autogenerate`` to diff a slice of the schema — view
+detection is registered this way by :func:`register_view_comparator`.
+``Operations.register_operation`` exposes a new ``op.<name>(...)`` helper
+and its backing ``MigrateOperation`` subclass (the seven ``*ViewOp``
+classes are registered this way).  Finally,
+``renderers.dispatch_for(<OpClass>)`` teaches Alembic's offline SQL
+renderer how to emit ``CREATE``/``DROP``/``REFRESH`` DDL for each custom
+operation.  To add a new view-related operation, subclass
+``MigrateOperation``, register it with ``Operations.register_operation``,
+implement ``reverse()`` for downgrade generation, and add a renderer via
+``renderers.dispatch_for``.
+
 
 Internal / extension points
 ---------------------------

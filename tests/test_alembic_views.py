@@ -370,74 +370,33 @@ class TestViewRecordRepr:
 # pg_catalog
 # ===========================================================================
 
+@pytest.mark.parametrize(
+    "fetch_fn",
+    [get_database_views, get_database_materialized_views],
+    ids=["views", "materialized_views"],
+)
 class TestGetDatabaseViews:
-    """get_database_views queries pg_views correctly."""
+    """get_database_views / get_database_materialized_views query pg_catalog."""
 
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_query_empty_database(self, connection):
-        views = get_database_views(connection)
-        assert views == {}
+    def test_query_empty_database(self, connection, fetch_fn):
+        assert fetch_fn(connection) == {}
 
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_query_views_with_schema_filter(self, connection):
-        views = get_database_views(connection, schema="public")
-        assert isinstance(views, dict)
-        for view_name, definition in views.items():
-            assert isinstance(view_name, str)
+    def test_query_with_schema_filter(self, connection, fetch_fn):
+        result = fetch_fn(connection, schema="public")
+        assert isinstance(result, dict)
+        for name, definition in result.items():
+            assert isinstance(name, str)
             assert isinstance(definition, str)
 
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_query_all_schemas_when_schema_none(self, connection):
-        views = get_database_views(connection, schema=None)
-        assert isinstance(views, dict)
-        for view_name, definition in views.items():
-            assert isinstance(view_name, str)
+    def test_query_all_schemas_when_schema_none(self, connection, fetch_fn):
+        result = fetch_fn(connection, schema=None)
+        assert isinstance(result, dict)
+        for name, definition in result.items():
+            assert isinstance(name, str)
             assert isinstance(definition, str)
-
-    @pytest.mark.usefixtures("postgresql_dsn")
-    def test_query_returns_view_definitions(self, connection):
-        views = get_database_views(connection)
-        assert isinstance(views, dict)
-        if views:
-            for view_name, definition in views.items():
-                assert view_name
-                assert definition
-                assert isinstance(definition, str)
-
-
-class TestGetDatabaseMaterializedViews:
-    """get_database_materialized_views queries pg_matviews correctly."""
-
-    @pytest.mark.usefixtures("postgresql_dsn")
-    def test_query_empty_database(self, connection):
-        mv_views = get_database_materialized_views(connection)
-        assert mv_views == {}
-
-    @pytest.mark.usefixtures("postgresql_dsn")
-    def test_query_materialized_views_with_schema_filter(self, connection):
-        mv_views = get_database_materialized_views(connection, schema="public")
-        assert isinstance(mv_views, dict)
-        for view_name, definition in mv_views.items():
-            assert isinstance(view_name, str)
-            assert isinstance(definition, str)
-
-    @pytest.mark.usefixtures("postgresql_dsn")
-    def test_query_all_schemas_when_schema_none(self, connection):
-        mv_views = get_database_materialized_views(connection, schema=None)
-        assert isinstance(mv_views, dict)
-        for view_name, definition in mv_views.items():
-            assert isinstance(view_name, str)
-            assert isinstance(definition, str)
-
-    @pytest.mark.usefixtures("postgresql_dsn")
-    def test_query_returns_mv_definitions(self, connection):
-        mv_views = get_database_materialized_views(connection)
-        assert isinstance(mv_views, dict)
-        if mv_views:
-            for view_name, definition in mv_views.items():
-                assert view_name
-                assert definition
-                assert isinstance(definition, str)
 
 
 # ===========================================================================
@@ -494,12 +453,7 @@ class TestCreateViewOp:
         assert invoked_op.old_definition == "SELECT 1"
 
     def test_deprecate_replace_on_create(self):
-        """CreateViewOp(replace=True) emits a DeprecationWarning.
-
-        Points users to ``op.replace_view()`` / ``ReplaceViewOp`` because
-        ``CreateViewOp(replace=True).reverse()`` emits a destructive DROP,
-        while ``ReplaceViewOp.reverse()`` restores the prior definition.
-        """
+        """CreateViewOp(replace=True) emits a DeprecationWarning."""
         with pytest.warns(DeprecationWarning) as record:
             CreateViewOp("v", "SELECT 1", replace=True)
         assert len(record) == 1
@@ -591,11 +545,7 @@ class TestCreateMaterializedViewOp:
         assert op.with_data is False
 
     def test_with_data_default_false(self):
-        """CreateMaterializedViewOp defaults to with_data=False.
-
-        Manual and autogenerate behavior must be consistent: large MVs
-        should not be populated by default during migrations.
-        """
+        """CreateMaterializedViewOp defaults to with_data=False."""
         op = CreateMaterializedViewOp("mv", "SELECT 1")
         assert op.with_data is False
 
@@ -645,12 +595,7 @@ class TestDropMaterializedViewOp:
             op.reverse()
 
     def test_drop_mv_with_data_default_false(self):
-        """DropMaterializedViewOp defaults to with_data=False.
-
-        The renderer does not emit with_data for drop MV; only ``reverse()``
-        consumes it (to seed the re-create). Defaulting to False keeps
-        drop→reverse consistent with CreateMaterializedViewOp (also False).
-        """
+        """DropMaterializedViewOp defaults to with_data=False."""
         op = DropMaterializedViewOp("mv")
         assert op.with_data is False
 
@@ -711,12 +656,7 @@ class TestReplaceMaterializedViewOp:
         )
 
     def test_replace_mv_cascade_field(self):
-        """ReplaceMaterializedViewOp stores ``cascade`` kwarg (default True).
-
-        Behavior-preserving default of ``True`` matches the historical
-        hardcoded ``DROP MATERIALIZED VIEW ... CASCADE``. Passing
-        ``cascade=False`` stores it as False so the impl can omit CASCADE.
-        """
+        """ReplaceMaterializedViewOp stores cascade kwarg (default True)."""
         op_default = ReplaceMaterializedViewOp("mv", "SELECT 1")
         assert op_default.cascade is True
 
@@ -724,12 +664,7 @@ class TestReplaceMaterializedViewOp:
         assert op_false.cascade is False
 
     def test_replace_mv_impl_respects_cascade_false(self):
-        """``_replace_materialized_view_impl`` omits CASCADE when op.cascade=False.
-
-        The impl historically hardcoded ``CASCADE`` in the DROP statement,
-        ignoring the user's ``cascade_on_drop`` preference. When
-        ``op.cascade=False``, the DROP must NOT contain the CASCADE keyword.
-        """
+        """``_replace_materialized_view_impl`` omits CASCADE when op.cascade=False."""
         from sqlalchemy_utils.alembic.operations import (
             _replace_materialized_view_impl,
         )
@@ -745,12 +680,7 @@ class TestReplaceMaterializedViewOp:
         assert sqls[1] == "CREATE MATERIALIZED VIEW mv AS SELECT 1 WITH NO DATA"
 
     def test_replace_mv_impl_cascade_true_default(self):
-        """``_replace_materialized_view_impl`` emits CASCADE when op.cascade=True.
-
-        Locks the behavior-preserving default: a replace MV op without an
-        explicit ``cascade=`` kwarg still emits ``DROP ... CASCADE`` exactly
-        as before this field was added.
-        """
+        """``_replace_materialized_view_impl`` emits CASCADE when op.cascade=True."""
         op = ReplaceMaterializedViewOp("mv", "SELECT 1")
         sqls = _capture_sql(op)
         assert sqls[0] == "DROP MATERIALIZED VIEW IF EXISTS mv CASCADE"
@@ -864,14 +794,7 @@ class TestOpValidation:
         assert after_second == after_first + 1
 
     def test_create_mv_runtime_vs_op_consistency(self):
-        """Runtime and op paths agree on WITH [NO] DATA when aligned.
-
-        Note: the migration op defaults to ``WITH NO DATA`` so
-        migrations don't block on large MVs; the runtime DDL listener still
-        defaults to ``WITH DATA`` for app-level eager population. When the
-        op is constructed with ``with_data=True`` the two paths emit the
-        same SQL shape.
-        """
+        """Runtime and op paths agree on WITH [NO] DATA when with_data=True."""
         metadata = sa.MetaData()
         create_materialized_view(
             "runtime_mv",
@@ -1422,22 +1345,8 @@ class TestComparatorDDLError:
 # ===========================================================================
 
 class _SelectableBreakingOnDialectCompile:
-    """A selectable-like object that compiles for dependency resolution but
-    raises a real ``TypeError`` when ``compile`` is called with a ``dialect``
-    kwarg (the path used by ``compiled_definition(dialect=...)`` inside the
-    savepoint try).
-
-    This reproduces a genuine programming error (wrong selectable type / a
-    selectable that cannot be compiled against a live dialect) surfacing
-    inside ``_canonicalize_all_views``'s per-view try/except — distinct from
-    a DB-level SQL error the savepoint is designed to tolerate.
-
-    ``resolve_create_order`` calls ``sel.compile(compile_kwargs=...)`` WITHOUT
-    a dialect (stringification only), so dependency resolution succeeds and
-    execution reaches the savepoint loop. ``_build_create_sql`` then calls
-    ``vr.compiled_definition(dialect=...)`` and the ``TypeError``
-    fires inside the try/except under test.
-    """
+    """Compiles for dependency resolution but raises TypeError when
+    ``compile(dialect=...)`` is called inside ``_canonicalize_all_views``."""
 
     def compile(self, **kw):
         if "dialect" in kw:
@@ -1448,14 +1357,8 @@ class _SelectableBreakingOnDialectCompile:
 
 
 class TestProgrammingErrorPropagates:
-    """Programming errors (TypeError/AttributeError/NameError) raised
-    during canonicalization must propagate to the caller, NOT be swallowed by
-    the broad ``except Exception`` in ``_canonicalize_all_views``.
-
-    Only SQLAlchemy/DBAPI errors (missing deps, DDL failures) should be
-    caught — programming errors indicate a bug in the user's model code and
-    must surface.
-    """
+    """Programming errors during canonicalization must propagate, not be
+    swallowed by the broad except in ``_canonicalize_all_views``."""
 
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_programming_error_propagates(self, connection):
@@ -1485,17 +1388,10 @@ _VIEW_ON_VIEW_VIEW_NAMES = ["dep_chain_a", "dep_chain_b"]
 
 
 class TestCanonicalizeViewOnViewDeps:
-    """Regression: view-on-view dependencies must survive savepoint.
+    """Regression: view-on-view dependencies must survive the savepoint.
 
-    When two model views depend on each other (B references A) and BOTH are
-    new (not in the DB), each was previously canonicalized inside its own
-    savepoint. View A was created then rolled back *before* view B was
-    canonicalized, so B's CREATE failed (A doesn't exist) → B got
-    ``canonical=None`` → B was silently dropped from the migration.
-
-    After the refactor, ALL views share a single outer savepoint so they all
-    exist simultaneously during canonicalization. Both must produce
-    ``CreateViewOp``.
+    Two new model views that reference each other must both produce
+    CreateViewOp (single outer savepoint keeps both alive during canonicalization).
     """
 
     @pytest.mark.infrastructure
@@ -1539,18 +1435,7 @@ class TestCanonicalizeViewOnViewDeps:
 
 
 class TestCanonicalizeSkipDoesNotDrop:
-    """Regression: a view whose canonicalization fails must be SKIPPED,
-    not dropped.
-
-    If a model view references a nonexistent table, ``CREATE OR REPLACE VIEW``
-    inside the canonicalization savepoint fails. Previously the view was
-    omitted from ``model_view_defs`` and the drop-detection loop then emitted
-    a ``DropViewOp`` because the view was "in DB but not in model" — destroying
-    the existing view.
-
-    After the refactor, failed-canonicalization views are tracked as "skipped"
-    and excluded from drop detection.
-    """
+    """Regression: a view whose canonicalization fails must be SKIPPED, not dropped."""
 
     @pytest.mark.infrastructure
     @pytest.mark.usefixtures("postgresql_dsn")
@@ -1613,15 +1498,8 @@ def _drop_savepoint_test_views(connection):
 class TestCanonicalizeFailureDoesNotSkipSubsequentViews:
     """Regression: a failed view must not cascade-skip later views.
 
-    The inner savepoint name ``"su_view_cmp_v"`` is constant across iterations.
-    After a view CREATE fails, ``ROLLBACK TO SAVEPOINT su_view_cmp_v`` rolls
-    the sub-transaction back but does NOT destroy the savepoint (PG semantics).
-    The next iteration then issues ``SAVEPOINT su_view_cmp_v`` again, which PG
-    rejects with "savepoint already exists" — caught by the except clause — so
-    every subsequent view in the batch is silently dropped from the migration.
-
-    After the fix (RELEASE SAVEPOINT after ROLLBACK TO), views B and C that
-    follow a failing view A MUST still produce ``CreateViewOp``.
+    After a view CREATE fails, ROLLBACK TO + RELEASE of the inner savepoint
+    lets subsequent views (B, C) still produce CreateViewOp.
     """
 
     @pytest.mark.infrastructure
@@ -1696,22 +1574,10 @@ class TestCanonicalizeFailureDoesNotSkipSubsequentViews:
 class TestAbortedTransactionBreaksEarly:
     """A poisoned outer savepoint must break the canonicalization loop.
 
-    After a view CREATE fails and ``ROLLBACK TO`` + ``RELEASE`` of the inner
-    savepoint is attempted, the *outer* savepoint may itself be in an aborted
-    state (e.g. when the DB-level error poisoned the transaction, or when the
-    inner RELEASE itself failed). In that case every subsequent
-    ``SAVEPOINT`` statement will fail, and without a probe the loop would
-    silently skip every remaining view (adding them all to ``skipped``).
-
-    The fix: after the inner ``except`` block, probe with ``SELECT 1``. If the
-    probe fails, log a warning containing "aborted state" and break early so
-    the remaining views are simply not processed (rather than being silently
-    added to ``skipped``).
-
-    This is a mock-based test (no PostgreSQL required): a fake connection
-    succeeds on the first view's savepoint/CREATE-failure/rollback/release
-    sequence, then raises on the ``SELECT 1`` probe, simulating a poisoned
-    transaction.
+    After a view CREATE fails and the inner savepoint is rolled back/released,
+    the outer savepoint may be aborted. The ``SELECT 1`` probe detects this,
+    logs a warning containing "aborted state", and breaks early so remaining
+    views are added to ``skipped`` (not silently dropped). Mock-based, no PG.
     """
 
     def test_aborted_transaction_breaks_early(self, caplog):
@@ -1839,19 +1705,8 @@ class TestAbortedTransactionBreaksEarly:
         )
 
     def test_aborted_transaction_no_false_drop_in_compare_views(self, caplog):
-        """Regression: an aborted transaction must NOT cause a false DropViewOp.
-
-        When view A's CREATE fails and the SELECT 1 probe raises (poisoned
-        outer savepoint), the canonicalization loop breaks early. View B is
-        never reached. Without adding B to ``skipped``, drop detection sees
-        B as "in DB but not in model" and emits a false ``DropViewOp`` —
-        data loss.
-
-        This test exercises the FULL ``compare_views`` path (not just
-        ``_canonicalize_all_views``): it builds a mock autogen_context +
-        upgrade_ops, mocks the connection + pg_catalog helpers, and asserts
-        NO ``DropViewOp`` is emitted for view B.
-        """
+        """Regression: an aborted transaction must NOT cause a false DropViewOp
+        for an un-processed view (it must be in ``skipped`` instead)."""
         # Two model views, both present in the DB mock.
         view_records = [
             ViewRecord(
@@ -2047,15 +1902,8 @@ class TestComparatorNoDoubleFetch:
 
 
 class TestComparatorNeverEmitsRefreshOp:
-    """Guard: compare_views must never emit RefreshMaterializedViewOp.
-
-    REFRESH MATERIALIZED VIEW is a runtime (operational) action, not a
-    schema migration step. Autogenerate detects structural drift (create,
-    replace, drop) only; emitting a refresh op would corrupt migration
-    history by inserting a non-reversible runtime op into upgrade/downgrade
-    scripts. This test pins that invariant using a mock connection so it
-    runs without a live PostgreSQL instance.
-    """
+    """Guard: compare_views must never emit RefreshMaterializedViewOp
+    (refresh is a runtime op, not a reversible migration step)."""
 
     def test_compare_views_never_emits_refresh_materialized_view_op(self):
         import sqlalchemy_utils.alembic.comparator as comparator_module
@@ -2355,14 +2203,8 @@ class TestDependWordBoundary:
         assert names.index("log") < names.index("report")
 
     def test_keyword_named_view_has_dependency_tracked(self):
-        """A view named after a common SQL keyword (e.g. ``user``) still
-        participates in dependency matching.
-
-        Regression test: the former ``_SQL_KEYWORDS`` filter
-        silently dropped dependency edges for views with names like
-        ``user``, ``data``, ``id``, ``name``.  Here ``summary`` references
-        ``user`` as a real table, so ``user`` must be created first.
-        """
+        """A view named after a SQL keyword (e.g. ``user``) still participates
+        in dependency matching."""
         summary_view = ViewRecord(
             name="summary", selectable="SELECT * FROM user"
         )
@@ -2477,40 +2319,6 @@ _ALEMBIC_INI_TEMPLATE = textwrap.dedent("""\
     [alembic]
     script_location = {script_location}
     sqlalchemy.url = {sqlalchemy_url}
-
-    [loggers]
-    keys = root,sqlalchemy,alembic
-
-    [handlers]
-    keys = console
-
-    [formatters]
-    keys = generic
-
-    [logger_root]
-    level = WARN
-    handlers = console
-    qualname =
-
-    [logger_sqlalchemy]
-    level = WARN
-    handlers =
-    qualname = sqlalchemy.engine
-
-    [logger_alembic]
-    level = INFO
-    handlers =
-    qualname = alembic
-
-    [handler_console]
-    class = StreamHandler
-    args = (sys.stderr,)
-    level = NOTSET
-    formatter = generic
-
-    [formatter_generic]
-    format = %(levelname)-5.5s [%(name)s] %(message)s
-    datefmt = %H:%M:%S
 """)
 
 
@@ -3447,9 +3255,7 @@ class TestCascadeOnDropWarning:
 
 class TestCascadeOnDropPropagation:
     """compare_views should propagate ViewRecord.cascade_on_drop to the
-    generated DropViewOp / DropMaterializedViewOp ``cascade`` param
-    rather than hardcoding ``cascade=True``.
-    """
+    generated DropViewOp / DropMaterializedViewOp ``cascade`` param."""
 
     @staticmethod
     def _make_context(model_views):
@@ -3465,58 +3271,57 @@ class TestCascadeOnDropPropagation:
         upgrade_ops.ops = []
         return autogen_context, upgrade_ops
 
-    def test_drop_view_propagates_cascade_false(self):
-        """A DB-only view whose model ViewRecord has cascade_on_drop=False
-        must produce a DropViewOp(cascade=False)."""
-        from unittest.mock import patch
+    @staticmethod
+    def _patch_comparator(db_views, db_mvs=None, canonical_return=({}, {}, set())):
+        """Patch all comparator module dependencies for one compare_views call."""
         import sqlalchemy_utils.alembic.comparator as comparator_module
 
-        # Model declares the view with cascade_on_drop=False but the view
-        # is NOT canonicalized (skipped set empty); DB has it -> drop emitted.
+        if db_mvs is None:
+            db_mvs = {}
+        return (
+            patch.object(comparator_module, 'get_database_views',
+                         return_value=db_views),
+            patch.object(comparator_module, 'get_database_materialized_views',
+                         return_value=db_mvs),
+            patch.object(comparator_module, '_canonicalize_all_views',
+                        return_value=canonical_return),
+            patch.object(comparator_module, 'get_dependent_views',
+                        return_value={}),
+            patch.object(comparator_module, 'log'),
+        )
+
+    def test_drop_view_propagates_cascade_false(self):
+        """DropViewOp.cascade=False when ViewRecord.cascade_on_drop=False."""
         vr = ViewRecord(
-            name="v_no_cascade",
-            selectable="SELECT 1 AS col",
-            schema=None,
-            cascade_on_drop=False,
+            name="v_no_cascade", selectable="SELECT 1 AS col",
+            schema=None, cascade_on_drop=False,
         )
         autogen_context, upgrade_ops = self._make_context([vr])
 
-        with patch.object(comparator_module, 'get_database_views',
-                          return_value={"v_no_cascade": "SELECT 1 AS col"}), \
-             patch.object(comparator_module, 'get_database_materialized_views',
-                          return_value={}), \
-             patch.object(comparator_module, '_canonicalize_all_views',
-                           return_value=({}, {}, set())), \
-             patch.object(comparator_module, 'get_dependent_views',
-                           return_value={}), \
-             patch.object(comparator_module, 'log'):
+        patches = self._patch_comparator(
+            db_views={"v_no_cascade": "SELECT 1 AS col"},
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            import sqlalchemy_utils.alembic.comparator as comparator_module
             comparator_module.compare_views(autogen_context, upgrade_ops, [None])
 
         drop_ops = [op for op in upgrade_ops.ops if isinstance(op, DropViewOp)]
         assert len(drop_ops) == 1, f"expected one DropViewOp, got {drop_ops}"
         assert drop_ops[0].name == "v_no_cascade"
         assert drop_ops[0].cascade is False, (
-            f"DropViewOp.cascade should be False when ViewRecord."
-            f"cascade_on_drop=False, got {drop_ops[0].cascade!r}"
+            f"DropViewOp.cascade should be False when "
+            f"ViewRecord.cascade_on_drop=False, got {drop_ops[0].cascade!r}"
         )
 
     def test_drop_view_defaults_to_true_when_no_record(self):
-        """A DB-only view with no model ViewRecord defaults to cascade=True
-        (the DropViewOp default)."""
-        from unittest.mock import patch
-        import sqlalchemy_utils.alembic.comparator as comparator_module
-
+        """DropViewOp.cascade defaults to True when no model ViewRecord exists."""
         autogen_context, upgrade_ops = self._make_context([])
 
-        with patch.object(comparator_module, 'get_database_views',
-                          return_value={"orphan_view": "SELECT 1 AS col"}), \
-             patch.object(comparator_module, 'get_database_materialized_views',
-                          return_value={}), \
-             patch.object(comparator_module, '_canonicalize_all_views',
-                           return_value=({}, {}, set())), \
-             patch.object(comparator_module, 'get_dependent_views',
-                           return_value={}), \
-             patch.object(comparator_module, 'log'):
+        patches = self._patch_comparator(
+            db_views={"orphan_view": "SELECT 1 AS col"},
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            import sqlalchemy_utils.alembic.comparator as comparator_module
             comparator_module.compare_views(autogen_context, upgrade_ops, [None])
 
         drop_ops = [op for op in upgrade_ops.ops if isinstance(op, DropViewOp)]
@@ -3524,34 +3329,28 @@ class TestCascadeOnDropPropagation:
         assert drop_ops[0].cascade is True
 
     def test_drop_materialized_view_propagates_cascade_false(self):
-        """A DB-only materialized view whose model ViewRecord has
-        cascade_on_drop=False must produce a DropMaterializedViewOp(cascade=False)."""
-        from unittest.mock import patch
-        import sqlalchemy_utils.alembic.comparator as comparator_module
-
+        """DropMaterializedViewOp.cascade=False when cascade_on_drop=False."""
         vr = ViewRecord(
-            name="mv_no_cascade",
-            selectable="SELECT 1 AS col",
-            schema=None,
-            materialized=True,
-            cascade_on_drop=False,
+            name="mv_no_cascade", selectable="SELECT 1 AS col",
+            schema=None, materialized=True, cascade_on_drop=False,
         )
         autogen_context, upgrade_ops = self._make_context([vr])
 
-        with patch.object(comparator_module, 'get_database_views',
-                          return_value={}), \
-             patch.object(comparator_module, 'get_database_materialized_views',
-                           return_value={"mv_no_cascade": "SELECT 1 AS col"}), \
-             patch.object(comparator_module, '_canonicalize_all_views',
-                           return_value=({}, {}, set())), \
-             patch.object(comparator_module, 'get_dependent_views',
-                           return_value={}), \
-             patch.object(comparator_module, 'log'):
+        patches = self._patch_comparator(
+            db_views={},
+            db_mvs={"mv_no_cascade": "SELECT 1 AS col"},
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            import sqlalchemy_utils.alembic.comparator as comparator_module
             comparator_module.compare_views(autogen_context, upgrade_ops, [None])
 
-        drop_ops = [op for op in upgrade_ops.ops
-                    if isinstance(op, DropMaterializedViewOp)]
-        assert len(drop_ops) == 1, f"expected one DropMaterializedViewOp, got {drop_ops}"
+        drop_ops = [
+            op for op in upgrade_ops.ops
+            if isinstance(op, DropMaterializedViewOp)
+        ]
+        assert len(drop_ops) == 1, (
+            f"expected one DropMaterializedViewOp, got {drop_ops}"
+        )
         assert drop_ops[0].name == "mv_no_cascade"
         assert drop_ops[0].cascade is False, (
             f"DropMaterializedViewOp.cascade should be False when "
@@ -3746,17 +3545,9 @@ class TestMvCanonicalizationNoCascade:
     """Regression: MV canonicalization DROP must NOT use CASCADE.
 
     ``_build_create_sql`` emits ``DROP MATERIALIZED VIEW IF EXISTS ... CASCADE;
-    CREATE MATERIALIZED VIEW ...`` to canonicalize a materialized view inside
-    a savepoint. The CASCADE is dangerous: it silently drops every dependent
-    object. If a regular view was created earlier in the same savepoint (due
-    to wrong ordering or any other reason), the CASCADE on the MV DROP wipes
-    it out, so the dependent view is never canonicalized and gets a false
-    DropViewOp (or simply goes missing from create ops).
-
-    The CASCADE is needed at *runtime* (``operations.py:_replace_materialized_view_impl``
-    — out of scope here) for REPLACE semantics, but during canonicalization we
-    only need to create the MV temporarily to read its definition back from
-    pg_catalog. A plain ``DROP MATERIALIZED VIEW IF EXISTS`` is sufficient.
+    CREATE MATERIALIZED VIEW ...`` during canonicalization. The CASCADE silently
+    drops dependent objects created earlier in the savepoint. A plain
+    ``DROP MATERIALIZED VIEW IF EXISTS`` is sufficient for canonicalization.
     """
 
     @pytest.mark.infrastructure
@@ -3764,20 +3555,9 @@ class TestMvCanonicalizationNoCascade:
     def test_mv_canonicalization_does_not_drop_dependents(self, connection):
         """A dependent regular view survives the MV's canonicalization DROP.
 
-        Both the MV ``mv_drop_test_mv`` and the dependent regular view
-        ``mv_drop_test_dep_view`` (``SELECT * FROM mv_drop_test_mv``) are new (not in DB).
-        After ``compare_views`` runs, both should appear as CreateViewOp /
-        CreateMaterializedViewOp — the dependent view must NOT have been
-        silently dropped by the MV's CASCADE during canonicalization.
-
-        NOTE: This test exercises the integration path. When dependency
-        ordering is correct (MV created before the dependent view), the bug
-        does not manifest because the MV is created first and never dropped
-        before the dependent view exists. The bug only triggers when the MV's
-        canonicalization DROP runs after the dependent view was created. The
-        authoritative guard is the SQL-string test below, which
-        asserts ``_build_create_sql`` does not emit CASCADE regardless of
-        ordering.
+        Both the MV and a dependent regular view are new; both must appear as
+        create ops after ``compare_views``. The authoritative guard is the
+        SQL-string test below (``_build_create_sql`` must not emit CASCADE).
         """
         _drop_mv_cascade_test_views(connection)
         try:
@@ -3815,14 +3595,8 @@ class TestMvCanonicalizationNoCascade:
             _drop_mv_cascade_test_views(connection)
 
     def test_build_create_sql_no_cascade_for_materialized_view(self):
-        """``_build_create_sql`` must NOT emit CASCADE for materialized views.
-
-        This is the authoritative behavior test: the generated
-        canonicalization SQL for an MV must use a plain
-        ``DROP MATERIALIZED VIEW IF EXISTS <name>`` (no CASCADE), followed by
-        ``CREATE MATERIALIZED VIEW``. Inspecting the generated SQL string (not
-        the source) is the correct way to lock this behavior.
-        """
+        """``_build_create_sql`` must NOT emit CASCADE for materialized views
+        (plain ``DROP MATERIALIZED VIEW IF EXISTS`` only)."""
         connection = MagicMock()
         connection.dialect = sa.dialects.postgresql.dialect()
         # compiled_definition is invoked inside _build_create_sql; stub it out
