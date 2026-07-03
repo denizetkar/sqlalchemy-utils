@@ -22,7 +22,7 @@ import warnings
 import sqlalchemy as sa
 from alembic.operations import MigrateOperation, Operations
 
-from sqlalchemy_utils.view import _quote_identifier, _quote_qualified_name
+from sqlalchemy_utils.view import _quote_qualified_name
 
 
 def _validate_definition(definition: str) -> None:

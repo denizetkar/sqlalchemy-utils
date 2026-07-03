@@ -98,14 +98,6 @@ def _capture_sql(op_instance) -> list[str]:
     return statements
 
 
-def _make_operations() -> Operations:
-    """Build a real Operations instance backed by in-memory SQLite."""
-    engine = sa.create_engine("sqlite:///:memory:")
-    conn = engine.connect()
-    ctx = MigrationContext.configure(conn)
-    return Operations(ctx)
-
-
 def _compile_ddl(ddl_element, dialect=None) -> str:
     """Compile a DDLElement to a SQL string using the given dialect."""
     if dialect is None:
@@ -526,7 +518,10 @@ class TestDropViewOp:
         assert op.cascade is True
 
     def test_drop_view_rejects_materialized_kwarg(self):
-        operations = _make_operations()
+        engine = sa.create_engine("sqlite:///:memory:")
+        conn = engine.connect()
+        ctx = MigrationContext.configure(conn)
+        operations = Operations(ctx)
         with pytest.raises(TypeError, match="unexpected keyword argument"):
             DropViewOp.drop_view(operations, "test_view", materialized=True)
 
