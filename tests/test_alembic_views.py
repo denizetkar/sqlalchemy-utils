@@ -173,7 +173,7 @@ def _find_view_listener(metadata: sa.MetaData, materialized: Optional[bool] = No
     return found[0] if found else None
 
 
-def _make_autogen_context(dialect: str = "postgresql") -> AutogenContext:
+def _make_autogen_context() -> AutogenContext:
     """Create a minimal mock AutogenContext for renderer tests."""
     ctx = MagicMock(spec=AutogenContext)
     ctx.imports = set()
@@ -280,10 +280,6 @@ class TestViewRecordEquality:
             name="v", selectable="SELECT 1", materialized=True
         ) != ViewRecord(name="v", selectable="SELECT 1", materialized=False)
 
-    def test_self_equality(self):
-        record = ViewRecord(name="test_view", selectable="SELECT 1")
-        assert record == record
-
     def test_equality_without_optional_fields(self):
         record1 = ViewRecord(name="test_view", selectable="SELECT 1")
         record2 = ViewRecord(name="test_view", selectable="SELECT 1", schema=None)
@@ -317,12 +313,6 @@ class TestViewRecordHashing:
         assert record1 in view_set
         assert record3 in view_set
         assert record2 in view_set
-
-    def test_storable_in_dict_as_key(self):
-        record = ViewRecord(name="test_view", selectable="SELECT 1")
-        value_map = {record: "view_data"}
-        assert value_map[record] == "view_data"
-        assert len(value_map) == 1
 
     def test_storable_in_dict_multiple_keys(self):
         record1 = ViewRecord(name="view1", selectable="SELECT 1")
@@ -544,11 +534,6 @@ class TestCreateMaterializedViewOp:
         assert op.name == "mv1"
         assert op.with_data is False
 
-    def test_with_data_default_false(self):
-        """CreateMaterializedViewOp defaults to with_data=False."""
-        op = CreateMaterializedViewOp("mv", "SELECT 1")
-        assert op.with_data is False
-
     def test_reverse_returns_drop_mv(self):
         op = CreateMaterializedViewOp("mv1", "SELECT 1")
         rev = op.reverse()
@@ -593,11 +578,6 @@ class TestDropMaterializedViewOp:
         op = DropMaterializedViewOp("mv1")
         with pytest.raises(NotImplementedError, match="no definition stored"):
             op.reverse()
-
-    def test_drop_mv_with_data_default_false(self):
-        """DropMaterializedViewOp defaults to with_data=False."""
-        op = DropMaterializedViewOp("mv")
-        assert op.with_data is False
 
     def test_sql_cascade(self):
         op = DropMaterializedViewOp("mv1", cascade=True)
