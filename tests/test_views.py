@@ -1,13 +1,14 @@
 import pytest
 import sqlalchemy as sa
 import sqlalchemy.orm
+from unittest import mock
 
 from sqlalchemy_utils import (
     create_materialized_view,
     create_view,
     refresh_materialized_view
 )
-from sqlalchemy_utils.view import CreateView
+from sqlalchemy_utils.view import CreateView, DropView, RefreshMaterializedView
 
 
 @pytest.fixture
@@ -229,3 +230,91 @@ class TestMySqlTrivialView(SupportsCascade, SupportsNoCascade, SupportsReplace):
 @pytest.mark.usefixtures('sqlite_none_database_dsn')
 class TestSqliteTrivialView(DoesntSupportCascade, SupportsNoCascade):
     pass
+
+
+class TestPositionalCompat:
+    """Pre-existing public API params must remain positional (backward compat).
+
+    The schema parameter is new (added after these signatures first shipped)
+    and must remain keyword-only via a ``*`` separator.
+    """
+
+    def test_create_view_positional(self):
+        cv = CreateView("v", sa.select(sa.text("1")))
+        assert cv.name == "v"
+        assert cv.materialized is False
+        assert cv.replace is False
+        assert cv.schema is None
+
+    def test_create_view_positional_all_params(self):
+        cv = CreateView("v", sa.select(sa.text("1")), False, True)
+        assert cv.materialized is False
+        assert cv.replace is True
+
+    def test_create_view_schema_keyword_only(self):
+        with pytest.raises(TypeError):
+            CreateView("v", sa.select(sa.text("1")), False, False, "myschema")  # noqa
+
+    def test_drop_view_positional(self):
+        dv = DropView("v")
+        assert dv.name == "v"
+        assert dv.materialized is False
+        assert dv.cascade is True
+        assert dv.schema is None
+
+    def test_drop_view_positional_all_params(self):
+        dv = DropView("v", True, False)
+        assert dv.materialized is True
+        assert dv.cascade is False
+
+    def test_drop_view_schema_keyword_only(self):
+        with pytest.raises(TypeError):
+            DropView("v", False, True, "myschema")  # noqa: positional schema
+
+    def test_refresh_materialized_view_positional(self):
+        rmv = RefreshMaterializedView("v")
+        assert rmv.name == "v"
+        assert rmv.concurrently is False
+        assert rmv.schema is None
+
+    def test_refresh_materialized_view_positional_concurrently(self):
+        rmv = RefreshMaterializedView("v", True)
+        assert rmv.concurrently is True
+
+    def test_refresh_materialized_view_schema_keyword_only(self):
+        with pytest.raises(TypeError):
+            RefreshMaterializedView("v", False, "myschema")  # noqa: positional schema
+
+    def test_create_view_fn_positional(self):
+        metadata = sa.MetaData()
+        table = create_view("v", sa.select(sa.text("1")), metadata)
+        assert table.name == "v"
+
+    def test_create_view_fn_schema_keyword_only(self):
+        metadata = sa.MetaData()
+        with pytest.raises(TypeError):
+            create_view("v", sa.select(sa.text("1")), metadata, True, False, "myschema")  # noqa
+
+    def test_create_materialized_view_fn_positional(self):
+        metadata = sa.MetaData()
+        table = create_materialized_view(
+            "mv", sa.select(sa.text("1")), metadata, None, None
+        )
+        assert table.name == "mv"
+
+    def test_create_materialized_view_fn_schema_keyword_only(self):
+        metadata = sa.MetaData()
+        with pytest.raises(TypeError):
+            create_materialized_view(
+                "mv", sa.select(sa.text("1")), metadata, None, None, True, "myschema"
+            )  # noqa: positional schema
+
+    def test_refresh_materialized_view_fn_positional(self):
+        session = mock.MagicMock()
+        refresh_materialized_view(session, "mv")
+        assert session.execute.call_count == 1
+
+    def test_refresh_materialized_view_fn_schema_keyword_only(self):
+        session = mock.MagicMock()
+        with pytest.raises(TypeError):
+            refresh_materialized_view(session, "mv", False, "myschema")  # noqa

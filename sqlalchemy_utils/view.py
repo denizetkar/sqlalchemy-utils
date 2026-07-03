@@ -37,7 +37,7 @@ class CreateView(DDLElement):
     :raises ValueError: if both ``materialized`` and ``replace`` are True.
     """
 
-    def __init__(self, name, *, selectable, materialized=False, replace=False, schema=None):
+    def __init__(self, name, selectable, materialized=False, replace=False, *, schema=None):
         if materialized and replace:
             raise ValueError('Cannot use CREATE OR REPLACE with materialized views')
         self.name = name
@@ -63,7 +63,7 @@ def compile_create_materialized_view(element, compiler, **kw):
 class DropView(DDLElement):
     """DDL element for DROP VIEW (or DROP MATERIALIZED VIEW)."""
 
-    def __init__(self, name, *, materialized=False, cascade=True, schema=None):
+    def __init__(self, name, materialized=False, cascade=True, *, schema=None):
         self.name = name
         self.materialized = materialized
         self.cascade = cascade
@@ -197,10 +197,10 @@ def create_materialized_view(
     name: str,
     selectable: Union[str, ClauseElement],
     metadata: sa.MetaData,
-    *,
     indexes: Optional[list[sa.Index]] = None,
     aliases: Optional[dict[str, str]] = None,
     cascade_on_drop: bool = True,
+    *,
     schema: Optional[str] = None,
 ) -> sa.Table:
     """Create a view on a given metadata
@@ -210,13 +210,12 @@ def create_materialized_view(
     :param metadata:
         An SQLAlchemy Metadata instance that stores the features of the
         database being described.
-    :param indexes:
-        Keyword-only. An optional list of SQLAlchemy Index instances.
+    :param indexes: An optional list of SQLAlchemy Index instances.
     :param aliases:
-        Keyword-only. An optional dictionary containing with keys as column
-        names and values as column aliases.
+        An optional dictionary containing with keys as column names and values
+        as column aliases.
     :param cascade_on_drop:
-        Keyword-only. If ``True`` the view will be dropped with ``CASCADE``,
+        If ``True`` the view will be dropped with ``CASCADE``,
         deleting all dependent objects as well.
     :param schema:
         Keyword-only. An optional string specifying the schema (database) in
@@ -265,9 +264,9 @@ def create_view(
     name: str,
     selectable: Union[str, ClauseElement],
     metadata: sa.MetaData,
-    *,
     cascade_on_drop: bool = True,
     replace: bool = False,
+    *,
     schema: Optional[str] = None,
 ) -> sa.Table:
     """Create a view on a given metadata
@@ -278,10 +277,10 @@ def create_view(
         An SQLAlchemy Metadata instance that stores the features of the
         database being described.
     :param cascade_on_drop:
-        Keyword-only. If ``True`` the view will be dropped with
+        If ``True`` the view will be dropped with
         ``CASCADE``, deleting all dependent objects as well.
     :param replace:
-        Keyword-only. If ``True`` the view will be created with ``OR REPLACE``,
+        If ``True`` the view will be created with ``OR REPLACE``,
         replacing an existing view with the same name.
     :param schema:
         Keyword-only. An optional string specifying the schema (database) in
@@ -337,7 +336,7 @@ class RefreshMaterializedView(Executable, ClauseElement):
 
     inherit_cache = True
 
-    def __init__(self, name, *, schema=None, concurrently=False):
+    def __init__(self, name, concurrently=False, *, schema=None):
         self.name = name
         self.schema = schema
         self.concurrently = concurrently
@@ -356,9 +355,9 @@ def compile_refresh_materialized_view(element, compiler, **kw):
 def refresh_materialized_view(
     session: sa.orm.Session,
     name: str,
+    concurrently: bool = False,
     *,
     schema: Optional[str] = None,
-    concurrently: bool = False,
 ) -> None:
     """Refreshes an already existing materialized view
 
