@@ -84,7 +84,6 @@ class CreateViewOp(MigrateOperation):
             schema=self.schema,
             cascade=True,
             definition=self.definition,
-            replace=self.replace,
         )
 
 
@@ -101,13 +100,11 @@ class DropViewOp(MigrateOperation):
         # ``cascade_on_drop`` in create_view() and ViewMixin.__view_cascade__.
         cascade: bool = True,
         definition: str | None = None,
-        replace: bool = False,
     ) -> None:
         self.name = name
         self.schema = schema
         self.cascade = cascade
         self.definition = definition
-        self.replace = replace
 
     @classmethod
     def drop_view(
@@ -146,7 +143,7 @@ class DropViewOp(MigrateOperation):
                 "no definition stored. Pass definition= to DropViewOp "
                 "to enable automatic downgrade generation."
             )
-        return CreateViewOp(self.name, self.definition, schema=self.schema, replace=self.replace)
+        return CreateViewOp(self.name, self.definition, schema=self.schema)
 
 @Operations.register_operation("replace_view")
 class ReplaceViewOp(MigrateOperation):

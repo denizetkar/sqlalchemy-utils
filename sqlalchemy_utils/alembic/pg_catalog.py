@@ -82,14 +82,18 @@ def get_dependent_views(connection: sa.engine.Connection, view_name: str, schema
         connection: SQLAlchemy Connection object.
         view_name: Name of the view to check dependents for.
         schema: Optional schema name. If None, returns dependents in any
-            schema. Note: matching is by view name only; same-named views
-            in different schemas are not distinguished when schema is None.
+            schema. When provided, both the dependent and referenced views
+            are constrained to this schema.
 
     Returns:
         Dictionary mapping dependent view name to its definition.
         Empty dict if no dependents.
     """
-    schema_clause = " AND v.schemaname = :schema" if schema else ""
+    schema_clause = (
+        " AND v.schemaname = :schema AND refn.nspname = :schema"
+        if schema
+        else ""
+    )
     params: dict[str, str] = {"view_name": view_name}
     if schema:
         params["schema"] = schema
@@ -98,11 +102,17 @@ def get_dependent_views(connection: sa.engine.Connection, view_name: str, schema
     # ``pg_class ref`` on ``dep.refobjid = ref.oid`` and filter on
     # ``ref.relname``. The dependent view's name comes from ``c.relname``.
     # Join ``pg_namespace`` on both sides to qualify by schema, preventing
-    # cross-schema name collisions. A UNION joins regular views (pg_views)
-    # and materialized views (pg_matviews) so both dependent kinds are
-    # returned. ``pg_views``/``pg_matviews`` carry both the dependent view's
-    # schema (schemaname) and definition (definition); the join ties the
-    # dependent class row to its catalog entry via (schema, name).
+    # cross-schema name collisions. A UNION ALL joins regular views
+    # (pg_views) and materialized views (pg_matviews) so both dependent
+    # kinds are returned; the two subqueries are disjoint by ``relkind``,
+    # so UNION ALL avoids silently deduping same-named regular + MV rows
+    # that a plain UNION would collapse. ``pg_views``/``pg_matviews`` carry
+    # both the dependent view's schema (schemaname) and definition
+    # (definition); the join ties the dependent class row to its catalog
+    # entry via (schema, name). When ``schema`` is given, both the
+    # dependent view's schema (``v.schemaname``) AND the referenced view's
+    # namespace (``refn.nspname``) are filtered to avoid false positives
+    # from same-named referenced views in other schemas.
     base_select = (
         "SELECT c.relname AS dependent_name, "
         "v.definition AS dependent_definition, "
@@ -126,6 +136,6 @@ def get_dependent_views(connection: sa.engine.Connection, view_name: str, schema
     matviews_select = base_select.format(
         view_catalog_join="JOIN pg_matviews v ON c.relname = v.matviewname"
     )
-    sql = sa.text(f"{views_select} UNION {matviews_select}")
+    sql = sa.text(f"{views_select} UNION ALL {matviews_select}")
     result = connection.execute(sql, params)
     return {row.dependent_name: row.dependent_definition for row in result}

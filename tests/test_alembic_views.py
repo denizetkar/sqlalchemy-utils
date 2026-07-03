@@ -820,13 +820,12 @@ class TestOpKeywordOnlyParams:
 class TestReverseRoundTrip:
     """reverse() round-trips preserve op attributes."""
 
-    def test_create_view_reverse_preserves_replace(self):
+    def test_create_view_reverse_round_trip_drops_replace(self):
         with pytest.warns(DeprecationWarning):
             op = CreateViewOp("v", "SELECT 1", replace=True)
-        with pytest.warns(DeprecationWarning):
-            double_reversed = op.reverse().reverse()
+        double_reversed = op.reverse().reverse()
         assert isinstance(double_reversed, CreateViewOp)
-        assert double_reversed.replace is True
+        assert double_reversed.replace is False
 
     def test_replace_mv_reverse_preserves_old_definition(self):
         op = ReplaceMaterializedViewOp("mv", "SELECT 2", old_definition="SELECT 1")

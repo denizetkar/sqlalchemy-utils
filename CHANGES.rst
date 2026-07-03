@@ -22,13 +22,20 @@ Unreleased
   for typed ORM view classes
 - Add ``ViewReadonlyError`` exception (subclasses ``sa.exc.InvalidRequestError``)
 - Add ``__view_schema__`` class attribute for multi-schema support
-- Rename ``__view_cascade_on_drop__`` → ``__view_cascade__`` (aligns with SQL/Alembic naming)
+- Add ``__view_aliases__`` class attribute for declaring alternate (legacy)
+  names of a view, used by dependency resolution and migrations
+- **Breaking:** Rename ``__view_cascade_on_drop__`` → ``__view_cascade__``
+  (aligns with SQL/Alembic naming). Replace ``__view_cascade_on_drop__`` with
+  ``__view_cascade__`` in all ``ViewMixin`` subclasses.
 - Add ``ViewRecord`` for representing and introspecting existing database views
 - Add ``resolve_create_order`` / ``resolve_drop_order`` dependency-resolution
   helpers in ``sqlalchemy_utils.alembic.depend``
 - Add ``get_database_views`` / ``get_database_materialized_views`` /
   ``get_dependent_views`` PostgreSQL catalog helpers in
   ``sqlalchemy_utils.alembic.pg_catalog``
+- Deprecate ``CreateViewOp(replace=True)`` in favor of ``op.replace_view()``
+  / ``ReplaceViewOp``; the ``reverse()`` of the deprecated form emits a
+  destructive ``DROP``.
 
 0.42.1 (2025-12-12)
 ^^^^^^^^^^^^^^^^^^^
