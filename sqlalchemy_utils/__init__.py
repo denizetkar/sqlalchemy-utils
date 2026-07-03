@@ -104,6 +104,10 @@ from .view_mixin import ViewMixin  # noqa
 try:
     from .alembic import register_view_comparator  # noqa
 except ImportError:
-    pass
+    def register_view_comparator(*args, **kwargs):
+        raise ImportError(
+            "register_view_comparator requires alembic; install with "
+            "'pip install sqlalchemy-utils[alembic]'"
+        )
 
 __version__ = '0.42.1'

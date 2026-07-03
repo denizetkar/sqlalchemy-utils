@@ -47,6 +47,18 @@ class ViewMixin:
       :func:`sqlalchemy_utils.view.create_materialized_view`); ignored for
       regular views (default ``None``).
 
+      .. note::
+
+        The mapping key is the *source* column name as it appears in the
+        selectable; the value is the *target* (declared ORM attribute) name.
+        Declared columns on the model must use the alias **value** (target)
+        name, not the source name. For example, given
+        ``__view_aliases__ = {'old_col': 'new_col'}`` and a selectable that
+        exposes ``old_col``, the model must declare ``new_col`` (the value),
+        not ``old_col`` (the key). See
+        :func:`sqlalchemy_utils.view.create_table_from_selectable` for the
+        underlying ``key=aliases.get(c.name, c.name)`` semantics.
+
     **Methods:**
 
     * ``refresh(session, concurrently=False)`` — Refresh a materialized view.
@@ -143,6 +155,21 @@ class ViewMixin:
         aliases = None
         if is_materialized:
             aliases = getattr(cls, '__view_aliases__', None)
+        else:
+            # Warn if __view_aliases__ is set on a non-materialized
+            # view — it will be silently ignored, which is a common source of
+            # confusion. Aliases are only honored for materialized views (see
+            # create_materialized_view / create_table_from_selectable).
+            declared_aliases = getattr(cls, '__view_aliases__', None)
+            if declared_aliases is not None:
+                logger.warning(
+                    "%s.__view_aliases__ is set but the view is not "
+                    "materialized (__view_materialized__=False); aliases are "
+                    "ignored for regular views. Define column aliases directly "
+                    "in the view's SELECT statement, or set "
+                    "__view_materialized__=True.",
+                    cls.__name__,
+                )
 
         declared_col_names = set()
         declared_col_types = {}

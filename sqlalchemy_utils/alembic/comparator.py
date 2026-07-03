@@ -56,6 +56,10 @@ log = logging.getLogger(__name__)
 # before a dependent is canonicalized does not break the dependent's CREATE.
 _OUTER_SAVEPOINT = "su_view_cmp"
 
+# Idempotency guard: register_view_comparator may be called multiple times
+# (e.g. across env.py reloads); only the first call registers the hook.
+_registered = False
+
 
 def _build_create_sql(connection: sa.engine.Connection, view_record: ViewRecord) -> str:
     """Build the CREATE (OR REPLACE) VIEW / MATERIALIZED VIEW statement."""
@@ -483,8 +487,13 @@ def compare_views(
     deduped: list = []
     for op in upgrade_ops.ops:
         # Normalize op type to a family prefix (create/replace/drop)
-        # so conflicting ops for the same view are deduped.
+        # so conflicting ops for the same view are deduped. Refresh ops
+        # are excluded from dedup entirely — they are idempotent side
+        # effects, not state transitions that conflict with create/drop.
         op_name = type(op).__name__.lower()
+        if op_name.startswith("refresh"):
+            deduped.append(op)
+            continue
         if op_name.startswith("create") or op_name.startswith("replace"):
             op_family = "create_or_replace"
         else:
@@ -521,6 +530,9 @@ def register_view_comparator() -> None:
     comparator is registered lazily — merely importing an Op class from
     :mod:`sqlalchemy_utils.alembic` does **not** activate autogenerate.
     """
+    global _registered
+    if _registered:
+        return
     from . import comparator, operations  # noqa: F401
     comparators.dispatch_for("schema")(compare_views)
     try:
@@ -533,3 +545,4 @@ def register_view_comparator() -> None:
             "not render view operations: %s",
             exc,
         )
+    _registered = True

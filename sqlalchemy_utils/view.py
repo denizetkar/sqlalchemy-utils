@@ -327,6 +327,7 @@ def create_view(
         cascade_on_drop=cascade_on_drop,
         schema=schema,
         table=table,
+        aliases=None,
     )
     return table
 

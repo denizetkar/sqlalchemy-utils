@@ -1480,8 +1480,8 @@ class TestProgrammingErrorPropagates:
 # ===========================================================================
 
 # Distinct names so tests don't collide with other view fixtures.
-_BUG2_VIEW_NAMES = ["bug2_view_x"]
-_BUG3_VIEW_NAMES = ["bug3_view_a", "bug3_view_b"]
+_FAILED_CANON_VIEW_NAMES = ["failed_canon_view"]
+_VIEW_ON_VIEW_VIEW_NAMES = ["dep_chain_a", "dep_chain_b"]
 
 
 class TestCanonicalizeViewOnViewDeps:
@@ -1501,19 +1501,19 @@ class TestCanonicalizeViewOnViewDeps:
     @pytest.mark.infrastructure
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_dependent_view_chain_both_created(self, connection):
-        _drop_views(connection, _BUG2_VIEW_NAMES + _BUG3_VIEW_NAMES)
+        _drop_views(connection, _FAILED_CANON_VIEW_NAMES + _VIEW_ON_VIEW_VIEW_NAMES)
         _drop_base_table(connection)
         try:
             metadata = sa.MetaData()
             metadata.info["sqlalchemy_utils_views"] = [
                 ViewRecord(
-                    name="bug3_view_a",
+                    name="dep_chain_a",
                     selectable=sa.select(sa.text("1 AS id")),
                     schema=None,
                 ),
                 ViewRecord(
-                    name="bug3_view_b",
-                    selectable=sa.select(sa.text("* FROM bug3_view_a")),
+                    name="dep_chain_b",
+                    selectable=sa.select(sa.text("* FROM dep_chain_a")),
                     schema=None,
                 ),
             ]
@@ -1524,17 +1524,17 @@ class TestCanonicalizeViewOnViewDeps:
                 op for op in upgrade_ops.ops if isinstance(op, CreateViewOp)
             ]
             created_names = {op.name for op in create_ops}
-            assert "bug3_view_a" in created_names, (
-                f"Regression: bug3_view_a missing from create ops; "
+            assert "dep_chain_a" in created_names, (
+                f"Regression: dep_chain_a missing from create ops; "
                 f"got {sorted(created_names)}"
             )
-            assert "bug3_view_b" in created_names, (
-                f"Regression: bug3_view_b missing from create ops "
+            assert "dep_chain_b" in created_names, (
+                f"Regression: dep_chain_b missing from create ops "
                 f"(likely rolled back A before canonicalizing B); "
                 f"got {sorted(created_names)}"
             )
         finally:
-            _drop_views(connection, _BUG2_VIEW_NAMES + _BUG3_VIEW_NAMES)
+            _drop_views(connection, _FAILED_CANON_VIEW_NAMES + _VIEW_ON_VIEW_VIEW_NAMES)
             _drop_base_table(connection)
 
 
@@ -1555,19 +1555,19 @@ class TestCanonicalizeSkipDoesNotDrop:
     @pytest.mark.infrastructure
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_failing_canonicalization_does_not_emit_drop(self, connection):
-        _drop_views(connection, _BUG2_VIEW_NAMES + _BUG3_VIEW_NAMES)
+        _drop_views(connection, _FAILED_CANON_VIEW_NAMES + _VIEW_ON_VIEW_VIEW_NAMES)
         _drop_base_table(connection)
         try:
             # Pre-create the view in the DB with an old, valid definition.
             connection.execute(
-                sa.text("CREATE VIEW bug2_view_x AS SELECT 1 AS id")
+                sa.text("CREATE VIEW failed_canon_view AS SELECT 1 AS id")
             )
             connection.commit()
 
             metadata = sa.MetaData()
             metadata.info["sqlalchemy_utils_views"] = [
                 ViewRecord(
-                    name="bug2_view_x",
+                    name="failed_canon_view",
                     selectable=sa.select(sa.text("* FROM nonexistent_table")),
                     schema=None,
                 ),
@@ -1578,15 +1578,15 @@ class TestCanonicalizeSkipDoesNotDrop:
             drop_ops = [
                 op for op in upgrade_ops.ops if isinstance(op, DropViewOp)
             ]
-            bug2_drops = [op for op in drop_ops if op.name == "bug2_view_x"]
-            assert bug2_drops == [], (
+            failed_canon_drops = [op for op in drop_ops if op.name == "failed_canon_view"]
+            assert failed_canon_drops == [], (
                 f"Regression: false DropViewOp emitted for "
-                f"bug2_view_x (canonicalization failed → should be SKIPPED, "
+                f"failed_canon_view (canonicalization failed → should be SKIPPED, "
                 f"not dropped). Got drop ops: "
                 f"{[(op.name, op.schema) for op in drop_ops]}"
             )
         finally:
-            _drop_views(connection, _BUG2_VIEW_NAMES + _BUG3_VIEW_NAMES)
+            _drop_views(connection, _FAILED_CANON_VIEW_NAMES + _VIEW_ON_VIEW_VIEW_NAMES)
             _drop_base_table(connection)
 
 
@@ -1595,12 +1595,12 @@ class TestCanonicalizeSkipDoesNotDrop:
 # ===========================================================================
 
 # Distinct names so this regression test does not collide with other view fixtures.
-_BUG10_VIEW_NAMES = ["bug10_a", "bug10_b", "bug10_c"]
+_SAVEPOINT_TEST_VIEW_NAMES = ["savepoint_a", "savepoint_b", "savepoint_c"]
 
 
-def _drop_bug10_views(connection):
+def _drop_savepoint_test_views(connection):
     """Drop any leftover views created by this regression test."""
-    for view_name in _BUG10_VIEW_NAMES:
+    for view_name in _SAVEPOINT_TEST_VIEW_NAMES:
         try:
             connection.execute(
                 sa.text(f"DROP VIEW IF EXISTS {view_name} CASCADE")
@@ -1629,7 +1629,7 @@ class TestCanonicalizeFailureDoesNotSkipSubsequentViews:
     def test_failed_canonicalization_does_not_skip_subsequent_views(
         self, connection
     ):
-        _drop_bug10_views(connection)
+        _drop_savepoint_test_views(connection)
         try:
 
             # view_a references a nonexistent table → CREATE fails inside the
@@ -1638,19 +1638,19 @@ class TestCanonicalizeFailureDoesNotSkipSubsequentViews:
             metadata = sa.MetaData()
             metadata.info["sqlalchemy_utils_views"] = [
                 ViewRecord(
-                    name="bug10_a",
-                    selectable=sa.select(sa.text("* FROM bug10_nonexistent")),
+                    name="savepoint_a",
+                    selectable=sa.select(sa.text("* FROM nonexistent_table")),
                     schema=None,
                     materialized=False,
                 ),
                 ViewRecord(
-                    name="bug10_b",
+                    name="savepoint_b",
                     selectable=sa.select(sa.text("1 AS col")),
                     schema=None,
                     materialized=False,
                 ),
                 ViewRecord(
-                    name="bug10_c",
+                    name="savepoint_c",
                     selectable=sa.select(sa.text("2 AS col")),
                     schema=None,
                     materialized=False,
@@ -1666,26 +1666,26 @@ class TestCanonicalizeFailureDoesNotSkipSubsequentViews:
             ]
             created_names = {op.name for op in create_ops}
 
-            # bug10_a failed to canonicalize → must NOT appear.
-            assert "bug10_a" not in created_names, (
-                f"Regression: bug10_a should have been skipped (its CREATE "
+            # savepoint_a failed to canonicalize → must NOT appear.
+            assert "savepoint_a" not in created_names, (
+                f"Regression: savepoint_a should have been skipped (its CREATE "
                 f"fails), but got {sorted(created_names)}"
             )
-            # bug10_b and bug10_c come after the failure; they MUST still be
+            # savepoint_b and savepoint_c come after the failure; they MUST still be
             # canonicalized. Before the fix the reused savepoint name caused
             # both to be silently dropped.
-            assert "bug10_b" in created_names, (
-                f"Regression: bug10_b missing from create ops "
+            assert "savepoint_b" in created_names, (
+                f"Regression: savepoint_b missing from create ops "
                 f"(savepoint name reuse after ROLLBACK TO likely skipped "
                 f"it); got {sorted(created_names)}"
             )
-            assert "bug10_c" in created_names, (
-                f"Regression: bug10_c missing from create ops "
+            assert "savepoint_c" in created_names, (
+                f"Regression: savepoint_c missing from create ops "
                 f"(savepoint name reuse after ROLLBACK TO likely skipped "
                 f"it); got {sorted(created_names)}"
             )
         finally:
-            _drop_bug10_views(connection)
+            _drop_savepoint_test_views(connection)
 
 
 # ===========================================================================
@@ -2044,6 +2044,61 @@ class TestComparatorNoDoubleFetch:
 
         assert call_count["views"] == 2
         assert call_count["mvs"] == 2
+
+
+class TestComparatorNeverEmitsRefreshOp:
+    """Guard: compare_views must never emit RefreshMaterializedViewOp.
+
+    REFRESH MATERIALIZED VIEW is a runtime (operational) action, not a
+    schema migration step. Autogenerate detects structural drift (create,
+    replace, drop) only; emitting a refresh op would corrupt migration
+    history by inserting a non-reversible runtime op into upgrade/downgrade
+    scripts. This test pins that invariant using a mock connection so it
+    runs without a live PostgreSQL instance.
+    """
+
+    def test_compare_views_never_emits_refresh_materialized_view_op(self):
+        import sqlalchemy_utils.alembic.comparator as comparator_module
+        from sqlalchemy_utils.alembic.operations import (
+            RefreshMaterializedViewOp,
+        )
+
+        # Mock connection + autogen_context for a postgres dialect, with one
+        # materialized view record in the model and a matching definition in
+        # the DB so _diff_views produces no ops at all — but even if diffing
+        # produced ops, none may be RefreshMaterializedViewOp.
+        metadata = MagicMock()
+        metadata.info = {"sqlalchemy_utils_views": []}
+
+        autogen_context = MagicMock()
+        autogen_context.connection = MagicMock()
+        autogen_context.connection.dialect.name = "postgresql"
+        autogen_context.metadata = metadata
+
+        upgrade_ops = alembic_ops.UpgradeOps([])
+
+        with patch.object(
+            comparator_module, "get_database_views", return_value={}
+        ), patch.object(
+            comparator_module,
+            "get_database_materialized_views",
+            return_value={},
+        ), patch.object(
+            comparator_module,
+            "_canonicalize_all_views",
+            return_value=({}, {}, set()),
+        ):
+            compare_views(autogen_context, upgrade_ops, [None])
+
+        refresh_ops = [
+            op for op in upgrade_ops.ops
+            if isinstance(op, RefreshMaterializedViewOp)
+        ]
+        assert refresh_ops == [], (
+            f"compare_views must NEVER emit RefreshMaterializedViewOp "
+            f"(refresh is a runtime op, not a migration step). Found: "
+            f"{refresh_ops}"
+        )
 
 
 # ===========================================================================
@@ -3666,21 +3721,21 @@ class TestSchemaNoneNoFalseDrop:
 # Regression: MV canonicalization DROP must not use CASCADE
 # ===========================================================================
 
-_BUG12_VIEW_NAMES = ["bug12_mv", "bug12_dep_view"]
+_MV_CASCADE_TEST_VIEW_NAMES = ["mv_drop_test_mv", "mv_drop_test_dep_view"]
 
 
-def _drop_bug12_views(connection):
+def _drop_mv_cascade_test_views(connection):
     """Drop any leftover views/MVs created by this regression test."""
     # Drop dependent view first (depends on the MV).
     try:
         connection.execute(
-            sa.text("DROP VIEW IF EXISTS bug12_dep_view CASCADE")
+            sa.text("DROP VIEW IF EXISTS mv_drop_test_dep_view CASCADE")
         )
     except sa.exc.SQLAlchemyError:
         connection.rollback()
     try:
         connection.execute(
-            sa.text("DROP MATERIALIZED VIEW IF EXISTS bug12_mv CASCADE")
+            sa.text("DROP MATERIALIZED VIEW IF EXISTS mv_drop_test_mv CASCADE")
         )
     except sa.exc.SQLAlchemyError:
         connection.rollback()
@@ -3709,8 +3764,8 @@ class TestMvCanonicalizationNoCascade:
     def test_mv_canonicalization_does_not_drop_dependents(self, connection):
         """A dependent regular view survives the MV's canonicalization DROP.
 
-        Both the MV ``bug12_mv`` and the dependent regular view
-        ``bug12_dep_view`` (``SELECT * FROM bug12_mv``) are new (not in DB).
+        Both the MV ``mv_drop_test_mv`` and the dependent regular view
+        ``mv_drop_test_dep_view`` (``SELECT * FROM mv_drop_test_mv``) are new (not in DB).
         After ``compare_views`` runs, both should appear as CreateViewOp /
         CreateMaterializedViewOp — the dependent view must NOT have been
         silently dropped by the MV's CASCADE during canonicalization.
@@ -3724,19 +3779,19 @@ class TestMvCanonicalizationNoCascade:
         asserts ``_build_create_sql`` does not emit CASCADE regardless of
         ordering.
         """
-        _drop_bug12_views(connection)
+        _drop_mv_cascade_test_views(connection)
         try:
             metadata = sa.MetaData()
             metadata.info["sqlalchemy_utils_views"] = [
                 ViewRecord(
-                    name="bug12_mv",
+                    name="mv_drop_test_mv",
                     selectable=sa.select(sa.text("1 AS id")),
                     schema=None,
                     materialized=True,
                 ),
                 ViewRecord(
-                    name="bug12_dep_view",
-                    selectable=sa.select(sa.text("* FROM bug12_mv")),
+                    name="mv_drop_test_dep_view",
+                    selectable=sa.select(sa.text("* FROM mv_drop_test_mv")),
                     schema=None,
                 ),
             ]
@@ -3751,13 +3806,13 @@ class TestMvCanonicalizationNoCascade:
                 )
             ]
             created_names = {op.name for op in create_ops}
-            assert "bug12_dep_view" in created_names, (
-                f"Regression: bug12_dep_view missing from create "
+            assert "mv_drop_test_dep_view" in created_names, (
+                f"Regression: mv_drop_test_dep_view missing from create "
                 f"ops (likely silently dropped by MV's CASCADE during "
                 f"canonicalization). Got: {sorted(created_names)}"
             )
         finally:
-            _drop_bug12_views(connection)
+            _drop_mv_cascade_test_views(connection)
 
     def test_build_create_sql_no_cascade_for_materialized_view(self):
         """``_build_create_sql`` must NOT emit CASCADE for materialized views.
@@ -3777,7 +3832,7 @@ class TestMvCanonicalizationNoCascade:
             return_value="SELECT 1 AS id",
         ):
             vr = ViewRecord(
-                name="bug12_mv",
+                name="mv_drop_test_mv",
                 selectable="SELECT 1 AS id",
                 schema=None,
                 materialized=True,
