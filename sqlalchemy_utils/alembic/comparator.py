@@ -368,22 +368,17 @@ def compare_views(
 
     # Cross-schema dependency resolution requires DB state from all schemas.
     # Collect DB views for all schemas (single fetch per schema).
-    all_db_views: dict[str, list[str]] = {}
-    all_db_mvs: dict[str, list[str]] = {}
     db_views_by_schema: dict[str | None, dict[str, str]] = {}
     db_mvs_by_schema: dict[str | None, dict[str, str]] = {}
+    all_db: dict[str, str] = {}
 
     for schema in schemas:
         db_views = get_database_views(connection, schema)
         db_mvs = get_database_materialized_views(connection, schema)
         db_views_by_schema[schema] = db_views
         db_mvs_by_schema[schema] = db_mvs
-        for name, definition in db_views.items():
-            all_db_views.setdefault(name, []).append(definition)
-        for name, definition in db_mvs.items():
-            all_db_mvs.setdefault(name, []).append(definition)
-    # Flatten: for dependency resolution, any definition suffices
-    all_db = {name: defs[0] for name, defs in {**all_db_views, **all_db_mvs}.items()}
+        all_db.update(db_views)
+        all_db.update(db_mvs)
 
     for schema in schemas:
         db_views = db_views_by_schema[schema]
@@ -484,10 +479,8 @@ def compare_views(
         op_name = type(op).__name__.lower()
         if op_name.startswith("create") or op_name.startswith("replace"):
             op_family = "create_or_replace"
-        elif op_name.startswith("drop"):
-            op_family = "drop"
         else:
-            op_family = op_name
+            op_family = "drop"
         key = (op_family, getattr(op, "name", None), getattr(op, "schema", None))
         if key not in seen:
             seen.add(key)

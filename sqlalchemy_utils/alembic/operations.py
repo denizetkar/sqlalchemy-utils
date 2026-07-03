@@ -86,10 +86,6 @@ class CreateViewOp(MigrateOperation):
             replace=self.replace,
         )
 
-    def to_diff_tuple(self) -> tuple:
-        """Return ``("create_view", name, schema, definition)``."""
-        return ("create_view", self.name, self.schema, self.definition)
-
 
 @Operations.register_operation("drop_view")
 class DropViewOp(MigrateOperation):
@@ -151,11 +147,6 @@ class DropViewOp(MigrateOperation):
             )
         return CreateViewOp(self.name, self.definition, schema=self.schema, replace=self.replace)
 
-    def to_diff_tuple(self) -> tuple:
-        """Return ``("drop_view", name, schema, definition)``."""
-        return ("drop_view", self.name, self.schema, self.definition)
-
-
 @Operations.register_operation("replace_view")
 class ReplaceViewOp(MigrateOperation):
     """Operation that emits ``CREATE OR REPLACE VIEW``."""
@@ -205,10 +196,6 @@ class ReplaceViewOp(MigrateOperation):
             self.name, self.old_definition, schema=self.schema,
             old_definition=self.definition,
         )
-
-    def to_diff_tuple(self) -> tuple:
-        """Return ``("replace_view", name, schema, definition, old_definition)``."""
-        return ("replace_view", self.name, self.schema, self.definition, self.old_definition)
 
 
 # ===================================================================
@@ -268,11 +255,6 @@ class CreateMaterializedViewOp(MigrateOperation):
             definition=self.definition,
             with_data=self.with_data,
         )
-
-    def to_diff_tuple(self) -> tuple:
-        """Return ``("create_materialized_view", name, schema, definition, with_data)``."""
-        return ("create_materialized_view", self.name, self.schema, self.definition, self.with_data)
-
 
 @Operations.register_operation("drop_materialized_view")
 class DropMaterializedViewOp(MigrateOperation):
@@ -347,11 +329,6 @@ class DropMaterializedViewOp(MigrateOperation):
             with_data=self.with_data,
         )
 
-    def to_diff_tuple(self) -> tuple:
-        """Return ``("drop_materialized_view", name, schema, definition)``."""
-        return ("drop_materialized_view", self.name, self.schema, self.definition)
-
-
 @Operations.register_operation("replace_materialized_view")
 class ReplaceMaterializedViewOp(MigrateOperation):
     """Operation that drops and re-creates a materialized view.
@@ -425,18 +402,6 @@ class ReplaceMaterializedViewOp(MigrateOperation):
             old_definition=self.definition,
         )
 
-    def to_diff_tuple(self) -> tuple:
-        """Return ``("replace_materialized_view", name, schema, definition, with_data, old_definition)``."""
-        return (
-            "replace_materialized_view",
-            self.name,
-            self.schema,
-            self.definition,
-            self.with_data,
-            self.old_definition,
-        )
-
-
 # ===================================================================
 # Refresh materialized view operation
 # ===================================================================
@@ -485,11 +450,6 @@ class RefreshMaterializedViewOp(MigrateOperation):
             "REFRESH MATERIALIZED VIEW is not meaningfully reversible; "
             "remove it from downgrade() or implement manually."
         )
-
-    def to_diff_tuple(self) -> tuple:
-        """Return ``("refresh_materialized_view", name, schema)``."""
-        return ("refresh_materialized_view", self.name, self.schema)
-
 
 # ===================================================================
 # SQL implementations
