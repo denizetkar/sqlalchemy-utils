@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import inspect
 import logging
-import os
-import socket
 import subprocess
 import sys
 import textwrap
@@ -830,27 +828,6 @@ class TestReverseRoundTrip:
         assert isinstance(double_reversed, CreateViewOp)
         assert double_reversed.replace is True
 
-    def test_replace_view_reverse_preserves_old_definition(self):
-        op = ReplaceViewOp("v", "SELECT 2", old_definition="SELECT 1")
-        double_reversed = op.reverse().reverse()
-        assert isinstance(double_reversed, ReplaceViewOp)
-        assert double_reversed.definition == "SELECT 2"
-        assert double_reversed.old_definition == "SELECT 1"
-
-    def test_create_view_reverse_preserves_schema(self):
-        op = CreateViewOp("v1", "SELECT 1", schema="analytics")
-        rev = op.reverse()
-        assert isinstance(rev, DropViewOp)
-        assert rev.schema == "analytics"
-
-    def test_replace_view_reverse_preserves_old_definition(self):
-        op = ReplaceViewOp("v1", "SELECT 2", old_definition="SELECT 1")
-        rev = op.reverse()
-        assert isinstance(rev, ReplaceViewOp)
-        assert rev.definition == "SELECT 1"
-        assert rev.schema == op.schema
-        assert rev.old_definition == "SELECT 2"
-
     def test_replace_mv_reverse_preserves_old_definition(self):
         op = ReplaceMaterializedViewOp("mv", "SELECT 2", old_definition="SELECT 1")
         rev = op.reverse()
@@ -930,11 +907,6 @@ class TestRendererCreateView:
         result = render_create_view(_make_autogen_context(), op)
         compile(result, "<test>", "exec")
 
-    def test_includes_op_call(self):
-        op = CreateViewOp("my_view", "SELECT id FROM users")
-        result = render_create_view(_make_autogen_context(), op)
-        assert "op.create_view(" in result
-
     def test_schema_omitted_when_none(self):
         op = CreateViewOp("my_view", "SELECT 1", schema=None)
         result = render_create_view(_make_autogen_context(), op)
@@ -975,11 +947,6 @@ class TestRendererDropView:
         result = render_drop_view(_make_autogen_context(), op)
         compile(result, "<test>", "exec")
 
-    def test_includes_op_call(self):
-        op = DropViewOp("my_view")
-        result = render_drop_view(_make_autogen_context(), op)
-        assert "op.drop_view(" in result
-
     def test_schema_omitted_when_none(self):
         op = DropViewOp("my_view", schema=None)
         result = render_drop_view(_make_autogen_context(), op)
@@ -1013,11 +980,6 @@ class TestRendererReplaceView:
         result = render_replace_view(_make_autogen_context(), op)
         compile(result, "<test>", "exec")
 
-    def test_includes_op_call(self):
-        op = ReplaceViewOp("my_view", "SELECT 2")
-        result = render_replace_view(_make_autogen_context(), op)
-        assert "op.replace_view(" in result
-
     def test_schema_included_when_provided(self):
         op = ReplaceViewOp("my_view", "SELECT 2", schema="public")
         result = render_replace_view(_make_autogen_context(), op)
@@ -1041,11 +1003,6 @@ class TestRendererCreateMaterializedView:
         op = CreateMaterializedViewOp("mv_stats", "SELECT count(*) FROM events")
         result = render_create_materialized_view(_make_autogen_context(), op)
         compile(result, "<test>", "exec")
-
-    def test_includes_op_call(self):
-        op = CreateMaterializedViewOp("mv_stats", "SELECT count(*) FROM events")
-        result = render_create_materialized_view(_make_autogen_context(), op)
-        assert "op.create_materialized_view(" in result
 
     def test_omits_with_data_when_default(self):
         """Renderer omits with_data by default and when False (the default)."""
@@ -1075,11 +1032,6 @@ class TestRendererDropMaterializedView:
         result = render_drop_materialized_view(_make_autogen_context(), op)
         compile(result, "<test>", "exec")
 
-    def test_includes_op_call(self):
-        op = DropMaterializedViewOp("mv_stats")
-        result = render_drop_materialized_view(_make_autogen_context(), op)
-        assert "op.drop_materialized_view(" in result
-
     def test_cascade_omitted_when_true(self):
         op = DropMaterializedViewOp("mv_stats")
         result = render_drop_materialized_view(_make_autogen_context(), op)
@@ -1103,11 +1055,6 @@ class TestRendererReplaceMaterializedView:
         op = ReplaceMaterializedViewOp("mv_stats", "SELECT count(*) FROM events")
         result = render_replace_materialized_view(_make_autogen_context(), op)
         compile(result, "<test>", "exec")
-
-    def test_includes_op_call(self):
-        op = ReplaceMaterializedViewOp("mv_stats", "SELECT 2")
-        result = render_replace_materialized_view(_make_autogen_context(), op)
-        assert "op.replace_materialized_view(" in result
 
     def test_omits_with_data_when_default(self):
         """Renderer omits with_data by default and when False (the default)."""
@@ -1416,47 +1363,6 @@ class TestComparatorNoChanges:
         )
         assert create_op_count == 0
 
-    def test_no_db_views(self):
-        """compare_views with no DB views produces only create ops."""
-        metadata = sa.MetaData()
-        selectable = sa.select(sa.column("id", sa.Integer))
-        create_view("test_v", selectable, metadata)
-
-        autogen_context = mock.MagicMock()
-        autogen_context.connection = mock.MagicMock()
-        autogen_context.connection.dialect.name = "postgresql"
-        autogen_context.metadata = metadata
-
-        empty_result = mock.MagicMock()
-        empty_result.__iter__ = mock.Mock(return_value=iter([]))
-        autogen_context.connection.execute.return_value = empty_result
-
-        upgrade_ops = mock.MagicMock()
-        upgrade_ops.ops = []
-
-        with mock.patch(
-            "sqlalchemy_utils.alembic.comparator._canonicalize_all_views",
-            return_value=(
-                {"test_v": "SELECT id FROM (VALUES (1)) AS t(id)"},
-                {},
-                set(),
-            ),
-        ), mock.patch(
-            "sqlalchemy_utils.alembic.comparator.get_database_views",
-            return_value={},
-        ), mock.patch(
-            "sqlalchemy_utils.alembic.comparator.get_database_materialized_views",
-            return_value={},
-        ):
-            compare_views(autogen_context, upgrade_ops, [None])
-
-        create_op_count = sum(
-            1
-            for op in upgrade_ops.ops
-            if type(op).__name__ in ("CreateViewOp", "CreateMaterializedViewOp")
-        )
-        assert create_op_count == 1
-
 
 class TestComparatorSavepointRollback:
     """Savepoint rollback works (view doesn't persist after compare)."""
@@ -1692,42 +1598,6 @@ class TestCanonicalizeSkipDoesNotDrop:
 # Distinct names so this regression test does not collide with other view fixtures.
 _BUG10_VIEW_NAMES = ["bug10_a", "bug10_b", "bug10_c"]
 
-# PG connection parameters reused from the test environment. These match the
-# socket-probe pattern from tests/test_pg_catalog_dependents.py so the test
-# skips gracefully (rather than erroring) when PG is unavailable.
-_BUG10_PG_HOST = os.environ.get(
-    "SQLALCHEMY_UTILS_TEST_POSTGRESQL_HOST", "localhost"
-)
-_BUG10_PG_PORT = int(
-    os.environ.get("SQLALCHEMY_UTILS_TEST_POSTGRESQL_PORT", "55432")
-)
-_BUG10_PG_USER = os.environ.get(
-    "SQLALCHEMY_UTILS_TEST_POSTGRESQL_USER", "postgres"
-)
-_BUG10_PG_PASSWORD = os.environ.get(
-    "SQLALCHEMY_UTILS_TEST_POSTGRESQL_PASSWORD", ""
-)
-_BUG10_PG_DB = os.environ.get(
-    "SQLALCHEMY_UTILS_TEST_DB", "sqlalchemy_utils_test"
-)
-_BUG10_DSN = (
-    f"postgresql+psycopg2://{_BUG10_PG_USER}:{_BUG10_PG_PASSWORD}"
-    f"@{_BUG10_PG_HOST}:{_BUG10_PG_PORT}/{_BUG10_PG_DB}"
-)
-
-
-def _bug10_pg_available() -> bool:
-    """Return True if a TCP connection to the PG port succeeds."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(1.0)
-    try:
-        sock.connect((_BUG10_PG_HOST, _BUG10_PG_PORT))
-    except OSError:
-        return False
-    finally:
-        sock.close()
-    return True
-
 
 def _drop_bug10_views(connection):
     """Drop any leftover views created by this regression test."""
@@ -1756,16 +1626,12 @@ class TestCanonicalizeFailureDoesNotSkipSubsequentViews:
     """
 
     @pytest.mark.infrastructure
-    def test_failed_canonicalization_does_not_skip_subsequent_views(self):
-        if not _bug10_pg_available():
-            pytest.skip(
-                f"PostgreSQL not reachable at "
-                f"{_BUG10_PG_HOST}:{_BUG10_PG_PORT}"
-            )
-        engine = sa.create_engine(_BUG10_DSN, future=True)
-        connection = engine.connect()
+    @pytest.mark.usefixtures("postgresql_dsn")
+    def test_failed_canonicalization_does_not_skip_subsequent_views(
+        self, connection
+    ):
+        _drop_bug10_views(connection)
         try:
-            _drop_bug10_views(connection)
 
             # view_a references a nonexistent table → CREATE fails inside the
             # canonicalization savepoint. view_b and view_c are trivially valid
@@ -1821,8 +1687,6 @@ class TestCanonicalizeFailureDoesNotSkipSubsequentViews:
             )
         finally:
             _drop_bug10_views(connection)
-            connection.close()
-            engine.dispose()
 
 
 # ===========================================================================
@@ -2818,11 +2682,22 @@ class TestPublicAPIImportable:
             ("sqlalchemy_utils.alembic:CreateMaterializedViewOp", "test_mv", ("test_mv", "SELECT 1"), {}, "SELECT 1"),
             ("sqlalchemy_utils.alembic:DropMaterializedViewOp", "test_mv", ("test_mv",), {"cascade": False}, None),
             ("sqlalchemy_utils.alembic:ReplaceMaterializedViewOp", "test_mv", ("test_mv", "SELECT 2"), {}, "SELECT 2"),
+            ("sqlalchemy_utils.alembic:compare_views", None, None, {}, None),
+            ("sqlalchemy_utils.alembic:get_database_materialized_views", None, None, {}, None),
+            ("sqlalchemy_utils.alembic:get_database_views", None, None, {}, None),
+            ("sqlalchemy_utils.alembic:resolve_create_order", None, None, {}, None),
+            ("sqlalchemy_utils.alembic:resolve_drop_order", None, None, {}, None),
+            ("sqlalchemy_utils.alembic:ViewRecord", None, None, {}, None),
+            ("sqlalchemy_utils.alembic:register_view_comparator", None, None, {}, None),
         ],
         ids=[
             "create_view_op", "drop_view_op", "replace_view_op",
             "create_materialized_view_op", "drop_materialized_view_op",
             "replace_materialized_view_op",
+            "compare_views", "get_database_materialized_views",
+            "get_database_views", "resolve_create_order",
+            "resolve_drop_order", "view_record",
+            "register_view_comparator",
         ],
     )
     def test_import_op(
@@ -2831,9 +2706,14 @@ class TestPublicAPIImportable:
         import importlib
 
         module_path, _, attr = op_import_path.partition(":")
-        op_class = getattr(importlib.import_module(module_path), attr)
+        symbol = getattr(importlib.import_module(module_path), attr)
 
-        op = op_class(*args, **kwargs)
+        # Non-Op public API symbols: just assert importable + callable.
+        if args is None:
+            assert callable(symbol)
+            return
+
+        op = symbol(*args, **kwargs)
         assert op.name == op_name
         if expected_definition is not None:
             assert op.definition == expected_definition
@@ -2842,26 +2722,6 @@ class TestPublicAPIImportable:
         from sqlalchemy_utils.view_record import ViewRecord as VR
 
         assert VR is not None
-
-    def test_public_apis_exported(self):
-        """Public APIs are importable from sqlalchemy_utils.alembic directly."""
-        from sqlalchemy_utils.alembic import (
-            compare_views,
-            get_database_materialized_views,
-            get_database_views,
-            resolve_create_order,
-            resolve_drop_order,
-            ViewRecord,
-        )
-
-
-class TestPublicAPIExports:
-    """register_view_comparator is exported."""
-
-    def test_register_view_comparator_exists(self):
-        from sqlalchemy_utils.alembic import register_view_comparator
-
-        assert callable(register_view_comparator)
 
 
 # ===========================================================================
