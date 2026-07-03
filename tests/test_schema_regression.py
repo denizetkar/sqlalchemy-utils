@@ -31,16 +31,13 @@ TESTS_DIR = Path(__file__).resolve().parent
 
 
 # ---------------------------------------------------------------------------
-# Bug 1: create_view() does not accept a schema parameter
+# create_view() must accept and propagate a schema parameter
 # ---------------------------------------------------------------------------
 def test_create_view_accepts_schema_param():
     """create_view must accept schema= and propagate it to the view record."""
     metadata = sa.MetaData()
     selectable = sa.select(sa.column('id', sa.Integer))
 
-    # Bug: create_view signature is (name, selectable, metadata,
-    #       cascade_on_drop, replace) — no schema kwarg.
-    # Expect TypeError until schema is added.
     table = create_view('v', selectable, metadata, schema='analytics')
 
     view_records = metadata.info.get('sqlalchemy_utils_views', [])
@@ -49,15 +46,13 @@ def test_create_view_accepts_schema_param():
 
 
 # ---------------------------------------------------------------------------
-# Bug 2: create_materialized_view() does not accept a schema parameter
+# create_materialized_view() must accept and propagate a schema parameter
 # ---------------------------------------------------------------------------
 def test_create_materialized_view_accepts_schema_param():
     """create_materialized_view must accept schema= and propagate it."""
     metadata = sa.MetaData()
     selectable = sa.select(sa.column('id', sa.Integer))
 
-    # Bug: create_materialized_view signature is
-    #       (name, selectable, metadata, indexes, aliases) — no schema kwarg.
     table = create_materialized_view(
         'mv', selectable, metadata, schema='analytics'
     )
@@ -68,7 +63,7 @@ def test_create_materialized_view_accepts_schema_param():
 
 
 # ---------------------------------------------------------------------------
-# Bug 5: ViewRecord.__eq__ ignores the selectable field (known limitation)
+# ViewRecord.__eq__ ignores the selectable field (known limitation)
 # ---------------------------------------------------------------------------
 def test_viewrecord_eq_ignores_selectable():
     """Two ViewRecords with same name/schema/materialized but different
@@ -96,11 +91,11 @@ def test_viewrecord_eq_ignores_selectable():
 
 
 # ---------------------------------------------------------------------------
-# Bug 9: docs/alembic.rst contains a Python code block that is not valid Python
+# The Python code block in docs/alembic.rst must be syntactically valid
 # ---------------------------------------------------------------------------
 def test_alembic_rst_example_is_valid_python():
     """Regression guard: the Python code block in docs/alembic.rst must be
-    syntactically valid (Bug 9 was fixed in a prior wave)."""
+    syntactically valid."""
     rst_path = (
         TESTS_DIR.parent / 'docs' / 'alembic.rst'
     )
@@ -118,14 +113,12 @@ def test_alembic_rst_example_is_valid_python():
     # Dedent (strip the leading 4-space indent of the rst code block).
     code = textwrap.dedent(block)
 
-    # Should parse as valid Python. Currently it does NOT because of an
-    # invalid MetaData(...) constructor invocation in the example.
     ast.parse(code)
 
 
 # ---------------------------------------------------------------------------
-# Bug 10: create_materialized_view ignores cascade_on_drop — DropView always
-#         receives the default cascade=True and callers cannot override it.
+# create_materialized_view must honor a caller-supplied cascade_on_drop
+# setting rather than always defaulting the DropView to cascade=True.
 # ---------------------------------------------------------------------------
 def test_materialized_view_dropview_ignores_cascade():
     """The DropView registered by create_materialized_view must honor a
@@ -134,8 +127,6 @@ def test_materialized_view_dropview_ignores_cascade():
     metadata = sa.MetaData()
     selectable = sa.select(sa.column('id', sa.Integer))
 
-    # Bug: create_materialized_view has no cascade_on_drop kwarg, so the
-    # DropView listener is always registered with cascade=True.
     create_materialized_view(
         'mv',
         selectable,

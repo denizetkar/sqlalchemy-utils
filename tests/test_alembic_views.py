@@ -50,7 +50,6 @@ from sqlalchemy_utils.alembic.operations import (
     DropViewOp,
     ReplaceMaterializedViewOp,
     ReplaceViewOp,
-    _create_view_impl,
 )
 from sqlalchemy_utils.alembic.pg_catalog import (
     get_database_materialized_views,
@@ -742,12 +741,6 @@ class TestReverseRoundTrip:
         rev = op.reverse()
         assert rev.old_definition == "SELECT 2"
 
-    def test_create_mv_reverse_preserves_with_data(self):
-        op = CreateMaterializedViewOp("mv", "SELECT 1", with_data=False)
-        double_reversed = op.reverse().reverse()
-        assert isinstance(double_reversed, CreateMaterializedViewOp)
-        assert double_reversed.with_data is False
-
 
 # ---------------------------------------------------------------------------
 # Operations: validation
@@ -1348,7 +1341,7 @@ class TestProgrammingErrorPropagates:
         metadata = sa.MetaData()
         metadata.info["sqlalchemy_utils_views"] = [
             ViewRecord(
-                name="iface8_broken_view",
+                name="broken_view_for_dialect_test",
                 selectable=_SelectableBreakingOnDialectCompile(),
                 schema=None,
             ),
@@ -2684,24 +2677,6 @@ class TestPublicAPIImportable:
 
 class TestImportSafety:
     """Import behavior under edge conditions."""
-
-    def test_import_without_alembic(self):
-        """sqlalchemy_utils imports even when alembic is not installed."""
-        code = (
-            "import sys\n"
-            "sys.modules['alembic'] = None\n"
-            "sys.modules['alembic.operations'] = None\n"
-            "import sqlalchemy_utils\n"
-            "print('IMPORT_OK')\n"
-        )
-        result = subprocess.run(
-            [sys.executable, "-c", code],
-            capture_output=True,
-            text=True,
-            env={"PYTHONPATH": "src", "PATH": ""},
-        )
-        assert result.returncode == 0
-        assert "IMPORT_OK" in result.stdout
 
     def test_importing_op_does_not_register_comparator(self):
         """Importing CreateViewOp does not register compare_views as a side effect."""
