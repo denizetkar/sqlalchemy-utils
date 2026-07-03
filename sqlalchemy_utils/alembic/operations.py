@@ -2,7 +2,8 @@
 Alembic migration operations for database views.
 
 Provides 7 MigrateOperation subclasses for creating, dropping, replacing,
-and refreshing materialized views, along with ``op.*`` helper functions.
+and refreshing regular and materialized views, along with ``op.*`` helper
+functions.
 
 Usage in Alembic migrations::
 

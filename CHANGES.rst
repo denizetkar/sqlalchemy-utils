@@ -23,6 +23,12 @@ Unreleased
 - Add ``ViewReadonlyError`` exception (subclasses ``sa.exc.InvalidRequestError``)
 - Add ``__view_schema__`` class attribute for multi-schema support
 - Rename ``__view_cascade_on_drop__`` → ``__view_cascade__`` (aligns with SQL/Alembic naming)
+- Add ``ViewRecord`` for representing and introspecting existing database views
+- Add ``resolve_create_order`` / ``resolve_drop_order`` dependency-resolution
+  helpers in ``sqlalchemy_utils.alembic.depend``
+- Add ``get_database_views`` / ``get_database_materialized_views`` /
+  ``get_dependent_views`` PostgreSQL catalog helpers in
+  ``sqlalchemy_utils.alembic.pg_catalog``
 
 0.42.1 (2025-12-12)
 ^^^^^^^^^^^^^^^^^^^

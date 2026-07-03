@@ -7,6 +7,8 @@ Quick start
 Activate view autogenerate support in your Alembic ``env.py``. This must be
 called **before** ``context.configure()``.
 
+Requires ``pip install sqlalchemy-utils[alembic]``.
+
 ::
 
     from sqlalchemy_utils import register_view_comparator
@@ -36,6 +38,11 @@ comparator for view DDL:
   ``pg_views``/``pg_matviews`` and uses savepoints.  On non-PostgreSQL
   dialects the comparator logs a warning and skips view diffing.
 
+  Offline mode (``alembic upgrade --sql``) is also unsupported: the
+  comparator needs a live connection to introspect ``pg_catalog`` and
+  create the model view inside a savepoint, so view diffing is skipped
+  when running with ``--sql``.
+
 * What it detects:
 
   - New views that need to be created
@@ -53,6 +60,10 @@ comparator for view DDL:
     to populate the MV.
   - ``cascade_on_drop`` controls (``CASCADE``/``RESTRICT``) are not yet
     configurable per-view in autogenerate.
+  - Dependency detection between views uses word-boundary regex matching
+    on view names in compiled SQL; views whose names are substrings of
+    other identifiers (or names containing regex metacharacters) may be
+    misclassified. Prefer simple, distinct view names to avoid this.
 
 env.py snippet (additions to your existing env.py)
 --------------------------------------------------
@@ -66,7 +77,7 @@ env.py snippet (additions to your existing env.py)
     from alembic import context
     from sqlalchemy import engine_from_config
     from sqlalchemy import pool
-    from sqlalchemy_utils.alembic.comparator import register_view_comparator
+    from sqlalchemy_utils import register_view_comparator
 
     # Must call before context.configure()
     register_view_comparator()
@@ -161,6 +172,9 @@ API reference
 
 .. autofunction:: sqlalchemy_utils.alembic.comparator.register_view_comparator
 
+.. autoclass:: sqlalchemy_utils.view_record.ViewRecord
+   :members:
+
 Internal / extension points
 ---------------------------
 
@@ -170,9 +184,6 @@ change between releases; prefer calling ``register_view_comparator()`` in your
 ``env.py``.
 
 .. autofunction:: sqlalchemy_utils.alembic.comparator.compare_views
-
-.. autoclass:: sqlalchemy_utils.view_record.ViewRecord
-   :members:
 
 .. autofunction:: sqlalchemy_utils.alembic.depend.resolve_create_order
 .. autofunction:: sqlalchemy_utils.alembic.depend.resolve_drop_order

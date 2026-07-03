@@ -36,6 +36,8 @@ def _query_view_catalog(connection: sa.engine.Connection, table: str, name_col: 
 def get_database_views(connection: sa.engine.Connection, schema: str | None = None) -> dict[str, str]:
     """Query pg_views catalog for view names and definitions.
 
+    PostgreSQL-specific. Will raise on non-PostgreSQL dialects.
+
     Args:
         connection: SQLAlchemy Connection object.
         schema: Optional schema name filter. If None, only the connection's
@@ -54,6 +56,8 @@ def get_database_views(connection: sa.engine.Connection, schema: str | None = No
 def get_database_materialized_views(connection: sa.engine.Connection, schema: str | None = None) -> dict[str, str]:
     """Query pg_matviews catalog for materialized view names and definitions.
 
+    PostgreSQL-specific. Will raise on non-PostgreSQL dialects.
+
     Args:
         connection: SQLAlchemy Connection object.
         schema: Optional schema name filter. If None, only the connection's
@@ -71,6 +75,8 @@ def get_database_materialized_views(connection: sa.engine.Connection, schema: st
 
 def get_dependent_views(connection: sa.engine.Connection, view_name: str, schema: str | None = None) -> dict[str, str]:
     """Query pg_depend for views that depend on the given view.
+
+    PostgreSQL-specific. Will raise on non-PostgreSQL dialects.
 
     Args:
         connection: SQLAlchemy Connection object.

@@ -16,8 +16,8 @@ class ViewRecord:
 
     Equality is name-based: two ViewRecords with the same ``name`` and
     ``schema`` (and ``materialized`` flag) compare equal, regardless of the
-    underlying selectable SQL.  Use :meth:`compiled_definition` to compare
-    the actual SQL definitions.
+    underlying selectable SQL.  Use :meth:`~ViewRecord.compiled_definition`
+    to compare the actual SQL definitions.
     """
     name: str
     selectable: Union[str, sa.sql.ClauseElement]
@@ -36,7 +36,7 @@ class ViewRecord:
 
         Intentionally name-based (name/schema/materialized only) so that
         ViewRecords can serve as stable dict/set keys even when the
-        underlying selectable SQL changes. Use :meth:`compiled_definition`
+        underlying selectable SQL changes. Use :meth:`~ViewRecord.compiled_definition`
         to detect actual definition (selectable) changes.
         """
         if not isinstance(other, ViewRecord):
