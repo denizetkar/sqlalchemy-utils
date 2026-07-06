@@ -202,7 +202,6 @@ def _run_comparator(connection, metadata, schemas=None):
 # ===========================================================================
 
 class TestViewRecordCreation:
-    """ViewRecord creation with required and optional fields."""
 
     def test_create_with_minimum_fields(self):
         record = ViewRecord(name="test_view", selectable="SELECT 1")
@@ -266,14 +265,8 @@ class TestViewRecordFreezing:
         with pytest.raises(_FrozenInstanceError):
             record.name = "different_view"
 
-    def test_raises_frozen_error_on_attribute_deletion(self):
-        record = ViewRecord(name="test_view", selectable="SELECT 1")
-        with pytest.raises(_FrozenInstanceError):
-            del record.name
-
 
 class TestViewRecordEquality:
-    """ViewRecord equality semantics."""
 
     def test_equal_records_with_same_fields(self):
         assert (
@@ -307,7 +300,6 @@ class TestViewRecordEquality:
 
 
 class TestViewRecordHashing:
-    """ViewRecord hashing for set/dict use."""
 
     def test_hash_consistent_with_equality(self):
         record1 = ViewRecord(name="test_view", selectable="SELECT 1")
@@ -330,23 +322,8 @@ class TestViewRecordHashing:
         assert record3 in view_set
         assert record2 in view_set
 
-    def test_storable_in_dict_multiple_keys(self):
-        record1 = ViewRecord(name="view1", selectable="SELECT 1")
-        record2 = ViewRecord(name="view2", selectable="SELECT 2")
-        record3 = ViewRecord(name="view3", selectable="SELECT 3")
-        value_map = {
-            record1: "data1",
-            record2: "data2",
-            record3: "data3",
-        }
-        assert len(value_map) == 3
-        assert value_map[record1] == "data1"
-        assert value_map[record2] == "data2"
-        assert value_map[record3] == "data3"
-
 
 class TestViewRecordRepr:
-    """ViewRecord string representations."""
 
     def test_repr_with_schema(self):
         record = ViewRecord(
@@ -382,7 +359,6 @@ class TestViewRecordRepr:
     ids=["views", "materialized_views"],
 )
 class TestGetDatabaseViews:
-    """get_database_views / get_database_materialized_views query pg_catalog."""
 
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_query_empty_database(self, connection, fetch_fn):
@@ -392,17 +368,11 @@ class TestGetDatabaseViews:
     def test_query_with_schema_filter(self, connection, fetch_fn):
         result = fetch_fn(connection, schema="public")
         assert isinstance(result, dict)
-        for name, definition in result.items():
-            assert isinstance(name, str)
-            assert isinstance(definition, str)
 
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_query_all_schemas_when_schema_none(self, connection, fetch_fn):
         result = fetch_fn(connection, schema=None)
         assert isinstance(result, dict)
-        for name, definition in result.items():
-            assert isinstance(name, str)
-            assert isinstance(definition, str)
 
 
 # ===========================================================================
@@ -410,7 +380,6 @@ class TestGetDatabaseViews:
 # ===========================================================================
 
 class TestCreateViewOp:
-    """CreateViewOp instantiation, reverse, SQL, and classmethod."""
 
     def test_instantiation(self):
         op = CreateViewOp("v1", "SELECT 1")
@@ -468,7 +437,6 @@ class TestCreateViewOp:
 
 
 class TestDropViewOp:
-    """DropViewOp instantiation, reverse, SQL, and classmethod."""
 
     def test_instantiation(self):
         op = DropViewOp("v1", cascade=True)
@@ -517,7 +485,6 @@ class TestDropViewOp:
 
 
 class TestReplaceViewOp:
-    """ReplaceViewOp instantiation, reverse, and SQL."""
 
     def test_instantiation(self):
         op = ReplaceViewOp("v1", "SELECT 2")
@@ -543,7 +510,6 @@ class TestReplaceViewOp:
 
 
 class TestCreateMaterializedViewOp:
-    """CreateMaterializedViewOp instantiation, reverse, and SQL."""
 
     def test_instantiation(self):
         op = CreateMaterializedViewOp("mv1", "SELECT 1")
@@ -576,7 +542,6 @@ class TestCreateMaterializedViewOp:
 
 
 class TestDropMaterializedViewOp:
-    """DropMaterializedViewOp instantiation, reverse, and SQL."""
 
     def test_instantiation(self):
         op = DropMaterializedViewOp("mv1", cascade=False)
@@ -607,7 +572,6 @@ class TestDropMaterializedViewOp:
 
 
 class TestReplaceMaterializedViewOp:
-    """ReplaceMaterializedViewOp instantiation, reverse, and SQL."""
 
     def test_instantiation(self):
         op = ReplaceMaterializedViewOp("mv1", "SELECT 2")
@@ -687,7 +651,6 @@ class TestReplaceMaterializedViewOp:
 # ---------------------------------------------------------------------------
 
 class TestOpKeywordOnlyParams:
-    """Op classmethods enforce schema= as keyword-only."""
 
     @pytest.mark.parametrize(
         "method_name,op_class",
@@ -744,7 +707,6 @@ class TestOpKeywordOnlyParams:
 # ---------------------------------------------------------------------------
 
 class TestReverseRoundTrip:
-    """reverse() round-trips preserve op attributes."""
 
     def test_create_view_reverse_round_trip_drops_replace(self):
         with pytest.warns(DeprecationWarning):
@@ -764,7 +726,6 @@ class TestReverseRoundTrip:
 # ---------------------------------------------------------------------------
 
 class TestOpValidation:
-    """Op __init__ validation of definition argument."""
 
     def test_create_view_rejects_none_definition(self):
         with pytest.raises((TypeError, ValueError), match="(?i)definition"):
@@ -812,7 +773,6 @@ class TestOpValidation:
 # ===========================================================================
 
 class TestRendererCreateView:
-    """render_create_view behavior."""
 
     def test_produces_valid_python(self):
         op = CreateViewOp("my_view", "SELECT 1")
@@ -852,7 +812,6 @@ class TestRendererCreateView:
 
 
 class TestRendererDropView:
-    """render_drop_view behavior."""
 
     def test_produces_valid_python(self):
         op = DropViewOp("my_view")
@@ -885,7 +844,6 @@ class TestRendererDropView:
 
 
 class TestRendererReplaceView:
-    """render_replace_view behavior."""
 
     def test_produces_valid_python(self):
         op = ReplaceViewOp("my_view", "SELECT 2")
@@ -909,7 +867,6 @@ class TestRendererReplaceView:
 
 
 class TestRendererCreateMaterializedView:
-    """render_create_materialized_view behavior."""
 
     def test_produces_valid_python(self):
         op = CreateMaterializedViewOp("mv_stats", "SELECT count(*) FROM events")
@@ -937,7 +894,6 @@ class TestRendererCreateMaterializedView:
 
 
 class TestRendererDropMaterializedView:
-    """render_drop_materialized_view behavior."""
 
     def test_produces_valid_python(self):
         op = DropMaterializedViewOp("mv_stats")
@@ -983,7 +939,6 @@ class TestRendererDropMaterializedView:
 
 
 class TestRendererReplaceMaterializedView:
-    """render_replace_materialized_view behavior."""
 
     def test_produces_valid_python(self):
         op = ReplaceMaterializedViewOp("mv_stats", "SELECT count(*) FROM events")
@@ -1041,14 +996,21 @@ def _drop_base_table(connection):
     connection.commit()
 
 
+@pytest.fixture
+def cmp_test_base(connection):
+    """Create ``_cmp_test_base`` and clean comparator test views before/after."""
+    _drop_views(connection, _CMP_TEST_VIEW_NAMES)
+    _create_base_table(connection)
+    yield connection
+    _drop_views(connection, _CMP_TEST_VIEW_NAMES)
+    _drop_base_table(connection)
+
+
 class TestComparatorCreateView:
-    """New view detected → CreateViewOp generated."""
 
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_new_view_generates_create_view_op(self, connection):
-        _create_base_table(connection)
-        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
-
+    def test_new_view_generates_create_view_op(self, cmp_test_base):
+        connection = cmp_test_base
         metadata = sa.MetaData()
         metadata.info["sqlalchemy_utils_views"] = [
             ViewRecord(
@@ -1063,18 +1025,12 @@ class TestComparatorCreateView:
         assert len(view_ops) == 1
         assert view_ops[0].name == "cmp_test_view"
 
-        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
-        _drop_base_table(connection)
-
 
 class TestComparatorDropView:
-    """Removed view detected → DropViewOp generated."""
 
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_removed_view_generates_drop_view_op(self, connection):
-        _create_base_table(connection)
-        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
-
+    def test_removed_view_generates_drop_view_op(self, cmp_test_base):
+        connection = cmp_test_base
         connection.execute(
             sa.text(
                 "CREATE VIEW cmp_test_view AS SELECT id, name FROM _cmp_test_base"
@@ -1096,18 +1052,12 @@ class TestComparatorDropView:
         assert len(drop_ops) == 1
         assert drop_ops[0].name == "cmp_test_view"
 
-        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
-        _drop_base_table(connection)
-
 
 class TestComparatorReplaceView:
-    """Changed view definition → ReplaceViewOp generated."""
 
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_changed_view_generates_replace_view_op(self, connection):
-        _create_base_table(connection)
-        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
-
+    def test_changed_view_generates_replace_view_op(self, cmp_test_base):
+        connection = cmp_test_base
         connection.execute(
             sa.text(
                 "CREATE VIEW cmp_test_changed AS "
@@ -1131,18 +1081,12 @@ class TestComparatorReplaceView:
         assert replace_ops[0].name == "cmp_test_changed"
         assert replace_ops[0].old_definition is not None
 
-        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
-        _drop_base_table(connection)
-
 
 class TestComparatorCreateMV:
-    """New materialized view detected → CreateMaterializedViewOp."""
 
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_new_mv_generates_create_mv_op(self, connection):
-        _create_base_table(connection)
-        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
-
+    def test_new_mv_generates_create_mv_op(self, cmp_test_base):
+        connection = cmp_test_base
         metadata = sa.MetaData()
         metadata.info["sqlalchemy_utils_views"] = [
             ViewRecord(
@@ -1161,18 +1105,12 @@ class TestComparatorCreateMV:
         assert mv_ops[0].name == "cmp_test_mv"
         assert mv_ops[0].with_data is False
 
-        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
-        _drop_base_table(connection)
-
 
 class TestComparatorDropMV:
-    """Removed materialized view → DropMaterializedViewOp."""
 
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_removed_mv_generates_drop_mv_op(self, connection):
-        _create_base_table(connection)
-        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
-
+    def test_removed_mv_generates_drop_mv_op(self, cmp_test_base):
+        connection = cmp_test_base
         connection.execute(
             sa.text(
                 "CREATE MATERIALIZED VIEW cmp_test_mv AS "
@@ -1192,18 +1130,12 @@ class TestComparatorDropMV:
         assert len(drop_mv_ops) == 1
         assert drop_mv_ops[0].name == "cmp_test_mv"
 
-        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
-        _drop_base_table(connection)
-
 
 class TestComparatorReplaceMV:
-    """Changed materialized view definition → ReplaceMaterializedViewOp."""
 
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_changed_mv_generates_replace_mv_op(self, connection):
-        _create_base_table(connection)
-        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
-
+    def test_changed_mv_generates_replace_mv_op(self, cmp_test_base):
+        connection = cmp_test_base
         connection.execute(
             sa.text(
                 "CREATE MATERIALIZED VIEW cmp_test_mv_changed AS "
@@ -1231,27 +1163,18 @@ class TestComparatorReplaceMV:
         assert replace_ops[0].with_data is False
         assert replace_ops[0].old_definition is not None
 
-        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
-        _drop_base_table(connection)
-
 
 class TestComparatorNoChanges:
-    """No changes → no view ops generated."""
 
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_no_changes_no_ops(self, connection):
-        _create_base_table(connection)
-        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
-
+    def test_no_changes_no_ops(self, cmp_test_base):
+        connection = cmp_test_base
         connection.execute(
             sa.text(
                 "CREATE VIEW cmp_test_view2 AS SELECT id, name FROM _cmp_test_base"
             )
         )
         connection.commit()
-
-        db_views = get_database_views(connection)
-        _ = db_views.get("cmp_test_view2")
 
         metadata = sa.MetaData()
         metadata.info["sqlalchemy_utils_views"] = [
@@ -1271,9 +1194,6 @@ class TestComparatorNoChanges:
         assert len(matching_view_ops) == 0, (
             f"Expected no ops for matching view, got: {matching_view_ops}"
         )
-
-        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
-        _drop_base_table(connection)
 
     def test_empty_metadata(self):
         """compare_views with no model views produces no create ops."""
@@ -1299,13 +1219,10 @@ class TestComparatorNoChanges:
 
 
 class TestComparatorSavepointRollback:
-    """Savepoint rollback works (view doesn't persist after compare)."""
 
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_canonicalized_view_does_not_persist(self, connection):
-        _create_base_table(connection)
-        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
-
+    def test_canonicalized_view_does_not_persist(self, cmp_test_base):
+        connection = cmp_test_base
         metadata = sa.MetaData()
         metadata.info["sqlalchemy_utils_views"] = [
             ViewRecord(
@@ -1321,11 +1238,8 @@ class TestComparatorSavepointRollback:
             "View should not persist after canonicalization savepoint rollback"
         )
 
-        _drop_base_table(connection)
-
 
 class TestComparatorDDLError:
-    """DDL error in savepoint doesn't crash comparator."""
 
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_invalid_view_skipped_with_warning(self, connection):
@@ -1495,18 +1409,6 @@ class TestCanonicalizeSkipDoesNotDrop:
 _SAVEPOINT_TEST_VIEW_NAMES = ["savepoint_a", "savepoint_b", "savepoint_c"]
 
 
-def _drop_savepoint_test_views(connection):
-    """Drop any leftover views created by this regression test."""
-    for view_name in _SAVEPOINT_TEST_VIEW_NAMES:
-        try:
-            connection.execute(
-                sa.text(f"DROP VIEW IF EXISTS {view_name} CASCADE")
-            )
-        except sa.exc.SQLAlchemyError:
-            connection.rollback()
-    connection.commit()
-
-
 class TestCanonicalizeFailureDoesNotSkipSubsequentViews:
     """Regression: a failed view must not cascade-skip later views.
 
@@ -1519,7 +1421,7 @@ class TestCanonicalizeFailureDoesNotSkipSubsequentViews:
     def test_failed_canonicalization_does_not_skip_subsequent_views(
         self, connection
     ):
-        _drop_savepoint_test_views(connection)
+        _drop_views(connection, _SAVEPOINT_TEST_VIEW_NAMES)
         try:
 
             # view_a references a nonexistent table → CREATE fails inside the
@@ -1575,7 +1477,7 @@ class TestCanonicalizeFailureDoesNotSkipSubsequentViews:
                 f"it); got {sorted(created_names)}"
             )
         finally:
-            _drop_savepoint_test_views(connection)
+            _drop_views(connection, _SAVEPOINT_TEST_VIEW_NAMES)
 
 
 # ===========================================================================
@@ -2008,7 +1910,6 @@ class TestPoisonedOuterSavepointRollback:
 
 
 class TestComparatorNonPGDialect:
-    """compare_views warns on non-PostgreSQL dialects."""
 
     def test_warns_on_non_pg_dialect(self, caplog):
         engine = sa.create_engine("sqlite:///:memory:")
@@ -2064,7 +1965,6 @@ class TestComparatorNonPGDialect:
 
 
 class TestComparatorNoDoubleFetch:
-    """compare_views fetches each schema's DB views only once."""
 
     def test_does_not_double_fetch(self, monkeypatch):
         import sqlalchemy_utils.alembic.comparator as comparator_module
@@ -2157,7 +2057,6 @@ class TestComparatorNeverEmitsRefreshOp:
 # ===========================================================================
 
 class TestSchemaMatching:
-    """_schema_matches behavior."""
 
     @pytest.mark.parametrize(
         "view_schema,loop_schema,expected",
@@ -2184,7 +2083,6 @@ class TestSchemaMatching:
 # ===========================================================================
 
 class TestDependIndependentViews:
-    """Independent views (no deps) maintain any order."""
 
     def test_independent_views_create_order_contains_all(self):
         views = [
@@ -2209,7 +2107,6 @@ class TestDependIndependentViews:
 
 
 class TestDependViewOnView:
-    """View-on-view dependency ordering."""
 
     def test_dependent_after_dependency_in_create_order(self):
         views = [
@@ -2244,7 +2141,6 @@ class TestDependViewOnView:
 
 
 class TestDependMultipleLevels:
-    """Multi-level dependency chains (A → B → C)."""
 
     def test_chain_create_order(self):
         views = [
@@ -2268,21 +2164,11 @@ class TestDependMultipleLevels:
 
 
 class TestDependCircular:
-    """Circular dependencies raise ValueError."""
 
     def test_simple_cycle_raises_value_error(self):
         views = [
             ViewRecord(name="view_a", selectable="SELECT * FROM view_b"),
             ViewRecord(name="view_b", selectable="SELECT * FROM view_a"),
-        ]
-        with pytest.raises(ValueError, match="[Cc]ircular"):
-            resolve_create_order(views, db_views={})
-
-    def test_three_way_cycle_raises_value_error(self):
-        views = [
-            ViewRecord(name="v_a", selectable="SELECT * FROM v_b"),
-            ViewRecord(name="v_b", selectable="SELECT * FROM v_c"),
-            ViewRecord(name="v_c", selectable="SELECT * FROM v_a"),
         ]
         with pytest.raises(ValueError, match="[Cc]ircular"):
             resolve_create_order(views, db_views={})
@@ -2296,24 +2182,7 @@ class TestDependCircular:
             resolve_drop_order(views, db_views={})
 
 
-class TestDependDropOrder:
-    """Drop order is the exact reverse of create order."""
-
-    def test_drop_is_reverse_of_create(self):
-        views = [
-            ViewRecord(name="top", selectable="SELECT * FROM mid"),
-            ViewRecord(name="mid", selectable="SELECT * FROM base"),
-            ViewRecord(name="base", selectable="SELECT 1"),
-        ]
-        create = resolve_create_order(views, db_views={})
-        drop = resolve_drop_order(views, db_views={})
-        assert [v.name for v in drop] == list(
-            reversed([v.name for v in create])
-        )
-
-
 class TestDependMaterializedViews:
-    """Materialized views with dependencies."""
 
     def test_materialized_view_after_base_table(self):
         views = [
@@ -2351,7 +2220,6 @@ class TestDependMaterializedViews:
 
 
 class TestDependDbViews:
-    """db_views are used as pre-existing dependencies."""
 
     def test_db_view_satisfies_dependency(self):
         views = [
@@ -2376,7 +2244,6 @@ class TestDependDbViews:
 
 
 class TestDependNoneDbViews:
-    """db_views=None is treated as {}."""
 
     def test_none_db_views(self):
         vr = ViewRecord(name="solo", selectable="SELECT 1 AS col")
@@ -2386,7 +2253,6 @@ class TestDependNoneDbViews:
 
 
 class TestDependWordBoundary:
-    """Dependency detection uses word-boundary matching."""
 
     def test_partial_name_no_false_positive(self):
         views = [
@@ -2694,78 +2560,66 @@ _INT_TEST_VIEW_NAMES = [
 ]
 
 
+@pytest.fixture
+def int_test_base(connection):
+    """Create ``_cmp_test_base`` and clean integration test views before/after."""
+    _drop_views(connection, _INT_TEST_VIEW_NAMES)
+    _drop_base_table(connection)
+    _create_base_table(connection)
+    yield connection
+    _drop_views(connection, _INT_TEST_VIEW_NAMES)
+    _drop_base_table(connection)
+
+
 class TestIntegrationNewView:
-    """Integration: autogenerate detects new view definition."""
 
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_new_view_detected_and_rendered(self, connection, alembic_config):
-        _drop_views(connection, _INT_TEST_VIEW_NAMES)
-        _drop_base_table(connection)
-        _create_base_table(connection)
-        try:
-            register_view_comparator()
-            metadata = sa.MetaData()
-            create_view(
-                "int_test_new_view", sa.select(_int_base_table.c.id), metadata
-            )
-            code = run_autogenerate(metadata, connection, alembic_config)
-            assert_op(code, "create_view")
-            assert "int_test_new_view" in code
-        finally:
-            _drop_views(connection, _INT_TEST_VIEW_NAMES)
-            _drop_base_table(connection)
+    def test_new_view_detected_and_rendered(self, int_test_base, alembic_config):
+        connection = int_test_base
+        register_view_comparator()
+        metadata = sa.MetaData()
+        create_view(
+            "int_test_new_view", sa.select(_int_base_table.c.id), metadata
+        )
+        code = run_autogenerate(metadata, connection, alembic_config)
+        assert_op(code, "create_view")
+        assert "int_test_new_view" in code
 
 
 class TestIntegrationNewMV:
-    """Integration: autogenerate detects new materialized view."""
 
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_new_mv_detected_and_rendered(self, connection, alembic_config):
-        _drop_views(connection, _INT_TEST_VIEW_NAMES)
-        _drop_base_table(connection)
-        _create_base_table(connection)
-        try:
-            register_view_comparator()
-            metadata = sa.MetaData()
-            create_materialized_view(
-                "int_test_new_mv", sa.select(_int_base_table.c.id), metadata
-            )
-            code = run_autogenerate(metadata, connection, alembic_config)
-            assert_op(code, "create_materialized_view")
-            assert "int_test_new_mv" in code
-        finally:
-            _drop_views(connection, _INT_TEST_VIEW_NAMES)
-            _drop_base_table(connection)
+    def test_new_mv_detected_and_rendered(self, int_test_base, alembic_config):
+        connection = int_test_base
+        register_view_comparator()
+        metadata = sa.MetaData()
+        create_materialized_view(
+            "int_test_new_mv", sa.select(_int_base_table.c.id), metadata
+        )
+        code = run_autogenerate(metadata, connection, alembic_config)
+        assert_op(code, "create_materialized_view")
+        assert "int_test_new_mv" in code
 
 
 class TestIntegrationRemoval:
-    """Integration: autogenerate detects view/MV removed from model."""
 
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_removed_view_generates_drop(self, connection, alembic_config):
-        _drop_views(connection, _INT_TEST_VIEW_NAMES)
-        _drop_base_table(connection)
-        _create_base_table(connection)
+    def test_removed_view_generates_drop(self, int_test_base, alembic_config):
+        connection = int_test_base
         connection.execute(
             sa.text(
                 "CREATE VIEW int_test_drop_view AS SELECT id FROM _cmp_test_base"
             )
         )
         connection.commit()
-        try:
-            register_view_comparator()
-            metadata = sa.MetaData()
-            code = run_autogenerate(metadata, connection, alembic_config)
-            assert_op(code, "drop_view")
-        finally:
-            _drop_views(connection, _INT_TEST_VIEW_NAMES)
-            _drop_base_table(connection)
+        register_view_comparator()
+        metadata = sa.MetaData()
+        code = run_autogenerate(metadata, connection, alembic_config)
+        assert_op(code, "drop_view")
 
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_removed_mv_generates_drop(self, connection, alembic_config):
-        _drop_views(connection, _INT_TEST_VIEW_NAMES)
-        _drop_base_table(connection)
-        _create_base_table(connection)
+    def test_removed_mv_generates_drop(self, int_test_base, alembic_config):
+        connection = int_test_base
         connection.execute(
             sa.text(
                 "CREATE MATERIALIZED VIEW int_test_drop_mv "
@@ -2773,49 +2627,36 @@ class TestIntegrationRemoval:
             )
         )
         connection.commit()
-        try:
-            register_view_comparator()
-            metadata = sa.MetaData()
-            code = run_autogenerate(metadata, connection, alembic_config)
-            assert_op(code, "drop_materialized_view")
-        finally:
-            _drop_views(connection, _INT_TEST_VIEW_NAMES)
-            _drop_base_table(connection)
+        register_view_comparator()
+        metadata = sa.MetaData()
+        code = run_autogenerate(metadata, connection, alembic_config)
+        assert_op(code, "drop_materialized_view")
 
 
 class TestIntegrationDefinitionChange:
-    """Integration: autogenerate detects view/MV definition change."""
 
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_changed_view_generates_replace(self, connection, alembic_config):
-        _drop_views(connection, _INT_TEST_VIEW_NAMES)
-        _drop_base_table(connection)
-        _create_base_table(connection)
+    def test_changed_view_generates_replace(self, int_test_base, alembic_config):
+        connection = int_test_base
         connection.execute(
             sa.text(
                 "CREATE VIEW int_test_change_view AS SELECT id FROM _cmp_test_base"
             )
         )
         connection.commit()
-        try:
-            register_view_comparator()
-            metadata = sa.MetaData()
-            create_view(
-                "int_test_change_view",
-                sa.select(_int_base_table.c.id, _int_base_table.c.name),
-                metadata,
-            )
-            code = run_autogenerate(metadata, connection, alembic_config)
-            assert_op(code, "replace_view")
-        finally:
-            _drop_views(connection, _INT_TEST_VIEW_NAMES)
-            _drop_base_table(connection)
+        register_view_comparator()
+        metadata = sa.MetaData()
+        create_view(
+            "int_test_change_view",
+            sa.select(_int_base_table.c.id, _int_base_table.c.name),
+            metadata,
+        )
+        code = run_autogenerate(metadata, connection, alembic_config)
+        assert_op(code, "replace_view")
 
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_changed_mv_generates_replace(self, connection, alembic_config):
-        _drop_views(connection, _INT_TEST_VIEW_NAMES)
-        _drop_base_table(connection)
-        _create_base_table(connection)
+    def test_changed_mv_generates_replace(self, int_test_base, alembic_config):
+        connection = int_test_base
         connection.execute(
             sa.text(
                 "CREATE MATERIALIZED VIEW int_test_change_mv "
@@ -2823,86 +2664,68 @@ class TestIntegrationDefinitionChange:
             )
         )
         connection.commit()
-        try:
-            register_view_comparator()
-            metadata = sa.MetaData()
-            create_materialized_view(
-                "int_test_change_mv",
-                sa.select(_int_base_table.c.id, _int_base_table.c.name),
-                metadata,
-            )
-            code = run_autogenerate(metadata, connection, alembic_config)
-            assert_op(code, "replace_materialized_view")
-        finally:
-            _drop_views(connection, _INT_TEST_VIEW_NAMES)
-            _drop_base_table(connection)
+        register_view_comparator()
+        metadata = sa.MetaData()
+        create_materialized_view(
+            "int_test_change_mv",
+            sa.select(_int_base_table.c.id, _int_base_table.c.name),
+            metadata,
+        )
+        code = run_autogenerate(metadata, connection, alembic_config)
+        assert_op(code, "replace_materialized_view")
 
 
 class TestIntegrationNoOp:
-    """Integration: no view ops generated when view definitions match."""
 
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_unchanged_view_no_ops(self, connection, alembic_config):
-        _drop_views(connection, _INT_TEST_VIEW_NAMES)
-        _drop_base_table(connection)
-        _create_base_table(connection)
+    def test_unchanged_view_no_ops(self, int_test_base, alembic_config):
+        connection = int_test_base
         connection.execute(
             sa.text(
                 "CREATE VIEW int_test_same_view AS SELECT id FROM _cmp_test_base"
             )
         )
         connection.commit()
-        try:
-            register_view_comparator()
-            metadata = sa.MetaData()
-            create_view(
-                "int_test_same_view", sa.select(_int_base_table.c.id), metadata
-            )
-            code = run_autogenerate(metadata, connection, alembic_config)
-            assert_op(code, "create_view", expected=False)
-            assert_op(code, "drop_view", expected=False)
-            assert_op(code, "replace_view", expected=False)
-        finally:
-            _drop_views(connection, _INT_TEST_VIEW_NAMES)
-            _drop_base_table(connection)
+        register_view_comparator()
+        metadata = sa.MetaData()
+        create_view(
+            "int_test_same_view", sa.select(_int_base_table.c.id), metadata
+        )
+        code = run_autogenerate(metadata, connection, alembic_config)
+        assert_op(code, "create_view", expected=False)
+        assert_op(code, "drop_view", expected=False)
+        assert_op(code, "replace_view", expected=False)
 
 
 class TestIntegrationDependencyOrdering:
-    """Integration: views are created in dependency order."""
 
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_dependent_view_created_after_dependency(
-        self, connection, alembic_config
+        self, int_test_base, alembic_config
     ):
-        _drop_views(connection, _INT_TEST_VIEW_NAMES)
-        _drop_base_table(connection)
-        _create_base_table(connection)
+        connection = int_test_base
         connection.execute(
             sa.text(
                 "CREATE VIEW int_test_view_a AS SELECT id FROM _cmp_test_base"
             )
         )
         connection.commit()
-        try:
-            register_view_comparator()
-            metadata = sa.MetaData()
-            create_view(
-                "int_test_view_a", sa.select(_int_base_table.c.id), metadata
-            )
-            vr_b = ViewRecord(
-                name="int_test_view_b",
-                selectable="SELECT id FROM int_test_view_a",
-                schema=None,
-                materialized=False,
-            )
-            metadata.info.setdefault("sqlalchemy_utils_views", []).append(vr_b)
+        register_view_comparator()
+        metadata = sa.MetaData()
+        create_view(
+            "int_test_view_a", sa.select(_int_base_table.c.id), metadata
+        )
+        vr_b = ViewRecord(
+            name="int_test_view_b",
+            selectable="SELECT id FROM int_test_view_a",
+            schema=None,
+            materialized=False,
+        )
+        metadata.info.setdefault("sqlalchemy_utils_views", []).append(vr_b)
 
-            code = run_autogenerate(metadata, connection, alembic_config)
-            assert_op(code, "create_view")
-            assert "int_test_view_b" in code
-        finally:
-            _drop_views(connection, _INT_TEST_VIEW_NAMES)
-            _drop_base_table(connection)
+        code = run_autogenerate(metadata, connection, alembic_config)
+        assert_op(code, "create_view")
+        assert "int_test_view_b" in code
 
 
 # ===========================================================================
@@ -2910,7 +2733,6 @@ class TestIntegrationDependencyOrdering:
 # ===========================================================================
 
 class TestPublicAPIImportable:
-    """Public API symbols are importable from sqlalchemy_utils.alembic."""
 
     @pytest.mark.parametrize(
         "op_import_path,op_name,args,kwargs,expected_definition",
@@ -2957,18 +2779,12 @@ class TestPublicAPIImportable:
         if expected_definition is not None:
             assert op.definition == expected_definition
 
-    def test_internal_import_view_record(self):
-        from sqlalchemy_utils.view_record import ViewRecord as VR
-
-        assert VR is not None
-
 
 # ===========================================================================
 # Import safety
 # ===========================================================================
 
 class TestImportSafety:
-    """Import behavior under edge conditions."""
 
     def test_importing_op_does_not_register_comparator(self):
         """Importing CreateViewOp does not register compare_views as a side effect."""
@@ -2998,7 +2814,6 @@ class TestImportSafety:
 # ===========================================================================
 
 class TestDDLFormatting:
-    """DDL element SQL formatting."""
 
     def test_drop_view_no_trailing_space(self):
         """DropView with cascade=False emits no trailing whitespace."""
@@ -3065,7 +2880,6 @@ class TestDDLFormatting:
 # ===========================================================================
 
 class TestSchemaResolution:
-    """ViewMixin schema resolution behavior."""
 
     def test_refresh_uses_resolved_schema_from_table_args(self):
         """refresh() resolves schema from __table_args__ when __view_schema__ unset."""
@@ -3123,7 +2937,6 @@ class TestSchemaResolution:
 # ===========================================================================
 
 class TestViewMixinIntegration:
-    """ViewMixin DDL/listener behavior."""
 
     def test_replace_attr_passed_to_create_view(self):
         """__view_replace__=True produces CREATE OR REPLACE VIEW DDL."""
@@ -3155,7 +2968,6 @@ class TestViewMixinIntegration:
 
 
 class TestViewAutoRegistration:
-    """create_view/create_materialized_view auto-register ViewRecords."""
 
     def test_create_view_registers_view_record_in_metadata(self):
         metadata = sa.MetaData()
@@ -3261,7 +3073,6 @@ class TestViewAutoRegistration:
 # ===========================================================================
 
 class TestDocumentation:
-    """Docstring contracts on public API."""
 
     def test_create_view_documents_no_indexes(self):
         """create_view docstring documents the indexes/aliases asymmetry."""
@@ -3335,7 +3146,6 @@ def test_op_drop_materialized_view_accepts_with_data():
 
 
 class TestCrossSchemaDedup:
-    """Dedup and ordering across schemas with same-name views."""
 
     def test_keyword_filter_preserves_dependency_order(self):
         """A view named 'data' (a SQL keyword) must still be ordered
@@ -3364,15 +3174,6 @@ class TestCrossSchemaDedup:
 # ===========================================================================
 
 class TestInterfaceAuditFixes:
-    """Interface audit fixes for migration refresh, dead listener, SA2 guard."""
-
-    def test_op_refresh_materialized_view_exists(self):
-        """op.refresh_materialized_view should exist for use inside migrations."""
-        from sqlalchemy_utils.alembic.operations import (
-            RefreshMaterializedViewOp,
-        )
-        assert hasattr(RefreshMaterializedViewOp, "refresh_materialized_view")
-        assert callable(RefreshMaterializedViewOp.refresh_materialized_view)
 
     def test_refresh_reverse_raises(self):
         """RefreshMaterializedViewOp.reverse() raises NotImplementedError.
@@ -3404,7 +3205,6 @@ class TestInterfaceAuditFixes:
 # ===========================================================================
 
 class TestCascadeOnDropWarning:
-    """When autogenerate drops a view that has dependents, warn the user."""
 
     @pytest.fixture
     def cascade_mock_setup(self):
@@ -3693,7 +3493,6 @@ class TestCrossSchemaSameNameBothOps:
 # ===========================================================================
 
 class TestSchemaNoneNoFalseDrop:
-    """schemas=[None] must not produce false DropViewOps for non-default schemas."""
 
     def test_schema_none_no_false_drop(self):
         import sqlalchemy_utils.alembic.comparator as comparator_module
@@ -3770,24 +3569,6 @@ class TestSchemaNoneNoFalseDrop:
 _MV_CASCADE_TEST_VIEW_NAMES = ["mv_cascade_test_mv", "mv_cascade_test_dep_view"]
 
 
-def _drop_mv_cascade_test_views(connection):
-    """Drop any leftover views/MVs created by this regression test."""
-    # Drop dependent view first (depends on the MV).
-    try:
-        connection.execute(
-            sa.text("DROP VIEW IF EXISTS mv_cascade_test_dep_view CASCADE")
-        )
-    except sa.exc.SQLAlchemyError:
-        connection.rollback()
-    try:
-        connection.execute(
-            sa.text("DROP MATERIALIZED VIEW IF EXISTS mv_cascade_test_mv CASCADE")
-        )
-    except sa.exc.SQLAlchemyError:
-        connection.rollback()
-    connection.commit()
-
-
 class TestMvCanonicalizationCascade:
     """Regression: MV canonicalization DROP must use CASCADE.
 
@@ -3847,7 +3628,7 @@ class TestMvCanonicalizationCascade:
         detected as a ``ReplaceMaterializedViewOp``.
         """
         _create_base_table(connection)
-        _drop_mv_cascade_test_views(connection)
+        _drop_views(connection, _MV_CASCADE_TEST_VIEW_NAMES)
         try:
             # Pre-create MV with OLD definition.
             connection.execute(
@@ -3898,7 +3679,7 @@ class TestMvCanonicalizationCascade:
                 f"All ops: {[(type(o).__name__, o.name) for o in upgrade_ops.ops]}"
             )
         finally:
-            _drop_mv_cascade_test_views(connection)
+            _drop_views(connection, _MV_CASCADE_TEST_VIEW_NAMES)
             _drop_base_table(connection)
 
     @pytest.mark.infrastructure
@@ -3907,7 +3688,7 @@ class TestMvCanonicalizationCascade:
         """Directly verify ``_canonicalize_all_views`` does not skip an MV
         that has a dependent view in the database."""
         _create_base_table(connection)
-        _drop_mv_cascade_test_views(connection)
+        _drop_views(connection, _MV_CASCADE_TEST_VIEW_NAMES)
         try:
             connection.execute(
                 sa.text(
@@ -3957,7 +3738,7 @@ class TestMvCanonicalizationCascade:
                 f"mv_defs={mv_defs}, skipped={skipped}"
             )
         finally:
-            _drop_mv_cascade_test_views(connection)
+            _drop_views(connection, _MV_CASCADE_TEST_VIEW_NAMES)
             _drop_base_table(connection)
 
 

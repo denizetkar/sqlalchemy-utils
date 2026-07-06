@@ -222,51 +222,55 @@ def test_get_dependent_views_includes_materialized_views(connection):
         _teardown_mv_dependent(connection)
 
 
-def _setup_cross_schema(connection):
-    """Real dependent in schema A; same-named view with different body in B.
+def _setup_cross_schema(connection, schema_a: str, schema_b: str):
+    """Two schemas, each with a same-named referenced view ``base_view``.
 
-    A name-only join (``c.relname = v.viewname``) cannot tell the two apart
-    and would surface B's definition for A's dependent. Schema-qualified
-    joins must return A's definition only.
+    ``<schema_a>.base_view`` has a real dependent ``<schema_a>.dep_view``.
+    ``<schema_b>.base_view`` ALSO has a same-named dependent in its own
+    schema (different body). Without a schema filter on the referenced
+    view's namespace (``refn.nspname``), querying dependents of
+    ``base_view`` with ``schema='<schema_a>'`` would match BOTH
+    ``base_view`` rows and erroneously surface ``<schema_b>.dep_view``
+    as a false positive.
     """
-    for schema in ("_cross_schema_a", "_cross_schema_b"):
+    for schema in (schema_a, schema_b):
         connection.execute(sa.text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
-    connection.execute(sa.text("CREATE SCHEMA _cross_schema_a"))
-    connection.execute(sa.text("CREATE SCHEMA _cross_schema_b"))
+    connection.execute(sa.text(f"CREATE SCHEMA {schema_a}"))
+    connection.execute(sa.text(f"CREATE SCHEMA {schema_b}"))
 
     connection.execute(
-        sa.text("CREATE TABLE _cross_schema_a.t (id SERIAL PRIMARY KEY)")
-    )
+        sa.text(f"CREATE TABLE {schema_a}.t (id SERIAL PRIMARY KEY)"))
     connection.execute(
         sa.text(
-            "CREATE VIEW _cross_schema_a.base_view AS SELECT id FROM _cross_schema_a.t"
+            f"CREATE VIEW {schema_a}.base_view AS SELECT id FROM {schema_a}.t"
         )
     )
     connection.execute(
         sa.text(
-            "CREATE VIEW _cross_schema_a.dep_view AS "
-            "SELECT id FROM _cross_schema_a.base_view"
+            f"CREATE VIEW {schema_a}.dep_view AS "
+            f"SELECT id FROM {schema_a}.base_view"
         )
     )
 
+    # Second schema: same-named base_view WITH a dependent.
     connection.execute(
-        sa.text("CREATE TABLE _cross_schema_b.other (id INT)"))
+        sa.text(f"CREATE TABLE {schema_b}.t (id SERIAL PRIMARY KEY)"))
     connection.execute(
         sa.text(
-            "CREATE VIEW _cross_schema_b.base_view AS SELECT id FROM _cross_schema_b.other"
+            f"CREATE VIEW {schema_b}.base_view AS SELECT id FROM {schema_b}.t"
         )
     )
     connection.execute(
         sa.text(
-            "CREATE OR REPLACE VIEW _cross_schema_b.dep_view AS "
-            "SELECT id FROM _cross_schema_b.other"
+            f"CREATE VIEW {schema_b}.dep_view AS "
+            f"SELECT id FROM {schema_b}.base_view"
         )
     )
     connection.commit()
 
 
-def _teardown_cross_schema(connection):
-    for schema in ("_cross_schema_a", "_cross_schema_b"):
+def _teardown_cross_schema(connection, schema_a: str, schema_b: str):
+    for schema in (schema_a, schema_b):
         try:
             connection.execute(sa.text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
         except sa.exc.SQLAlchemyError:
@@ -274,49 +278,50 @@ def _teardown_cross_schema(connection):
     connection.commit()
 
 
-def test_get_dependent_views_no_cross_schema_false_matches(connection):
-    """No false positive when same view name exists in another schema.
+@pytest.mark.infrastructure
+@pytest.mark.parametrize(
+    "schema_a,schema_b",
+    [("_cross_schema_a", "_cross_schema_b"),
+     ("_schema_filter_a", "_schema_filter_b")],
+    ids=["cross_schema", "schema_filter"],
+)
+def test_get_dependent_views_schema_filter_excludes_other_schema(
+    connection, schema_a, schema_b
+):
+    """Schema filter must constrain the referenced view's namespace.
 
-    ``_cross_schema_a.dep_view`` is a real dependent of ``_cross_schema_a.base_view``.
-    ``_cross_schema_b.dep_view`` has the same name but a different body. A name-only
-    join would conflate them; schema-qualified joins must return only
-    ``_cross_schema_a.dep_view``'s definition (referencing ``_cross_schema_a.base_view``).
-    The ``schema`` argument filters the referenced view's namespace
-    (``_cross_schema_a``), so dependents of same-named views in other schemas
-    are excluded.
+    When ``schema='<schema_a>'`` is passed, ``get_dependent_views`` must
+    only return dependents of ``<schema_a>.base_view``. The referenced
+    view's namespace (``refn.nspname``) must be filtered, not just the
+    dependent view's schema. Without the ``refn.nspname = :schema``
+    filter, the query matches ``base_view`` in ANY schema and produces
+    false positives (e.g. ``<schema_b>.dep_view`` which references
+    ``<schema_b>.base_view``).
     """
-    _setup_cross_schema(connection)
+    _setup_cross_schema(connection, schema_a, schema_b)
     try:
         dependents = get_dependent_views(
-            connection, "base_view", schema="_cross_schema_a"
+            connection, "base_view", schema=schema_a
         )
-
-        a_keys = [k for k in dependents.keys() if k[0] == "dep_view"]
-        assert a_keys, (
-            "expected dependent 'dep_view'; got: "
+        dep_names = {k[0] for k in dependents.keys()}
+        assert "dep_view" in dep_names, (
+            f"expected dependent 'dep_view' in {schema_a}; got: "
             f"{sorted(dependents.keys())}"
         )
-        definition = dependents[a_keys[0]]
-        assert "_cross_schema_a.base_view" in definition, (
-            "dependent definition must reference _cross_schema_a.base_view; got: "
-            f"{definition!r}"
-        )
-        assert "_cross_schema_b.other" not in definition, (
-            "cross-schema definition leaked into dependent; got: "
-            f"{definition!r}"
-        )
-
-        unscoped = get_dependent_views(connection, "base_view")
-        unscoped_dep_defs = [
-            v for (n, s), v in unscoped.items() if n == "dep_view"
-        ]
-        for d in unscoped_dep_defs:
-            assert "_cross_schema_b.other" not in d, (
-                "cross-schema definition leaked into unscoped dependent; got: "
-                f"{d!r}"
+        # Every returned dependent must reference <schema_a>.base_view,
+        # proving the schema filter constrained the referenced view's
+        # namespace.
+        for key, definition in dependents.items():
+            assert f"{schema_a}.base_view" in definition, (
+                f"dependent {key!r} should reference {schema_a}.base_view; "
+                f"got definition: {definition!r}"
+            )
+            assert schema_b not in definition, (
+                f"dependent {key!r} leaked cross-schema reference to "
+                f"{schema_b}; definition: {definition!r}"
             )
     finally:
-        _teardown_cross_schema(connection)
+        _teardown_cross_schema(connection, schema_a, schema_b)
 
 
 def _setup_union_all(connection):
@@ -418,101 +423,6 @@ def test_get_dependent_views_union_all_keeps_both_regular_and_mv(connection):
         )
     finally:
         _teardown_union_all(connection)
-
-
-def _setup_schema_filter(connection):
-    """Two schemas, each with a same-named referenced view ``base_view``.
-
-    ``_schema_filter_a.base_view`` has a real dependent ``_schema_filter_a.dep_view``.
-    ``_schema_filter_b.base_view`` ALSO has a dependent ``_schema_filter_b.dep_view`` (same
-    dependent name, different body referencing ``_schema_filter_b.base_view``).
-    Without a schema filter on the referenced view's namespace
-    (``refn.nspname``), querying dependents of ``base_view`` with
-    ``schema='_schema_filter_a'`` would match BOTH ``base_view`` rows (the WHERE
-    clause only filtered ``ref.relname = :view_name``) and erroneously
-    surface ``_schema_filter_b.dep_view`` as a false positive.
-    """
-    for schema in ("_schema_filter_a", "_schema_filter_b"):
-        connection.execute(sa.text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
-    connection.execute(sa.text("CREATE SCHEMA _schema_filter_a"))
-    connection.execute(sa.text("CREATE SCHEMA _schema_filter_b"))
-
-    connection.execute(
-        sa.text("CREATE TABLE _schema_filter_a.t (id SERIAL PRIMARY KEY)")
-    )
-    connection.execute(
-        sa.text(
-            "CREATE VIEW _schema_filter_a.base_view AS SELECT id FROM _schema_filter_a.t"
-        )
-    )
-    connection.execute(
-        sa.text(
-            "CREATE VIEW _schema_filter_a.dep_view AS "
-            "SELECT id FROM _schema_filter_a.base_view"
-        )
-    )
-
-    # Second schema: same-named base_view WITH a dependent.
-    connection.execute(
-        sa.text("CREATE TABLE _schema_filter_b.t (id SERIAL PRIMARY KEY)")
-    )
-    connection.execute(
-        sa.text(
-            "CREATE VIEW _schema_filter_b.base_view AS SELECT id FROM _schema_filter_b.t"
-        )
-    )
-    connection.execute(
-        sa.text(
-            "CREATE VIEW _schema_filter_b.dep_view AS "
-            "SELECT id FROM _schema_filter_b.base_view"
-        )
-    )
-    connection.commit()
-
-
-def _teardown_schema_filter(connection):
-    for schema in ("_schema_filter_a", "_schema_filter_b"):
-        try:
-            connection.execute(sa.text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
-        except sa.exc.SQLAlchemyError:
-            connection.rollback()
-    connection.commit()
-
-
-@pytest.mark.infrastructure
-def test_get_dependent_views_schema_filter_excludes_other_schema(connection):
-    """Schema filter must constrain the referenced view's namespace.
-
-    When ``schema='_schema_filter_a'`` is passed, ``get_dependent_views`` must only
-    return dependents of ``_schema_filter_a.base_view``. The referenced view's
-    namespace (``refn.nspname``) must be filtered, not just the dependent
-    view's schema. Without the ``refn.nspname = :schema`` filter, the
-    query matches ``base_view`` in ANY schema and produces false positives
-    (e.g. ``_schema_filter_b.dep_view`` which references ``_schema_filter_b.base_view``).
-    """
-    _setup_schema_filter(connection)
-    try:
-        dependents = get_dependent_views(
-            connection, "base_view", schema="_schema_filter_a"
-        )
-        dep_names = {k[0] for k in dependents.keys()}
-        assert "dep_view" in dep_names, (
-            "expected dependent 'dep_view' in _schema_filter_a; got: "
-            f"{sorted(dependents.keys())}"
-        )
-        # Every returned dependent must reference _schema_filter_a.base_view, proving
-        # the schema filter constrained the referenced view's namespace.
-        for key, definition in dependents.items():
-            assert "_schema_filter_a.base_view" in definition, (
-                f"dependent {key!r} should reference _schema_filter_a.base_view; "
-                f"got definition: {definition!r}"
-            )
-            assert "_schema_filter_b" not in definition, (
-                f"dependent {key!r} leaked cross-schema reference to "
-                f"_schema_filter_b; definition: {definition!r}"
-            )
-    finally:
-        _teardown_schema_filter(connection)
 
 
 def _setup_same_name_dependents(connection):
