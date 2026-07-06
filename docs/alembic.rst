@@ -14,16 +14,20 @@ Requires ``pip install sqlalchemy-utils[alembic]``.
     from sqlalchemy_utils import register_view_comparator
     register_view_comparator()
 
+    # Point Alembic at the same MetaData your views were registered on.
+    # For ORM projects, this is your declarative Base's MetaData:
+    target_metadata = Base.metadata
+
 Operations reference
 ---------------------
 
-.. autofunction:: sqlalchemy_utils.alembic.operations.CreateViewOp.create_view
-.. autofunction:: sqlalchemy_utils.alembic.operations.DropViewOp.drop_view
-.. autofunction:: sqlalchemy_utils.alembic.operations.ReplaceViewOp.replace_view
-.. autofunction:: sqlalchemy_utils.alembic.operations.CreateMaterializedViewOp.create_materialized_view
-.. autofunction:: sqlalchemy_utils.alembic.operations.DropMaterializedViewOp.drop_materialized_view
-.. autofunction:: sqlalchemy_utils.alembic.operations.ReplaceMaterializedViewOp.replace_materialized_view
-.. autofunction:: sqlalchemy_utils.alembic.operations.RefreshMaterializedViewOp.refresh_materialized_view
+.. automethod:: sqlalchemy_utils.alembic.operations.CreateViewOp.create_view
+.. automethod:: sqlalchemy_utils.alembic.operations.DropViewOp.drop_view
+.. automethod:: sqlalchemy_utils.alembic.operations.ReplaceViewOp.replace_view
+.. automethod:: sqlalchemy_utils.alembic.operations.CreateMaterializedViewOp.create_materialized_view
+.. automethod:: sqlalchemy_utils.alembic.operations.DropMaterializedViewOp.drop_materialized_view
+.. automethod:: sqlalchemy_utils.alembic.operations.ReplaceMaterializedViewOp.replace_materialized_view
+.. automethod:: sqlalchemy_utils.alembic.operations.RefreshMaterializedViewOp.refresh_materialized_view
 
 Autogenerate
 ------------
