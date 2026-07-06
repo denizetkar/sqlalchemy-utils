@@ -589,7 +589,7 @@ def _drop_view_impl(operations: Operations, op: DropViewOp) -> None:
 
 
 @Operations.implementation_for(ReplaceViewOp)
-def _replace_view_impl(operations: Operations, op: ReplaceViewOp) -> None:
+def _replace_view_impl(operations: Operations, op: CreateViewOp | ReplaceViewOp) -> None:
     """Execute ``CREATE OR REPLACE VIEW`` via the migration connection."""
     dialect = operations.get_bind().dialect
     qualified = _quote_qualified_name(dialect, op.name, op.schema)

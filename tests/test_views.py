@@ -318,3 +318,5 @@ class TestPositionalCompat:
         session = mock.MagicMock()
         with pytest.raises(TypeError):
             refresh_materialized_view(session, "mv", False, "myschema")  # noqa
+        with pytest.raises(TypeError):
+            refresh_materialized_view(session, "mv", False, schema="myschema")  # noqa: positional concurrently

@@ -101,10 +101,11 @@ from .view import (  # noqa
     refresh_materialized_view,
 )
 from .view_mixin import ViewMixin  # noqa
+from .view_record import ViewRecord  # noqa
 try:
     from .alembic import register_view_comparator  # noqa
 except ImportError:
-    def register_view_comparator(*args, **kwargs):
+    def register_view_comparator() -> None:
         raise ImportError(
             "register_view_comparator requires alembic; install with "
             "'pip install sqlalchemy-utils[alembic]'"

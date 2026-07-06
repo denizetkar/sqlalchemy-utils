@@ -422,7 +422,7 @@ def _order_ops(ops, records, db, resolver_fn, action_label, *, dialect=None):
 def compare_views(
     autogen_context: AutogenContext,
     upgrade_ops: UpgradeOps,
-    schemas: list[str] | None = None,
+    schemas: list[str | None] | None = None,
 ) -> None:
     """Compare model-defined views against database state.
 

@@ -84,8 +84,14 @@ def compile_drop_materialized_view(element, compiler, **kw):
 
 
 def create_table_from_selectable(
-    name, selectable, indexes=None, metadata=None, aliases=None, schema=None, **kwargs
-):
+    name: str,
+    selectable: str | sa.sql.ClauseElement,
+    indexes: list[sa.Index] | None = None,
+    metadata: sa.MetaData | None = None,
+    aliases: dict[str, str] | None = None,
+    schema: str | None = None,
+    **kwargs,
+) -> sa.Table:
     """Create a :class:`~sqlalchemy.Table` from a selectable.
 
     Builds a table whose columns mirror the selectable's output columns.
@@ -385,8 +391,8 @@ def compile_refresh_materialized_view(element, compiler, **kw):
 def refresh_materialized_view(
     session: sa.orm.Session,
     name: str,
-    concurrently: bool = False,
     *,
+    concurrently: bool = False,
     schema: str | None = None,
 ) -> None:
     """Refreshes an already existing materialized view
