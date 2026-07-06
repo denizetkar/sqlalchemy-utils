@@ -34,6 +34,8 @@ from sqlalchemy_utils import (
 from sqlalchemy_utils.alembic.comparator import (
     _build_create_sql,
     _canonicalize_all_views,
+    _OUTER_SAVEPOINT,
+    _safe_resolve,
     _schema_matches,
     compare_views,
     register_view_comparator,
@@ -957,6 +959,28 @@ class TestRendererDropMaterializedView:
         rendered = render_drop_materialized_view(_make_autogen_context(), op)
         assert "definition=" in rendered
 
+    def test_renders_with_data_true(self):
+        """``with_data=True`` must be preserved in the rendered downgrade.
+
+        A manual ``op.drop_materialized_view(..., with_data=True)`` renders
+        a downgrade that re-creates the materialized view. Without
+        ``_with_data_part`` the rendered downgrade defaults to
+        ``with_data=False``, silently changing the original ``WITH DATA``
+        clause to ``WITH NO DATA``.
+        """
+        op = DropMaterializedViewOp("mv", definition="SELECT 1", with_data=True)
+        rendered = render_drop_materialized_view(_make_autogen_context(), op)
+        assert "with_data=True" in rendered, (
+            f"with_data=True must be rendered for drop_materialized_view so "
+            f"the downgrade re-creates the MV WITH DATA; got: {rendered!r}"
+        )
+
+    def test_omits_with_data_when_default(self):
+        """``with_data`` is omitted when False (the default)."""
+        op = DropMaterializedViewOp("mv", definition="SELECT 1", with_data=False)
+        rendered = render_drop_materialized_view(_make_autogen_context(), op)
+        assert "with_data=" not in rendered
+
 
 class TestRendererReplaceMaterializedView:
     """render_replace_materialized_view behavior."""
@@ -1792,6 +1816,197 @@ class TestAbortedTransactionBreaksEarly:
         )
 
 
+class TestPoisonedOuterSavepointRollback:
+    """A poisoned outer savepoint makes the ``finally`` ROLLBACK TO fail.
+
+    If the outer savepoint becomes poisoned (a DB-level abort that is
+    not contained by the inner savepoint), the ``ROLLBACK TO SAVEPOINT``
+    in the ``finally`` block fails; the transaction stays aborted and
+    crashes subsequent schema processing. After the ``finally`` block
+    the connection must be probed with ``SELECT 1``; if the probe fails
+    the function must return early (logging a warning) so the caller
+    skips subsequent schema processing instead of crashing.
+    """
+
+    def test_poisoned_outer_savepoint_returns_empty_and_warns(self, caplog):
+        """When the outer savepoint is poisoned, ``_canonicalize_all_views``
+        must NOT crash. The catalog readback (``get_database_views``) fails
+        because the transaction is aborted; the function catches it, marks
+        all views as ``skipped`` (so drop detection does not emit false
+        drops), and returns empty results. The ``finally`` ROLLBACK TO also
+        fails (caught), and a post-finally ``SELECT 1`` probe logs a warning
+        so the caller knows subsequent schema processing may be affected."""
+        view_records = [
+            ViewRecord(
+                name="poison_a",
+                selectable="SELECT 1 AS col",
+                schema=None,
+                materialized=False,
+            ),
+        ]
+
+        call_log: list[str] = []
+
+        class _PoisonedTransaction(sa.exc.SQLAlchemyError):
+            def __init__(self):
+                super().__init__(
+                    "current transaction is aborted, "
+                    "commands ignored until end of transaction block"
+                )
+
+        def _execute(stmt, *args, **kwargs):
+            text = getattr(stmt, "text", str(stmt))
+            call_log.append(text)
+            stripped = text.strip()
+
+            if stripped.startswith("CREATE OR REPLACE VIEW poison_a"):
+                return MagicMock()
+
+            if stripped == f"ROLLBACK TO SAVEPOINT {_OUTER_SAVEPOINT}":
+                raise _PoisonedTransaction()
+
+            if stripped == "SELECT 1":
+                raise _PoisonedTransaction()
+
+            return MagicMock()
+
+        connection = MagicMock()
+        connection.dialect = sa.dialects.postgresql.dialect()
+        connection.execute.side_effect = _execute
+
+        with caplog.at_level(
+            logging.WARNING, logger="sqlalchemy_utils.alembic.comparator"
+        ), patch(
+            "sqlalchemy_utils.alembic.comparator.get_database_views",
+            side_effect=_PoisonedTransaction(),
+        ), patch(
+            "sqlalchemy_utils.alembic.comparator.get_database_materialized_views",
+            side_effect=_PoisonedTransaction(),
+        ):
+            view_defs, mv_defs, skipped = _canonicalize_all_views(
+                connection, view_records, db_views_for_deps=None
+            )
+
+        assert view_defs == {}, (
+            f"view_defs must be empty when the outer savepoint is poisoned; "
+            f"got {view_defs}"
+        )
+        assert mv_defs == {}, (
+            f"mv_defs must be empty when the outer savepoint is poisoned; "
+            f"got {mv_defs}"
+        )
+        assert "poison_a" in skipped, (
+            f"poison_a must be in skipped when the outer savepoint is "
+            f"poisoned; got {skipped}"
+        )
+
+        poison_warnings = [
+            rec
+            for rec in caplog.records
+            if rec.levelno >= logging.WARNING
+            and ("poison" in rec.message.lower()
+                 or "aborted" in rec.message.lower()
+                 or "skip" in rec.message.lower()
+                 or "failed" in rec.message.lower())
+        ]
+        assert poison_warnings, (
+            f"Expected a warning about the poisoned savepoint; got "
+            f"{[(rec.levelname, rec.message) for rec in caplog.records]}"
+        )
+
+        probe_calls = [s for s in call_log if s.strip() == "SELECT 1"]
+        assert probe_calls, (
+            "Expected a SELECT 1 probe after the finally ROLLBACK TO to "
+            "detect the poisoned transaction; no probe was issued. "
+            f"Call log: {call_log}"
+        )
+
+    def test_poisoned_outer_savepoint_does_not_crash_compare_views(self, caplog):
+        """A poisoned outer savepoint must not crash compare_views.
+
+        ``compare_views`` calls ``_canonicalize_all_views`` once per
+        schema. If the savepoint is poisoned for one schema, the
+        comparator must not crash with an aborted transaction —
+        ``_canonicalize_all_views`` catches the catalog-readback failure,
+        marks all views as skipped, and returns empty results. The outer
+        DB-state collection (``get_database_views``) runs BEFORE
+        canonicalization, so it is allowed to be called.
+        """
+        metadata = sa.MetaData()
+        metadata.info["sqlalchemy_utils_views"] = [
+            ViewRecord(
+                name="poison_v",
+                selectable="SELECT 1 AS col",
+                schema=None,
+                materialized=False,
+            ),
+        ]
+
+        call_log: list[str] = []
+
+        class _PoisonedTransaction(sa.exc.SQLAlchemyError):
+            def __init__(self):
+                super().__init__(
+                    "current transaction is aborted, "
+                    "commands ignored until end of transaction block"
+                )
+
+        def _execute(stmt, *args, **kwargs):
+            text = getattr(stmt, "text", str(stmt))
+            call_log.append(text)
+            stripped = text.strip()
+
+            if stripped.startswith("CREATE OR REPLACE VIEW poison_v"):
+                return MagicMock()
+
+            if stripped == f"ROLLBACK TO SAVEPOINT {_OUTER_SAVEPOINT}":
+                raise _PoisonedTransaction()
+
+            if stripped == "SELECT 1":
+                raise _PoisonedTransaction()
+
+            return MagicMock()
+
+        connection = MagicMock()
+        connection.dialect = sa.dialects.postgresql.dialect()
+        connection.execute.side_effect = _execute
+
+        autogen_context = MagicMock(spec=AutogenContext)
+        autogen_context.connection = connection
+        autogen_context.metadata = metadata
+
+        upgrade_ops = alembic_ops.UpgradeOps([])
+
+        # The outer DB-state collection (before canonicalization) returns
+        # empty dicts. The critical assertion is that compare_views does
+        # NOT raise and does NOT emit a false DropViewOp for poison_v.
+        with caplog.at_level(
+            logging.WARNING, logger="sqlalchemy_utils.alembic.comparator"
+        ), patch(
+            "sqlalchemy_utils.alembic.comparator.get_database_views",
+            return_value={},
+        ), patch(
+            "sqlalchemy_utils.alembic.comparator.get_database_materialized_views",
+            return_value={},
+        ), patch(
+            "sqlalchemy_utils.alembic.comparator.get_dependent_views",
+            return_value={},
+        ):
+            # Must NOT raise.
+            compare_views(autogen_context, upgrade_ops, schemas=[None])
+
+        # No false DropViewOp for poison_v (it is in skipped, not dropped).
+        drop_ops = [
+            op for op in upgrade_ops.ops
+            if isinstance(op, (DropViewOp, DropMaterializedViewOp))
+        ]
+        drop_names = {op.name for op in drop_ops}
+        assert "poison_v" not in drop_names, (
+            f"poison_v must not be dropped (poisoned savepoint → skipped); "
+            f"got drops: {drop_names}"
+        )
+
+
 class TestComparatorNonPGDialect:
     """compare_views warns on non-PostgreSQL dialects."""
 
@@ -2200,6 +2415,68 @@ class TestDependWordBoundary:
         result = resolve_create_order([summary_view, user_view], db_views={})
         names = [v.name for v in result]
         assert names.index("user") < names.index("summary")
+
+
+class TestSafeResolveHandlesCompileError:
+    """``_safe_resolve`` must fall back to model order when a ClauseElement
+    raises ``sa.exc.CompileError`` during ``compiled_definition(dialect=...)``.
+
+    ``_safe_resolve`` previously caught only ``ValueError`` (for
+    ``CycleError``). A ``ClauseElement`` that fails compilation raises
+    ``sa.exc.CompileError`` (a subclass of ``sa.exc.SQLAlchemyError``),
+    which propagated uncaught and aborted the entire autogenerate run.
+    The except clause must be widened so a single un-compilable view does
+    not crash autogenerate — the resolver falls back to model order.
+    """
+
+    def test_compile_error_falls_back_to_model_order(self, caplog):
+        class _BrokenClauseElement:
+            """Raises CompileError when compiled against a dialect."""
+
+            def compile(self, **kw):
+                if "dialect" in kw:
+                    raise sa.exc.CompileError(
+                        "Cannot compile clause element for this dialect"
+                    )
+                return "SELECT 1 AS id"
+
+        records = [
+            ViewRecord(
+                name="broken_view",
+                selectable=_BrokenClauseElement(),
+                schema=None,
+            ),
+            ViewRecord(
+                name="other_view",
+                selectable="SELECT 2 AS id",
+                schema=None,
+            ),
+        ]
+
+        with caplog.at_level(
+            logging.WARNING, logger="sqlalchemy_utils.alembic.comparator"
+        ):
+            result = _safe_resolve(
+                records,
+                {},
+                resolve_create_order,
+                "creating",
+                dialect=sa.dialects.postgresql.dialect(),
+            )
+
+        # Must return the records (model order), not raise.
+        assert result == records, (
+            f"_safe_resolve must fall back to model order on CompileError; "
+            f"got {result}"
+        )
+        # A warning must be logged (do not silently swallow).
+        warnings = [
+            rec for rec in caplog.records if rec.levelno >= logging.WARNING
+        ]
+        assert warnings, (
+            f"Expected a warning when falling back to model order; got "
+            f"{[(rec.levelname, rec.message) for rec in caplog.records]}"
+        )
 
 
 # ===========================================================================
@@ -3172,7 +3449,7 @@ class TestCascadeOnDropWarning:
         other views depend on."""
         upgrade_ops, mock_log = cascade_mock_setup(
             db_views={"base_view": "SELECT 1 AS col"},
-            dependent_views={"dependent_view": "SELECT * FROM base_view"},
+            dependent_views={("dependent_view", None): "SELECT * FROM base_view"},
         )
 
         warning_calls = [
@@ -3210,7 +3487,7 @@ class TestCascadeOnDropWarning:
 
         upgrade_ops, _mock_log = cascade_mock_setup(
             db_views={"base_view": "SELECT 1 AS col"},
-            dependent_views={"dependent_view": "SELECT * FROM base_view"},
+            dependent_views={("dependent_view", None): "SELECT * FROM base_view"},
         )
 
         drop_ops = [op for op in upgrade_ops.ops if isinstance(op, DropViewOp)]
@@ -3538,7 +3815,10 @@ class TestMvCanonicalizationCascade:
                 schema=None,
                 materialized=True,
             )
-            sql = _build_create_sql(connection, vr)
+            stmts = _build_create_sql(connection, vr)
+
+        # _build_create_sql now returns a list; join for substring checks.
+        sql = " ".join(stmts)
 
         assert "DROP MATERIALIZED VIEW IF EXISTS" in sql.upper(), (
             f"Expected DROP MATERIALIZED VIEW IF EXISTS in SQL: {sql!r}"
@@ -3679,6 +3959,160 @@ class TestMvCanonicalizationCascade:
         finally:
             _drop_mv_cascade_test_views(connection)
             _drop_base_table(connection)
+
+
+# ===========================================================================
+# Regression: multi-statement sa.text() is not portable across drivers
+# ===========================================================================
+
+class TestBuildCreateSqlReturnsListForMv:
+    """``_build_create_sql`` must return a list of SQL strings for MVs.
+
+    A materialized view requires a ``DROP`` then a ``CREATE``. Previously
+    these were concatenated into one string passed to a single
+    ``connection.execute(sa.text(sql))`` call. Multi-statement ``text()``
+    relies on the simple-query protocol, supported by psycopg2 but not
+    asyncpg / some drivers. Returning a list lets the caller execute each
+    statement separately, keeping the canonicalization portable.
+
+    For regular (non-materialized) views a single-statement string list is
+    returned — the public contract is now always a list of strings.
+    """
+
+    def test_mv_returns_two_statements_drop_then_create(self):
+        connection = MagicMock()
+        connection.dialect = sa.dialects.postgresql.dialect()
+        with patch(
+            "sqlalchemy_utils.alembic.comparator.ViewRecord.compiled_definition",
+            return_value="SELECT 1 AS id",
+        ):
+            vr = ViewRecord(
+                name="mv_portable",
+                selectable="SELECT 1 AS id",
+                schema=None,
+                materialized=True,
+            )
+            result = _build_create_sql(connection, vr)
+
+        assert isinstance(result, list), (
+            f"_build_create_sql must return a list for MVs; got {type(result)}"
+        )
+        assert len(result) == 2, (
+            f"MV must produce two statements (DROP + CREATE); got {result!r}"
+        )
+        drop_sql = result[0].upper()
+        create_sql = result[1].upper()
+        assert "DROP MATERIALIZED VIEW IF EXISTS" in drop_sql, (
+            f"First statement must be the DROP; got {result[0]!r}"
+        )
+        assert "CASCADE" in drop_sql, (
+            f"DROP must use CASCADE so dependent views do not block it; "
+            f"got {result[0]!r}"
+        )
+        assert "CREATE MATERIALIZED VIEW" in create_sql, (
+            f"Second statement must be the CREATE; got {result[1]!r}"
+        )
+        assert "WITH NO DATA" in create_sql, (
+            f"CREATE must include WITH NO DATA; got {result[1]!r}"
+        )
+
+    def test_regular_view_returns_single_statement_list(self):
+        connection = MagicMock()
+        connection.dialect = sa.dialects.postgresql.dialect()
+        with patch(
+            "sqlalchemy_utils.alembic.comparator.ViewRecord.compiled_definition",
+            return_value="SELECT 1 AS id",
+        ):
+            vr = ViewRecord(
+                name="v_portable",
+                selectable="SELECT 1 AS id",
+                schema=None,
+                materialized=False,
+            )
+            result = _build_create_sql(connection, vr)
+
+        assert isinstance(result, list), (
+            f"_build_create_sql must always return a list; got {type(result)}"
+        )
+        assert len(result) == 1, (
+            f"Regular view must produce a single statement; got {result!r}"
+        )
+        assert "CREATE OR REPLACE VIEW" in result[0].upper(), (
+            f"Statement must be CREATE OR REPLACE VIEW; got {result[0]!r}"
+        )
+
+
+class TestMvCanonicalizationUsesSeparateExecuteCalls:
+    """MV canonicalization must issue separate ``connection.execute`` calls.
+
+    The caller of ``_build_create_sql`` (the canonicalization loop) must
+    execute each returned statement separately rather than passing a
+    multi-statement string to a single ``connection.execute(sa.text(...))``.
+    Multi-statement ``text()`` relies on the simple-query protocol, which
+    is driver-specific (psycopg2 supports it; asyncpg does not). Executing
+    statements individually is portable across drivers.
+    """
+
+    def test_mv_canonicalization_makes_two_execute_calls(self):
+        """For an MV, the canonicalization loop issues one execute call for
+        the DROP and one for the CREATE — never a single multi-statement
+        call. A mock connection records every ``sa.text`` executed."""
+        execute_calls: list[str] = []
+
+        def _execute(stmt, *args, **kwargs):
+            text = getattr(stmt, "text", str(stmt))
+            execute_calls.append(text)
+            # ROLLBACK TO / RELEASE / SAVEPOINT succeed; DROP+CREATE succeed.
+            return MagicMock()
+
+        connection = MagicMock()
+        connection.dialect = sa.dialects.postgresql.dialect()
+        connection.execute.side_effect = _execute
+
+        vr = ViewRecord(
+            name="mv_separate_exec",
+            selectable="SELECT 1 AS id",
+            schema=None,
+            materialized=True,
+        )
+
+        with patch(
+            "sqlalchemy_utils.alembic.comparator.get_database_views",
+            return_value={},
+        ), patch(
+            "sqlalchemy_utils.alembic.comparator.get_database_materialized_views",
+            return_value={},
+        ):
+            _canonicalize_all_views(connection, [vr], db_views_for_deps=None)
+
+        # Find the DROP and CREATE statements issued for the MV.
+        drop_calls = [
+            s for s in execute_calls
+            if "DROP MATERIALIZED VIEW" in s.upper()
+        ]
+        create_calls = [
+            s for s in execute_calls
+            if "CREATE MATERIALIZED VIEW" in s.upper()
+        ]
+        assert len(drop_calls) == 1, (
+            f"Expected exactly one DROP statement executed; got {drop_calls}"
+        )
+        assert len(create_calls) == 1, (
+            f"Expected exactly one CREATE statement executed; got "
+            f"{create_calls}"
+        )
+        # No single execute call may contain BOTH DROP and CREATE — that
+        # would be a multi-statement call.
+        multi_statement_calls = [
+            s for s in execute_calls
+            if "DROP MATERIALIZED VIEW" in s.upper()
+            and "CREATE MATERIALIZED VIEW" in s.upper()
+        ]
+        assert multi_statement_calls == [], (
+            f"DROP and CREATE must be in separate execute calls (not a "
+            f"multi-statement text()). Found combined call(s): "
+            f"{multi_statement_calls}"
+        )
 
 
 # ===========================================================================

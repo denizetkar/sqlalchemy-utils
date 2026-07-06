@@ -110,13 +110,14 @@ def _teardown_schema(connection):
 
 
 def test_get_dependent_views_returns_correct_name(connection):
-    """``get_dependent_views`` returns ``{dependent_name: definition}``.
+    """``get_dependent_views`` returns ``{(dependent_name, schema): definition}``.
 
     Regression: the broken query referenced
     ``pg_depend.refobjname`` (nonexistent column) and used the *referenced*
     view's name as the dict key. After the fix, the key MUST be the
     *dependent* view's name (``_dep_test_dep_view``), not the referenced view's
-    name (``_dep_test_base_view``).
+    name (``_dep_test_base_view``). The key is now a ``(name, schema)``
+    tuple to avoid cross-schema name collisions.
     """
     _setup_schema(connection)
     try:
@@ -129,20 +130,21 @@ def test_get_dependent_views_returns_correct_name(connection):
 
         dependents = get_dependent_views(connection, "_dep_test_base_view")
 
-        # The dependent view's name must be the dict key.
-        assert "_dep_test_dep_view" in dependents, (
-            "expected dependent key '_dep_test_dep_view' in result, got: "
+        dep_keys = [k for k in dependents.keys() if k[0] == "_dep_test_dep_view"]
+        assert dep_keys, (
+            "expected dependent key ('_dep_test_dep_view', schema) in result, got: "
             f"{sorted(dependents.keys())}"
         )
 
-        # The referenced view's name must NOT be the dict key.
-        assert "_dep_test_base_view" not in dependents, (
+        # The referenced view's name must NOT appear as a dependent key.
+        ref_keys = [k for k in dependents.keys() if k[0] == "_dep_test_base_view"]
+        assert not ref_keys, (
             "referenced view name leaked into dependent dict keys: "
             f"{sorted(dependents.keys())}"
         )
 
         # The value must be the dependent view's definition SQL.
-        dep_definition = dependents["_dep_test_dep_view"]
+        dep_definition = dependents[dep_keys[0]]
         assert isinstance(dep_definition, str)
         assert dep_definition.strip(), "dependent definition must be non-empty"
         # The definition should reference the base view.
@@ -208,12 +210,14 @@ def test_get_dependent_views_includes_materialized_views(connection):
 
         dependents = get_dependent_views(connection, "_mv_dep_base_view")
 
-        assert "_mv_dep_mv" in dependents, (
+        mv_keys = [k for k in dependents.keys() if k[0] == "_mv_dep_mv"]
+        assert mv_keys, (
             "expected materialized view '_mv_dep_mv' as dependent of "
             "'_mv_dep_base_view'; got: "
             f"{sorted(dependents.keys())}"
         )
-        assert "_mv_dep_base_view" not in dependents
+        ref_keys = [k for k in dependents.keys() if k[0] == "_mv_dep_base_view"]
+        assert not ref_keys
     finally:
         _teardown_mv_dependent(connection)
 
@@ -287,11 +291,12 @@ def test_get_dependent_views_no_cross_schema_false_matches(connection):
             connection, "base_view", schema="_cross_schema_a"
         )
 
-        assert "dep_view" in dependents, (
+        a_keys = [k for k in dependents.keys() if k[0] == "dep_view"]
+        assert a_keys, (
             "expected dependent 'dep_view'; got: "
             f"{sorted(dependents.keys())}"
         )
-        definition = dependents["dep_view"]
+        definition = dependents[a_keys[0]]
         assert "_cross_schema_a.base_view" in definition, (
             "dependent definition must reference _cross_schema_a.base_view; got: "
             f"{definition!r}"
@@ -302,10 +307,14 @@ def test_get_dependent_views_no_cross_schema_false_matches(connection):
         )
 
         unscoped = get_dependent_views(connection, "base_view")
-        assert "_cross_schema_b.other" not in unscoped.get("dep_view", ""), (
-            "cross-schema definition leaked into unscoped dependent; got: "
-            f"{unscoped.get('dep_view', '')!r}"
-        )
+        unscoped_dep_defs = [
+            v for (n, s), v in unscoped.items() if n == "dep_view"
+        ]
+        for d in unscoped_dep_defs:
+            assert "_cross_schema_b.other" not in d, (
+                "cross-schema definition leaked into unscoped dependent; got: "
+                f"{d!r}"
+            )
     finally:
         _teardown_cross_schema(connection)
 
@@ -388,11 +397,12 @@ def test_get_dependent_views_union_all_keeps_both_regular_and_mv(connection):
     _setup_union_all(connection)
     try:
         dependents = get_dependent_views(connection, "_union_base_view")
-        assert "_union_dep" in dependents, (
+        dep_names = {k[0] for k in dependents.keys()}
+        assert "_union_dep" in dep_names, (
             "expected regular view dependent '_union_dep'; got: "
             f"{sorted(dependents.keys())}"
         )
-        assert "_union_mv" in dependents, (
+        assert "_union_mv" in dep_names, (
             "expected materialized view dependent '_union_mv'; got: "
             f"{sorted(dependents.keys())}"
         )
@@ -485,20 +495,123 @@ def test_get_dependent_views_schema_filter_excludes_other_schema(connection):
         dependents = get_dependent_views(
             connection, "base_view", schema="_schema_filter_a"
         )
-        assert "dep_view" in dependents, (
+        dep_names = {k[0] for k in dependents.keys()}
+        assert "dep_view" in dep_names, (
             "expected dependent 'dep_view' in _schema_filter_a; got: "
             f"{sorted(dependents.keys())}"
         )
         # Every returned dependent must reference _schema_filter_a.base_view, proving
         # the schema filter constrained the referenced view's namespace.
-        for name, definition in dependents.items():
+        for key, definition in dependents.items():
             assert "_schema_filter_a.base_view" in definition, (
-                f"dependent {name!r} should reference _schema_filter_a.base_view; "
+                f"dependent {key!r} should reference _schema_filter_a.base_view; "
                 f"got definition: {definition!r}"
             )
             assert "_schema_filter_b" not in definition, (
-                f"dependent {name!r} leaked cross-schema reference to "
+                f"dependent {key!r} leaked cross-schema reference to "
                 f"_schema_filter_b; definition: {definition!r}"
             )
     finally:
         _teardown_schema_filter(connection)
+
+
+def _setup_same_name_dependents(connection):
+    """Two dependent views sharing a name in different schemas.
+
+    ``_same_name_a.shared_dep`` and ``_same_name_b.shared_dep`` both depend
+    on a same-named referenced view ``base_view`` in their respective
+    schemas. With a name-only dict key the second overwrites the first;
+    the result must contain both.
+    """
+    for schema in ("_same_name_a", "_same_name_b"):
+        connection.execute(sa.text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
+    connection.execute(sa.text("CREATE SCHEMA _same_name_a"))
+    connection.execute(sa.text("CREATE SCHEMA _same_name_b"))
+
+    connection.execute(
+        sa.text("CREATE TABLE _same_name_a.t (id SERIAL PRIMARY KEY)")
+    )
+    connection.execute(
+        sa.text(
+            "CREATE VIEW _same_name_a.base_view AS SELECT id FROM _same_name_a.t"
+        )
+    )
+    connection.execute(
+        sa.text(
+            "CREATE VIEW _same_name_a.shared_dep AS "
+            "SELECT id FROM _same_name_a.base_view"
+        )
+    )
+
+    connection.execute(
+        sa.text("CREATE TABLE _same_name_b.t (id SERIAL PRIMARY KEY)")
+    )
+    connection.execute(
+        sa.text(
+            "CREATE VIEW _same_name_b.base_view AS SELECT id FROM _same_name_b.t"
+        )
+    )
+    connection.execute(
+        sa.text(
+            "CREATE VIEW _same_name_b.shared_dep AS "
+            "SELECT id FROM _same_name_b.base_view"
+        )
+    )
+    connection.commit()
+
+
+def _teardown_same_name_dependents(connection):
+    for schema in ("_same_name_a", "_same_name_b"):
+        try:
+            connection.execute(sa.text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
+        except sa.exc.SQLAlchemyError:
+            connection.rollback()
+    connection.commit()
+
+
+@pytest.mark.infrastructure
+def test_get_dependent_views_same_name_across_schemas(connection):
+    """Two dependents with the same name in different schemas must coexist.
+
+    ``get_dependent_views`` returns a dict; with a name-only key a second
+    dependent sharing a name in another schema overwrites the first. The
+    dict must be keyed by ``(dependent_name, dependent_schema)`` so both
+    are preserved.
+    """
+    _setup_same_name_dependents(connection)
+    try:
+        dependents = get_dependent_views(connection, "base_view")
+
+        assert isinstance(dependents, dict)
+        # Both same-named dependents must be present (no overwrite).
+        assert len(dependents) >= 2, (
+            f"Expected at least 2 dependents (one per schema); got "
+            f"{len(dependents)}: {sorted(dependents.keys())}"
+        )
+
+        # Each key must be a (name, schema) tuple.
+        for key in dependents.keys():
+            assert isinstance(key, tuple) and len(key) == 2, (
+                f"dependent dict keys must be (name, schema) tuples; got "
+                f"{key!r} (type {type(key).__name__})"
+            )
+
+        keys = set(dependents.keys())
+        assert ("shared_dep", "_same_name_a") in keys, (
+            f"missing ('shared_dep', '_same_name_a'); got {sorted(keys)}"
+        )
+        assert ("shared_dep", "_same_name_b") in keys, (
+            f"missing ('shared_dep', '_same_name_b'); got {sorted(keys)}"
+        )
+
+        a_def = dependents[("shared_dep", "_same_name_a")]
+        b_def = dependents[("shared_dep", "_same_name_b")]
+        assert "_same_name_a.base_view" in a_def, (
+            f"A dependent must reference _same_name_a.base_view; got {a_def!r}"
+        )
+        assert "_same_name_b.base_view" in b_def, (
+            f"B dependent must reference _same_name_b.base_view; got {b_def!r}"
+        )
+    finally:
+        _teardown_same_name_dependents(connection)
+

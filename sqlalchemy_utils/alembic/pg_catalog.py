@@ -73,7 +73,7 @@ def get_database_materialized_views(connection: sa.engine.Connection, schema: st
     return _query_view_catalog(connection, "pg_matviews", "matviewname", schema)
 
 
-def get_dependent_views(connection: sa.engine.Connection, view_name: str, schema: str | None = None) -> dict[str, str]:
+def get_dependent_views(connection: sa.engine.Connection, view_name: str, schema: str | None = None) -> dict[tuple[str, str | None], str]:
     """Query pg_depend for views that depend on the given view.
 
     PostgreSQL-specific. Will raise on non-PostgreSQL dialects.
@@ -86,8 +86,11 @@ def get_dependent_views(connection: sa.engine.Connection, view_name: str, schema
             are constrained to this schema.
 
     Returns:
-        Dictionary mapping dependent view name to its definition.
-        Empty dict if no dependents.
+        Dictionary mapping ``(dependent_name, dependent_schema)`` to its
+        definition. Keying by the ``(name, schema)`` tuple avoids
+        cross-schema name collisions: two dependent views sharing a name
+        in different schemas would otherwise collide and the second would
+        overwrite the first. Empty dict if no dependents.
     """
     schema_clause = (
         " AND v.schemaname = :schema AND refn.nspname = :schema"
@@ -138,4 +141,7 @@ def get_dependent_views(connection: sa.engine.Connection, view_name: str, schema
     )
     sql = sa.text(f"{views_select} UNION ALL {matviews_select}")
     result = connection.execute(sql, params)
-    return {row.dependent_name: row.dependent_definition for row in result}
+    return {
+        (row.dependent_name, row.dependent_schema): row.dependent_definition
+        for row in result
+    }

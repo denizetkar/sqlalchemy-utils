@@ -17,7 +17,7 @@ Differences are emitted as :class:`CreateViewOp`, :class:`DropViewOp`,
 
 Usage in ``env.py``::
 
-    from sqlalchemy_utils.alembic.comparator import register_view_comparator
+    from sqlalchemy_utils import register_view_comparator
     register_view_comparator()   # must be called before context.configure()
 """
 from __future__ import annotations
@@ -71,8 +71,18 @@ _OUTER_SAVEPOINT = "su_view_cmp"
 _registered = False
 
 
-def _build_create_sql(connection: sa.engine.Connection, view_record: ViewRecord) -> str:
-    """Build the CREATE (OR REPLACE) VIEW / MATERIALIZED VIEW statement."""
+def _build_create_sql(connection: sa.engine.Connection, view_record: ViewRecord) -> list[str]:
+    """Build the CREATE (OR REPLACE) VIEW / MATERIALIZED VIEW statement(s).
+
+    Returns a list of SQL strings so the caller can execute each statement
+    separately. Multi-statement ``sa.text()`` relies on the simple-query
+    protocol, which is driver-specific (psycopg2 supports it; asyncpg does
+    not); returning a list keeps canonicalization portable across drivers.
+
+    For a materialized view returns two statements (``DROP`` then ``CREATE``)
+    because PG has no ``CREATE OR REPLACE MATERIALIZED VIEW``. For a regular
+    view returns a single ``CREATE OR REPLACE VIEW`` statement.
+    """
     definition = view_record.compiled_definition(dialect=connection.dialect)
     dialect = connection.dialect
     qualified = _quote_qualified_name(dialect, view_record.name, view_record.schema)
@@ -81,12 +91,12 @@ def _build_create_sql(connection: sa.engine.Connection, view_record: ViewRecord)
         # is required so a dependent view in the DB does not block the DROP
         # (which would skip the MV and silently miss definition changes).
         # Safe because this runs inside a savepoint that is rolled back.
-        return (
-            f"DROP MATERIALIZED VIEW IF EXISTS {qualified} CASCADE; "
+        return [
+            f"DROP MATERIALIZED VIEW IF EXISTS {qualified} CASCADE",
             f"CREATE MATERIALIZED VIEW {qualified} "
-            f"AS {definition} WITH NO DATA"
-        )
-    return f"CREATE OR REPLACE VIEW {qualified} AS {definition}"
+            f"AS {definition} WITH NO DATA",
+        ]
+    return [f"CREATE OR REPLACE VIEW {qualified} AS {definition}"]
 
 
 def _canonicalize_all_views(
@@ -140,7 +150,8 @@ def _canonicalize_all_views(
             inner_sp = f"{_OUTER_SAVEPOINT}_v"
             connection.execute(sa.text(f"SAVEPOINT {inner_sp}"))
             try:
-                connection.execute(sa.text(_build_create_sql(connection, vr)))
+                for stmt in _build_create_sql(connection, vr):
+                    connection.execute(sa.text(stmt))
                 connection.execute(sa.text(f"RELEASE SAVEPOINT {inner_sp}"))
             except (sa.exc.SQLAlchemyError, sa.exc.DBAPIError, OSError) as exc:
                 log.warning(
@@ -184,9 +195,26 @@ def _canonicalize_all_views(
             processed.add(vr.name)
 
         # Batch-read canonical definitions from pg_catalog in one query per
-        # kind (regular + materialized) rather than one per view.
-        db_views = get_database_views(connection, schema)
-        db_mvs = get_database_materialized_views(connection, schema)
+        # kind (regular + materialized) rather than one per view. This
+        # readback happens INSIDE the outer savepoint (before the
+        # finally-block rollback) so the just-created views are visible.
+        db_views: dict[str, str] = {}
+        db_mvs: dict[str, str] = {}
+        try:
+            db_views = get_database_views(connection, schema)
+            db_mvs = get_database_materialized_views(connection, schema)
+        except (sa.exc.SQLAlchemyError, sa.exc.DBAPIError, OSError) as exc:
+            # The catalog readback itself can fail if the transaction was
+            # poisoned mid-loop (the inner-savepoint probe in the loop only
+            # fires after a view CREATE failure; a DB-level abort that
+            # poisons the outer savepoint without a per-view failure would
+            # land here). Treat as poisoned and skip readback.
+            log.warning(
+                "Catalog readback failed for schema %r (transaction may be "
+                "poisoned): %s. Marking all views skipped.", schema, exc
+            )
+            for vr in ordered:
+                skipped.add(vr.name)
     finally:
         # Roll back the outer savepoint so nothing persists.  Guarded
         # because if the transaction is already poisoned (e.g. a DB-level
@@ -200,6 +228,25 @@ def _canonicalize_all_views(
             log.warning(
                 "Failed to roll back outer savepoint %r: %s",
                 _OUTER_SAVEPOINT,
+                exc,
+            )
+
+    # Probe the connection: if the outer savepoint was poisoned (the
+    # ROLLBACK TO above failed), the transaction is still aborted and every
+    # subsequent query in the caller's next schema loop would crash. Probe
+    # with SELECT 1; on failure log a warning (the data we have may be
+    # unreliable but the savepoint rollback is best-effort). The caller
+    # proceeds — subsequent schemas may still be processable if the driver
+    # recovers, and ``skipped`` already guards against false drops.
+    if not db_views and not db_mvs and ordered:
+        try:
+            connection.execute(sa.text("SELECT 1"))
+        except (sa.exc.SQLAlchemyError, sa.exc.DBAPIError, OSError) as exc:
+            log.warning(
+                "Outer savepoint appears poisoned after rollback for "
+                "schema %r: %s. Subsequent schema processing may be "
+                "affected.",
+                schema,
                 exc,
             )
 
@@ -307,26 +354,40 @@ def _warn_if_dependents(
             kind_label,
             name,
             len(dependents),
-            ", ".join(sorted(dependents.keys())),
+            ", ".join(sorted(_format_dependent_key(k) for k in dependents)),
         )
 
 
+def _format_dependent_key(key) -> str:
+    """Render a dependent-view dict key as ``schema.name`` (or just name)."""
+    if isinstance(key, tuple) and len(key) == 2:
+        dep_name, dep_schema = key
+        if dep_schema:
+            return f"{dep_schema}.{dep_name}"
+        return dep_name
+    return str(key)
+
+
 def _safe_resolve(records, db, resolver_fn, action_label, *, dialect=None):
-    """Resolve view ordering, falling back to model order on cycle.
+    """Resolve view ordering, falling back to model order on failure.
 
     Wraps *resolver_fn* (e.g. :func:`resolve_create_order`) in a
-    try/except :class:`ValueError`. If a circular dependency is detected,
-    logs a warning naming *action_label* (e.g. ``"canonicalizing"``,
-    ``"creating"``, ``"dropping"``) and returns *records* unchanged.
+    try/except. If a circular dependency (``ValueError``) is detected, or
+    a view's ``ClauseElement`` fails compilation
+    (``sa.exc.SQLAlchemyError`` — e.g. ``CompileError``,
+    ``ArgumentError``), logs a warning naming *action_label* (e.g.
+    ``"canonicalizing"``, ``"creating"``, ``"dropping"``) and returns
+    *records* unchanged. Without the widened catch a single un-compilable
+    view would propagate and abort the entire autogenerate run.
 
     *dialect* is forwarded to ``resolver_fn`` so dependency detection
     scans dialect-qualified SQL matching the comparator's emitted DDL.
     """
     try:
         return resolver_fn(records, db, dialect=dialect)
-    except ValueError:
+    except (ValueError, sa.exc.SQLAlchemyError):
         log.warning(
-            "Circular view dependency detected; "
+            "Circular view dependency or compilation error detected; "
             "%s views in model-definition order",
             action_label,
         )
@@ -567,7 +628,7 @@ def register_view_comparator() -> None:
 
     Call this once in your ``env.py`` **before** ``context.configure()``::
 
-        from sqlalchemy_utils.alembic.comparator import register_view_comparator
+        from sqlalchemy_utils import register_view_comparator
         register_view_comparator()
 
     This function is idempotent (safe to call more than once).  The
