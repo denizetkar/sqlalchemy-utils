@@ -231,6 +231,21 @@ class TestViewRecordCreation:
         record = ViewRecord(name="test_view", selectable="SELECT 1", schema=None)
         assert record.schema is None
 
+    def test_create_with_empty_string_schema_normalizes_to_none(self):
+        """Empty-string schema is falsy and must be normalized to None.
+
+        Without normalization, ``""`` is treated as "no schema" by
+        ``_quote_qualified_name`` (view created in ``current_schema()``),
+        but ``_schema_matches("", None)`` returns ``False``, causing the
+        view to be dropped as a false ``DropViewOp``.
+        """
+        record = ViewRecord(name="test_view", selectable="SELECT 1", schema="")
+        assert record.schema is None
+        assert record == ViewRecord(name="test_view", selectable="SELECT 1", schema=None)
+        assert hash(record) == hash(
+            ViewRecord(name="test_view", selectable="SELECT 1", schema=None)
+        )
+
     def test_create_default_cascade_on_drop(self):
         record = ViewRecord(name="test_view", selectable="SELECT 1")
         assert record.cascade_on_drop is True

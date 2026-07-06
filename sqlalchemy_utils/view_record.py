@@ -29,6 +29,10 @@ class ViewRecord:
     def __post_init__(self):
         if self.selectable is None:
             raise TypeError("selectable must not be None")
+        # Normalize falsy schema (e.g. "") to None: "" would create the
+        # view in current_schema() but fail _schema_matches("", None),
+        # yielding a false DropViewOp.
+        object.__setattr__(self, "schema", self.schema or None)
 
     def __eq__(self, other: object) -> bool:
         """Compare two ViewRecords for equality.
