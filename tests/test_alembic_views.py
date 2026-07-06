@@ -3487,10 +3487,10 @@ class TestSchemaNoneNoFalseDrop:
 
 
 # ===========================================================================
-# Regression: MV canonicalization DROP must not use CASCADE
+# Regression: MV canonicalization DROP must use CASCADE for dependent views
 # ===========================================================================
 
-_MV_CASCADE_TEST_VIEW_NAMES = ["mv_drop_test_mv", "mv_drop_test_dep_view"]
+_MV_CASCADE_TEST_VIEW_NAMES = ["mv_cascade_test_mv", "mv_cascade_test_dep_view"]
 
 
 def _drop_mv_cascade_test_views(connection):
@@ -3498,99 +3498,187 @@ def _drop_mv_cascade_test_views(connection):
     # Drop dependent view first (depends on the MV).
     try:
         connection.execute(
-            sa.text("DROP VIEW IF EXISTS mv_drop_test_dep_view CASCADE")
+            sa.text("DROP VIEW IF EXISTS mv_cascade_test_dep_view CASCADE")
         )
     except sa.exc.SQLAlchemyError:
         connection.rollback()
     try:
         connection.execute(
-            sa.text("DROP MATERIALIZED VIEW IF EXISTS mv_drop_test_mv CASCADE")
+            sa.text("DROP MATERIALIZED VIEW IF EXISTS mv_cascade_test_mv CASCADE")
         )
     except sa.exc.SQLAlchemyError:
         connection.rollback()
     connection.commit()
 
 
-class TestMvCanonicalizationNoCascade:
-    """Regression: MV canonicalization DROP must NOT use CASCADE.
+class TestMvCanonicalizationCascade:
+    """Regression: MV canonicalization DROP must use CASCADE.
 
-    ``_build_create_sql`` emits ``DROP MATERIALIZED VIEW IF EXISTS ... CASCADE;
-    CREATE MATERIALIZED VIEW ...`` during canonicalization. The CASCADE silently
-    drops dependent objects created earlier in the savepoint. A plain
-    ``DROP MATERIALIZED VIEW IF EXISTS`` is sufficient for canonicalization.
+    When a materialized view has dependent views in the database, PG refuses
+    a plain ``DROP MATERIALIZED VIEW``. Without CASCADE the DROP fails inside
+    the canonicalization savepoint, the MV is added to ``skipped``, and its
+    definition change is silently missed (no ``ReplaceMaterializedViewOp``
+    emitted). Using ``DROP MATERIALIZED VIEW IF EXISTS ... CASCADE`` lets the
+    DROP succeed inside the savepoint (dependents are cascade-dropped and
+    restored on savepoint rollback), so the MV is canonicalized correctly.
     """
 
-    @pytest.mark.infrastructure
-    @pytest.mark.usefixtures("postgresql_dsn")
-    def test_mv_canonicalization_does_not_drop_dependents(self, connection):
-        """A dependent regular view survives the MV's canonicalization DROP.
-
-        Both the MV and a dependent regular view are new; both must appear as
-        create ops after ``compare_views``. The authoritative guard is the
-        SQL-string test below (``_build_create_sql`` must not emit CASCADE).
-        """
-        _drop_mv_cascade_test_views(connection)
-        try:
-            metadata = sa.MetaData()
-            metadata.info["sqlalchemy_utils_views"] = [
-                ViewRecord(
-                    name="mv_drop_test_mv",
-                    selectable=sa.select(sa.text("1 AS id")),
-                    schema=None,
-                    materialized=True,
-                ),
-                ViewRecord(
-                    name="mv_drop_test_dep_view",
-                    selectable=sa.select(sa.text("* FROM mv_drop_test_mv")),
-                    schema=None,
-                ),
-            ]
-
-            upgrade_ops = _run_comparator(connection, metadata, schemas=[None])
-
-            create_ops = [
-                op
-                for op in upgrade_ops.ops
-                if isinstance(
-                    op, (CreateViewOp, CreateMaterializedViewOp)
-                )
-            ]
-            created_names = {op.name for op in create_ops}
-            assert "mv_drop_test_dep_view" in created_names, (
-                f"Regression: mv_drop_test_dep_view missing from create "
-                f"ops (likely silently dropped by MV's CASCADE during "
-                f"canonicalization). Got: {sorted(created_names)}"
-            )
-        finally:
-            _drop_mv_cascade_test_views(connection)
-
-    def test_build_create_sql_no_cascade_for_materialized_view(self):
-        """``_build_create_sql`` must NOT emit CASCADE for materialized views
-        (plain ``DROP MATERIALIZED VIEW IF EXISTS`` only)."""
+    def test_build_create_sql_uses_cascade_for_materialized_view(self):
+        """``_build_create_sql`` must emit CASCADE for the MV DROP so that
+        dependent views do not block canonicalization."""
         connection = MagicMock()
         connection.dialect = sa.dialects.postgresql.dialect()
-        # compiled_definition is invoked inside _build_create_sql; stub it out
-        # by patching so the SQL can be built without a real DB round-trip.
         with patch(
             "sqlalchemy_utils.alembic.comparator.ViewRecord.compiled_definition",
             return_value="SELECT 1 AS id",
         ):
             vr = ViewRecord(
-                name="mv_drop_test_mv",
+                name="mv_cascade_test_mv",
                 selectable="SELECT 1 AS id",
                 schema=None,
                 materialized=True,
             )
             sql = _build_create_sql(connection, vr)
 
-        assert "CASCADE" not in sql.upper(), (
-            f"Regression: _build_create_sql emits CASCADE for MV "
-            f"canonicalization DROP. This silently drops dependent objects "
-            f"created earlier in the savepoint. SQL: {sql!r}"
-        )
         assert "DROP MATERIALIZED VIEW IF EXISTS" in sql.upper(), (
-            f"Expected plain DROP MATERIALIZED VIEW IF EXISTS in SQL: {sql!r}"
+            f"Expected DROP MATERIALIZED VIEW IF EXISTS in SQL: {sql!r}"
         )
+        assert "CASCADE" in sql.upper(), (
+            f"Regression: _build_create_sql must emit CASCADE for MV "
+            f"canonicalization DROP so dependent views do not block it. "
+            f"SQL: {sql!r}"
+        )
+        # CASCADE must be on the DROP, not just somewhere in CREATE.
+        drop_part = sql.upper().split("CREATE MATERIALIZED VIEW")[0]
+        assert "CASCADE" in drop_part, (
+            f"CASCADE must be on the DROP clause, not the CREATE. SQL: {sql!r}"
+        )
+
+    @pytest.mark.infrastructure
+    @pytest.mark.usefixtures("postgresql_dsn")
+    def test_mv_with_dependent_view_definition_change_detected(self, connection):
+        """MV with a dependent view: definition change is detected, not skipped.
+
+        Pre-create an MV with an old definition and a regular view that
+        selects from it. The model defines the MV with a NEW definition.
+        Without CASCADE the DROP fails (dependent view blocks it), the MV is
+        skipped, and the change is silently missed. With CASCADE the DROP
+        succeeds inside the savepoint, the MV is recreated, and the change is
+        detected as a ``ReplaceMaterializedViewOp``.
+        """
+        _create_base_table(connection)
+        _drop_mv_cascade_test_views(connection)
+        try:
+            # Pre-create MV with OLD definition.
+            connection.execute(
+                sa.text(
+                    "CREATE MATERIALIZED VIEW mv_cascade_test_mv AS "
+                    "SELECT id, name FROM _cmp_test_base WITH DATA"
+                )
+            )
+            # Pre-create a dependent regular view on the MV.
+            connection.execute(
+                sa.text(
+                    "CREATE VIEW mv_cascade_test_dep_view AS "
+                    "SELECT * FROM mv_cascade_test_mv"
+                )
+            )
+            connection.commit()
+
+            metadata = sa.MetaData()
+            metadata.info["sqlalchemy_utils_views"] = [
+                ViewRecord(
+                    name="mv_cascade_test_mv",
+                    selectable="SELECT id, value FROM _cmp_test_base",
+                    schema=None,
+                    materialized=True,
+                ),
+                ViewRecord(
+                    name="mv_cascade_test_dep_view",
+                    selectable=sa.select(
+                        sa.text("* FROM mv_cascade_test_mv")
+                    ),
+                    schema=None,
+                ),
+            ]
+
+            upgrade_ops = _run_comparator(connection, metadata, schemas=[None])
+
+            replace_ops = [
+                op
+                for op in upgrade_ops.ops
+                if isinstance(op, ReplaceMaterializedViewOp)
+                and op.name == "mv_cascade_test_mv"
+            ]
+            assert len(replace_ops) == 1, (
+                f"Regression: MV 'mv_cascade_test_mv' with a dependent view "
+                f"was silently skipped during canonicalization (DROP without "
+                f"CASCADE fails when a dependent view exists). Expected a "
+                f"ReplaceMaterializedViewOp; got {replace_ops}. "
+                f"All ops: {[(type(o).__name__, o.name) for o in upgrade_ops.ops]}"
+            )
+        finally:
+            _drop_mv_cascade_test_views(connection)
+            _drop_base_table(connection)
+
+    @pytest.mark.infrastructure
+    @pytest.mark.usefixtures("postgresql_dsn")
+    def test_mv_with_dependent_view_not_in_skipped(self, connection):
+        """Directly verify ``_canonicalize_all_views`` does not skip an MV
+        that has a dependent view in the database."""
+        _create_base_table(connection)
+        _drop_mv_cascade_test_views(connection)
+        try:
+            connection.execute(
+                sa.text(
+                    "CREATE MATERIALIZED VIEW mv_cascade_test_mv AS "
+                    "SELECT id, name FROM _cmp_test_base WITH DATA"
+                )
+            )
+            connection.execute(
+                sa.text(
+                    "CREATE VIEW mv_cascade_test_dep_view AS "
+                    "SELECT * FROM mv_cascade_test_mv"
+                )
+            )
+            connection.commit()
+
+            view_records = [
+                ViewRecord(
+                    name="mv_cascade_test_mv",
+                    selectable="SELECT id, value FROM _cmp_test_base",
+                    schema=None,
+                    materialized=True,
+                ),
+                ViewRecord(
+                    name="mv_cascade_test_dep_view",
+                    selectable=sa.select(
+                        sa.text("* FROM mv_cascade_test_mv")
+                    ),
+                    schema=None,
+                ),
+            ]
+            db_views_for_deps = {
+                "mv_cascade_test_mv": "SELECT id, name FROM _cmp_test_base",
+                "mv_cascade_test_dep_view": "SELECT * FROM mv_cascade_test_mv",
+            }
+
+            view_defs, mv_defs, skipped = _canonicalize_all_views(
+                connection, view_records, db_views_for_deps
+            )
+
+            assert "mv_cascade_test_mv" not in skipped, (
+                f"Regression: MV was skipped during canonicalization because "
+                f"the DROP failed without CASCADE (dependent view blocks it). "
+                f"skipped={skipped}"
+            )
+            assert "mv_cascade_test_mv" in mv_defs, (
+                f"Regression: MV definition missing from mv_defs. "
+                f"mv_defs={mv_defs}, skipped={skipped}"
+            )
+        finally:
+            _drop_mv_cascade_test_views(connection)
+            _drop_base_table(connection)
 
 
 # ===========================================================================

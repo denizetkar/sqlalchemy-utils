@@ -77,10 +77,12 @@ def _build_create_sql(connection: sa.engine.Connection, view_record: ViewRecord)
     dialect = connection.dialect
     qualified = _quote_qualified_name(dialect, view_record.name, view_record.schema)
     if view_record.materialized:
-        # PG has no CREATE OR REPLACE MATERIALIZED VIEW; drop first.
-        # The drop happens inside the outer savepoint so it never persists.
+        # PG has no CREATE OR REPLACE MATERIALIZED VIEW; drop first. CASCADE
+        # is required so a dependent view in the DB does not block the DROP
+        # (which would skip the MV and silently miss definition changes).
+        # Safe because this runs inside a savepoint that is rolled back.
         return (
-            f"DROP MATERIALIZED VIEW IF EXISTS {qualified}; "
+            f"DROP MATERIALIZED VIEW IF EXISTS {qualified} CASCADE; "
             f"CREATE MATERIALIZED VIEW {qualified} "
             f"AS {definition} WITH NO DATA"
         )
