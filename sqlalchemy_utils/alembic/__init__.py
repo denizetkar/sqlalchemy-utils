@@ -18,6 +18,9 @@ from ..view_record import ViewRecord
 
 __all__ = [
     "register_view_comparator",
+    "compare_views",
+    "resolve_create_order", "resolve_drop_order",
+    "get_database_views", "get_database_materialized_views", "get_dependent_views",
     "CreateViewOp", "DropViewOp", "ReplaceViewOp",
     "CreateMaterializedViewOp", "DropMaterializedViewOp", "ReplaceMaterializedViewOp",
     "RefreshMaterializedViewOp",
