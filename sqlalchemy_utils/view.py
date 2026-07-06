@@ -104,6 +104,21 @@ def create_table_from_selectable(
     :param schema: Optional schema name.
     :param kwargs: Additional ``Table`` constructor arguments.
     :returns: The created :class:`~sqlalchemy.Table`.
+
+    Example::
+
+        import sqlalchemy as sa
+        from sqlalchemy_utils import create_table_from_selectable
+
+        metadata = sa.MetaData()
+        users = sa.Table(
+            "users", metadata,
+            sa.Column("id", sa.Integer, primary_key=True),
+            sa.Column("name", sa.String),
+        )
+        selectable = sa.select(users.c.id, users.c.name).where(users.c.id < 100)
+        table = create_table_from_selectable("small_ids", selectable, metadata=metadata)
+        # `table` is a sa.Table whose columns mirror the selectable's output.
     """
     if indexes is None:
         indexes = []
@@ -306,26 +321,27 @@ def create_view(
     executed against the supplied metadata (e.g. ``metadata.create_all(..)``),
     and dropped when a ``DROP`` is executed against the metadata.
 
-    To create a view that performs basic filtering on a table. ::
-
-        metadata = MetaData()
-        users = Table('users', metadata,
-                Column('id', Integer, primary_key=True),
-                Column('name', String),
-                Column('fullname', String),
-                Column('premium_user', Boolean, default=False),
-            )
-
-        premium_members = select(users).where(users.c.premium_user == True)
-        create_view('premium_users', premium_members, metadata)
-
-        metadata.create_all(engine) # View is created at this point
-
     .. note::
         Unlike :func:`create_materialized_view`, this function does not
         accept ``indexes`` or ``aliases`` parameters. Regular PostgreSQL
         views do not support indexes, and column aliases can be defined
         directly in the view's SELECT statement.
+
+    Example::
+
+        import sqlalchemy as sa
+        from sqlalchemy_utils import create_view
+
+        metadata = sa.MetaData()
+        users = sa.Table(
+            "users", metadata,
+            sa.Column("id", sa.Integer, primary_key=True),
+            sa.Column("name", sa.String),
+            sa.Column("premium_user", sa.Boolean, default=False),
+        )
+        premium_members = sa.select(users).where(users.c.premium_user == True)
+        create_view("premium_users", premium_members, metadata)
+        # Run metadata.create_all(engine) to emit the CREATE VIEW.
     """
     table = create_table_from_selectable(
         name=name, selectable=selectable, metadata=None, schema=schema

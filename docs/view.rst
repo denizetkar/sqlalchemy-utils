@@ -62,5 +62,11 @@ need to instantiate them directly.
 .. autoclass:: sqlalchemy_utils.view.DropView
    :members:
 
+.. note::
+
+   ``DropView(cascade=...)`` mirrors the Alembic ``op.drop_view`` naming
+   convention; the runtime helper :func:`~sqlalchemy_utils.view.create_view`
+   uses ``cascade_on_drop=`` for the same concept.
+
 .. autoclass:: sqlalchemy_utils.view.RefreshMaterializedView
    :members:

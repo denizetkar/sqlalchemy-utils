@@ -29,6 +29,17 @@ Operations reference
 .. automethod:: sqlalchemy_utils.alembic.operations.ReplaceMaterializedViewOp.replace_materialized_view
 .. automethod:: sqlalchemy_utils.alembic.operations.RefreshMaterializedViewOp.refresh_materialized_view
 
+.. note::
+
+   The ``cascade`` keyword differs between the Alembic and runtime APIs.
+   The Alembic ``op.drop_view(...)`` / ``op.drop_materialized_view(...)``
+   operations use ``cascade=`` (Alembic convention); the runtime DDL helpers
+   :func:`~sqlalchemy_utils.view.create_view` and
+   :func:`~sqlalchemy_utils.view.create_materialized_view` use
+   ``cascade_on_drop=`` for the same concept.  Writing
+   ``op.drop_view(..., cascade_on_drop=True)`` raises ``TypeError`` — use
+   ``cascade=True`` with the ``op.*`` helpers.
+
 Autogenerate
 ------------
 
@@ -65,9 +76,10 @@ comparator for view DDL:
   - ``cascade_on_drop`` controls (``CASCADE``/``RESTRICT``) are not yet
     configurable per-view in autogenerate.
   - Dependency detection between views uses word-boundary regex matching
-    on view names in compiled SQL; views whose names are substrings of
-    other identifiers (or names containing regex metacharacters) may be
-    misclassified. Prefer simple, distinct view names to avoid this.
+    on view names in compiled SQL.  View names that coincide with SQL
+    keywords or common identifiers (e.g. ``select``, ``from``, ``user``)
+    may produce false dependencies; prefer distinctive view names.  Full
+    SQL-AST parsing is not yet implemented.
 
 .. warning::
 
@@ -164,6 +176,12 @@ database), adopting the autogenerate integration needs a little care.
    ``alembic upgrade --sql`` so you can inspect the generated SQL before it
    touches the database.
 
+5. **Renaming a view**.  If you are renaming an existing view rather than
+   adding/removing one, declare ``__view_aliases__ = {'old_db_name'}`` on
+   the new :class:`~sqlalchemy_utils.view_mixin.ViewMixin` class so the
+   comparator recognizes the legacy name and emits a ``replace_view``
+   rather than a spurious drop+create.
+
 .. warning::
 
    The first autogenerate run against a legacy database will propose dropping
@@ -184,9 +202,10 @@ raise ``NotImplementedError``.  See the API reference below for details.
 
    ``RefreshMaterializedViewOp.reverse()`` always raises
    ``NotImplementedError`` because ``REFRESH MATERIALIZED VIEW`` is not
-   reversible (a refresh only repopulates data; there is no SQL
-   "un-refresh"). Remove ``refresh_materialized_view`` ops from downgrade
-   scripts manually rather than relying on autogenerate to reverse them.
+   meaningfully reversible (a refresh only repopulates data; there is no SQL
+   "un-refresh").  Remove the op from autogenerate's ``downgrade()`` **or**
+   replace it with a hand-written ``op.refresh_materialized_view(...)``
+   call rather than relying on autogenerate to reverse it.
 
 API reference
 -------------
@@ -222,7 +241,12 @@ The following comparator is used internally by
 change between releases; prefer calling ``register_view_comparator()`` in your
 ``env.py``.
 
-.. autofunction:: sqlalchemy_utils.alembic.comparator.compare_views
+``compare_views(autogen_context, upgrade_ops, schemas=None)`` is the Alembic
+``"schema"`` comparator entry point registered by
+:func:`register_view_comparator`.  It reads model view definitions from
+``metadata.info['sqlalchemy_utils_views']``, canonicalizes each view inside a
+rolled-back savepoint, and appends ``CreateViewOp`` / ``DropViewOp`` /
+``ReplaceViewOp`` (and materialized variants) to *upgrade_ops*.
 
 .. autofunction:: sqlalchemy_utils.alembic.depend.resolve_create_order
 .. autofunction:: sqlalchemy_utils.alembic.depend.resolve_drop_order

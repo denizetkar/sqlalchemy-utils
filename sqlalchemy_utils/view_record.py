@@ -17,6 +17,27 @@ class ViewRecord:
     ``schema`` (and ``materialized`` flag) compare equal, regardless of the
     underlying selectable SQL.  Use :meth:`~ViewRecord.compiled_definition`
     to compare the actual SQL definitions.
+
+    Users typically do not construct ``ViewRecord`` directly: instances are
+    populated automatically by :func:`~sqlalchemy_utils.view.create_view`,
+    :func:`~sqlalchemy_utils.view.create_materialized_view`, and
+    :class:`~sqlalchemy_utils.view_mixin.ViewMixin` into
+    ``metadata.info['sqlalchemy_utils_views']``, which the Alembic
+    autogenerate comparator reads during ``alembic revision --autogenerate``.
+
+    Example::
+
+        import sqlalchemy as sa
+        from sqlalchemy_utils.view_record import ViewRecord
+
+        selectable = sa.select(sa.column("id", sa.Integer))
+        record = ViewRecord(
+            name="my_view",
+            selectable=selectable,
+            schema="public",
+            materialized=False,
+        )
+        # `record.compiled_definition()` returns the compiled SQL string.
     """
     name: str
     selectable: str | sa.sql.ClauseElement
