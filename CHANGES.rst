@@ -22,8 +22,9 @@ Unreleased
   for typed ORM view classes
 - Add ``ViewReadonlyError`` exception (subclasses ``sa.exc.InvalidRequestError``)
 - Add ``__view_schema__`` class attribute for multi-schema support
-- Add ``__view_aliases__`` class attribute for declaring alternate (legacy)
-  names of a view, used by dependency resolution and migrations
+- Add ``__view_aliases__`` class attribute for materialized views — a
+  ``{source_column: target_key}`` mapping mirroring the ``aliases``
+  parameter of ``create_materialized_view()``. Ignored for regular views.
 - **Breaking:** Rename ``__view_cascade_on_drop__`` → ``__view_cascade__``
   (aligns with SQL/Alembic naming). Replace ``__view_cascade_on_drop__`` with
   ``__view_cascade__`` in all ``ViewMixin`` subclasses.
