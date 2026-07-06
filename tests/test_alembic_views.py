@@ -3577,3 +3577,173 @@ class TestMvCanonicalizationNoCascade:
             f"Expected plain DROP MATERIALIZED VIEW IF EXISTS in SQL: {sql!r}"
         )
 
+
+# ===========================================================================
+# Dedup guard: non-view ops must pass through untouched
+# ===========================================================================
+
+class TestDedupPreservesNonViewOps:
+    """The dedup loop at the end of ``compare_views`` must only process
+    view ops. Built-in Alembic ops (CreateTableOp, DropTableOp, etc.) lack
+    a ``name`` attribute, so ``getattr(op, "name", None)`` returns ``None``
+    for all of them. Without a guard, every non-view op produces an
+    identical dedup key ``("create_or_replace"|"drop", None, None)`` and all
+    but the first are silently discarded — losing table migrations.
+    """
+
+    @staticmethod
+    def _make_context_with_existing_ops(existing_ops):
+        """Build a mock autogen_context + upgrade_ops pre-populated with
+        ``existing_ops`` (non-view ops that Alembic's own comparators may
+        have already appended)."""
+        metadata = MagicMock()
+        metadata.info = {"sqlalchemy_utils_views": []}
+
+        autogen_context = MagicMock()
+        autogen_context.connection = MagicMock()
+        autogen_context.connection.dialect.name = "postgresql"
+        autogen_context.metadata = metadata
+
+        upgrade_ops = MagicMock()
+        upgrade_ops.ops = list(existing_ops)
+        return autogen_context, upgrade_ops
+
+    @staticmethod
+    def _patch_comparator(db_views=None, db_mvs=None):
+        import sqlalchemy_utils.alembic.comparator as comparator_module
+
+        if db_views is None:
+            db_views = {}
+        if db_mvs is None:
+            db_mvs = {}
+        return (
+            patch.object(comparator_module, "get_database_views",
+                         return_value=db_views),
+            patch.object(comparator_module, "get_database_materialized_views",
+                         return_value=db_mvs),
+            patch.object(comparator_module, "_canonicalize_all_views",
+                        return_value=({}, {}, set())),
+            patch.object(comparator_module, "get_dependent_views",
+                        return_value={}),
+            patch.object(comparator_module, "log"),
+        )
+
+    def test_create_table_op_preserved_alongside_create_view_op(self):
+        """A CreateTableOp already in upgrade_ops.ops must survive the
+        dedup loop when a CreateViewOp is also emitted.
+
+        Without the guard, both ops have no ``name``-based key collision
+        risk individually, but multiple non-view ops with ``name=None``
+        collide with each other AND with any view op that happens to share
+        the same (family, None, None) key. The critical regression: two
+        distinct non-view ops (CreateTableOp + DropTableOp) get deduped
+        down to one because both yield ``name=None``.
+        """
+        from alembic.operations.ops import (
+            CreateTableOp, DropTableOp,
+        )
+        from sqlalchemy import Column, Integer, MetaData, Table
+
+        md = MetaData()
+        table_a = Table("table_a", md, Column("id", Integer, primary_key=True))
+        table_b = Table("table_b", md, Column("id", Integer, primary_key=True))
+        create_table = CreateTableOp.from_table(table_a)
+        drop_table = DropTableOp.from_table(table_b)
+
+        autogen_context, upgrade_ops = self._make_context_with_existing_ops(
+            [create_table, drop_table]
+        )
+
+        patches = self._patch_comparator()
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            compare_views(autogen_context, upgrade_ops, [None])
+
+        op_types = [type(op).__name__ for op in upgrade_ops.ops]
+        assert "CreateTableOp" in op_types, (
+            f"CreateTableOp was silently dropped by the dedup loop. "
+            f"Got ops: {op_types}"
+        )
+        assert "DropTableOp" in op_types, (
+            f"DropTableOp was silently dropped by the dedup loop. "
+            f"Got ops: {op_types}"
+        )
+
+    def test_multiple_non_view_ops_all_preserved(self):
+        """Multiple CreateTableOps (all with name=None) must ALL survive.
+
+        This is the core regression: without the guard, N CreateTableOps
+        all dedup to the same key ("create_or_replace", None, None) and
+        only the first survives. Silent data loss.
+        """
+        from alembic.operations.ops import CreateTableOp
+        from sqlalchemy import Column, Integer, MetaData, Table
+
+        md = MetaData()
+        tables = [
+            CreateTableOp.from_table(Table(f"t{i}", md, Column("id", Integer)))
+            for i in range(5)
+        ]
+
+        autogen_context, upgrade_ops = self._make_context_with_existing_ops(
+            tables
+        )
+
+        patches = self._patch_comparator()
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            compare_views(autogen_context, upgrade_ops, [None])
+
+        create_table_count = sum(
+            1 for op in upgrade_ops.ops
+            if isinstance(op, CreateTableOp)
+        )
+        assert create_table_count == 5, (
+            f"Expected all 5 CreateTableOps to survive dedup, got "
+            f"{create_table_count}. Silent data loss in dedup loop. "
+            f"Ops: {[type(op).__name__ for op in upgrade_ops.ops]}"
+        )
+
+    def test_non_view_op_preserved_alongside_view_drop(self):
+        """A CreateTableOp must survive when compare_views also emits a
+        DropViewOp for a view present in the DB but not the model.
+
+        Both ops have ``schema=None``; without the guard the CreateTableOp
+        (family "create_or_replace", name None) and the DropViewOp (family
+        "drop", name "v") would not collide, but two DropViewOps for
+        different views would both get name from the op — the real risk is
+        multiple non-view ops colliding with each other, covered above. This
+        test confirms the mixed scenario (non-view + view op) is stable.
+        """
+        from alembic.operations.ops import CreateTableOp
+        from sqlalchemy import Column, Integer, MetaData, Table
+
+        md = MetaData()
+        create_table = CreateTableOp.from_table(
+            Table("real_table", md, Column("id", Integer))
+        )
+
+        autogen_context, upgrade_ops = self._make_context_with_existing_ops(
+            [create_table]
+        )
+
+        # "old_view" is in DB but not in model -> compare_views emits DropViewOp
+        patches = self._patch_comparator(
+            db_views={"old_view": "SELECT 1 AS col"}
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            compare_views(autogen_context, upgrade_ops, [None])
+
+        has_create_table = any(
+            isinstance(op, CreateTableOp) for op in upgrade_ops.ops
+        )
+        has_drop_view = any(
+            isinstance(op, DropViewOp) for op in upgrade_ops.ops
+        )
+        assert has_create_table, (
+            f"CreateTableOp lost in dedup. "
+            f"Ops: {[type(op).__name__ for op in upgrade_ops.ops]}"
+        )
+        assert has_drop_view, (
+            f"DropViewOp lost in dedup. "
+            f"Ops: {[type(op).__name__ for op in upgrade_ops.ops]}"
+        )
+

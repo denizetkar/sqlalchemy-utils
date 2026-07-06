@@ -43,6 +43,17 @@ from sqlalchemy_utils.alembic.operations import (
     CreateMaterializedViewOp,
     DropMaterializedViewOp,
     ReplaceMaterializedViewOp,
+    RefreshMaterializedViewOp,
+)
+
+_VIEW_OP_TYPES: tuple[type, ...] = (
+    CreateViewOp,
+    DropViewOp,
+    ReplaceViewOp,
+    CreateMaterializedViewOp,
+    DropMaterializedViewOp,
+    ReplaceMaterializedViewOp,
+    RefreshMaterializedViewOp,
 )
 from sqlalchemy_utils.alembic.depend import resolve_create_order, resolve_drop_order
 
@@ -509,6 +520,14 @@ def compare_views(
     seen: set = set()
     deduped: list = []
     for op in upgrade_ops.ops:
+        # Only view ops participate in dedup. Non-view ops (Alembic
+        # built-ins like CreateTableOp) lack a ``name`` attribute, so
+        # getattr returns None for all of them — without this guard every
+        # non-view op collides on ("create_or_replace"|"drop", None, None)
+        # and all but the first are silently discarded.
+        if not isinstance(op, _VIEW_OP_TYPES):
+            deduped.append(op)
+            continue
         # Normalize op type to a family prefix (create/replace/drop)
         # so conflicting ops for the same view are deduped. Refresh ops
         # are excluded from dedup entirely — they are idempotent side
