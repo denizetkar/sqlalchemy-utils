@@ -176,12 +176,6 @@ database), adopting the autogenerate integration needs a little care.
    ``alembic upgrade --sql`` so you can inspect the generated SQL before it
    touches the database.
 
-5. **Renaming a view**.  If you are renaming an existing view rather than
-   adding/removing one, declare ``__view_aliases__ = {'old_db_name'}`` on
-   the new :class:`~sqlalchemy_utils.view_mixin.ViewMixin` class so the
-   comparator recognizes the legacy name and emits a ``replace_view``
-   rather than a spurious drop+create.
-
 .. warning::
 
    The first autogenerate run against a legacy database will propose dropping
@@ -214,6 +208,7 @@ API reference
 
 .. autoclass:: sqlalchemy_utils.view_record.ViewRecord
    :members:
+   :exclude-members: __post_init__,__eq__,__hash__,__repr__
 
 Extending
 ---------
@@ -233,17 +228,21 @@ implement ``reverse()`` for downgrade generation, and add a renderer via
 ``renderers.dispatch_for``.
 
 
-Internal / extension points
+Advanced helpers
 ---------------------------
 
-The following comparator is used internally by
-:func:`register_view_comparator`.  It is not part of the public API and may
-change between releases; prefer calling ``register_view_comparator()`` in your
-``env.py``.
-
-``compare_views(autogen_context, upgrade_ops, schemas=None)`` is the Alembic
+The following helpers are used internally by
+:func:`register_view_comparator`.  ``compare_views`` is the Alembic
 ``"schema"`` comparator entry point registered by
-:func:`register_view_comparator`.  It reads model view definitions from
+:func:`register_view_comparator`; it is not part of the public API and may
+change between releases.  The remaining helpers (``resolve_create_order``,
+``resolve_drop_order``, ``get_database_views``,
+``get_database_materialized_views``, ``get_dependent_views``) are exposed
+in :data:`sqlalchemy_utils.alembic.__all__` and are safe for advanced
+callers to use directly.
+
+``compare_views(autogen_context, upgrade_ops, schemas=None)`` reads model
+view definitions from
 ``metadata.info['sqlalchemy_utils_views']``, canonicalizes each view inside a
 rolled-back savepoint, and appends ``CreateViewOp`` / ``DropViewOp`` /
 ``ReplaceViewOp`` (and materialized variants) to *upgrade_ops*.

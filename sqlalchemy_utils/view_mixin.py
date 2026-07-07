@@ -91,7 +91,7 @@ class ViewMixin:
     __view_schema__ = None
     __view_cascade__ = True
     __view_replace__ = False
-    __view_aliases__: dict | None = None
+    __view_aliases__: dict[str, str] | None = None
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -123,7 +123,8 @@ class ViewMixin:
         if isinstance(selectable, str):
             raise TypeError(
                 f"{cls.__name__}.__view_selectable__ must be a SQLAlchemy "
-                f"selectable, not a string"
+                f"selectable (e.g. sa.select(...) or sa.text(...)), not a "
+                f"string. Wrap your SQL in sa.text('...') first."
             )
 
         metadata = cls.metadata

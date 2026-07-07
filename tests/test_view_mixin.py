@@ -50,13 +50,13 @@ def test_viewmixin_none_selectable_raises_typeerror():
 
 
 def test_viewmixin_string_selectable_raises_typeerror():
-    """String __view_selectable__ raises TypeError."""
+    """String __view_selectable__ raises TypeError with helpful message."""
     class StringView(ViewMixin):
         __tablename__ = 'string_view'
         __view_selectable__ = "SELECT 1 AS id"
         metadata = sa.MetaData()
 
-    with pytest.raises(TypeError, match="not a string"):
+    with pytest.raises(TypeError, match="SQLAlchemy selectable"):
         StringView.__declare_last__()
 
 

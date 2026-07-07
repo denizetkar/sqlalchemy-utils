@@ -37,7 +37,15 @@ class CreateView(DDLElement):
     :raises ValueError: if both ``materialized`` and ``replace`` are True.
     """
 
-    def __init__(self, name, selectable, materialized=False, replace=False, *, schema=None):
+    def __init__(
+        self,
+        name: str,
+        selectable: str | ClauseElement,
+        materialized: bool = False,
+        replace: bool = False,
+        *,
+        schema: str | None = None,
+    ) -> None:
         if materialized and replace:
             raise ValueError('Cannot use CREATE OR REPLACE with materialized views')
         self.name = name
@@ -63,7 +71,14 @@ def compile_create_materialized_view(element, compiler, **kw):
 class DropView(DDLElement):
     """DDL element for DROP VIEW (or DROP MATERIALIZED VIEW)."""
 
-    def __init__(self, name, materialized=False, cascade=True, *, schema=None):
+    def __init__(
+        self,
+        name: str,
+        materialized: bool = False,
+        cascade: bool = True,
+        *,
+        schema: str | None = None,
+    ) -> None:
         self.name = name
         self.materialized = materialized
         self.cascade = cascade
@@ -89,6 +104,7 @@ def create_table_from_selectable(
     indexes: list[sa.Index] | None = None,
     metadata: sa.MetaData | None = None,
     aliases: dict[str, str] | None = None,
+    *,
     schema: str | None = None,
     **kwargs,
 ) -> sa.Table:
@@ -372,7 +388,13 @@ class RefreshMaterializedView(Executable, ClauseElement):
 
     inherit_cache = True
 
-    def __init__(self, name, concurrently=False, *, schema=None):
+    def __init__(
+        self,
+        name: str,
+        *,
+        concurrently: bool = False,
+        schema: str | None = None,
+    ) -> None:
         self.name = name
         self.schema = schema
         self.concurrently = concurrently

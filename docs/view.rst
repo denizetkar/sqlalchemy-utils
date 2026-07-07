@@ -21,7 +21,7 @@ refresh_materialized_view
 .. note::
 
    For ORM models using :class:`~sqlalchemy_utils.view_mixin.ViewMixin`,
-   prefer :meth:`ViewMixin.refresh() <sqlalchemy_utils.view_mixin.ViewMixin.refresh>`
+   prefer :meth:`~sqlalchemy_utils.view_mixin.ViewMixin.refresh`
    which resolves the schema automatically.
 
 create_table_from_selectable

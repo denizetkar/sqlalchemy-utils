@@ -8,15 +8,13 @@ import sqlalchemy as sa
 def _query_view_catalog(connection: sa.engine.Connection, table: str, name_col: str, schema: str | None = None) -> dict[str, str]:
     """Query a pg_catalog view table for names and definitions.
 
-    Args:
-        connection: SQLAlchemy Connection object.
-        table: Catalog table name (e.g. ``"pg_views"``, ``"pg_matviews"``).
-        name_col: Column name holding the view name (e.g. ``"viewname"``).
-        schema: Optional schema name filter. If None, only the connection's
-            current default schema is queried (via ``current_schema()``).
-
-    Returns:
-        Dictionary mapping view name to definition SQL.
+    :param connection: SQLAlchemy Connection object.
+    :param table: Catalog table name (e.g. ``"pg_views"``, ``"pg_matviews"``).
+    :param name_col: Column name holding the view name (e.g. ``"viewname"``).
+    :param schema: Optional schema name filter. If None, only the
+        connection's current default schema is queried (via
+        ``current_schema()``).
+    :returns: Dictionary mapping view name to definition SQL.
     """
     if not schema:  # catches None and ""
         sql = sa.text(
@@ -38,15 +36,14 @@ def get_database_views(connection: sa.engine.Connection, schema: str | None = No
 
     PostgreSQL-specific. Will raise on non-PostgreSQL dialects.
 
-    Args:
-        connection: SQLAlchemy Connection object.
-        schema: Optional schema name filter. If None, only the connection's
-            current default schema is queried (via ``current_schema()``).
+    :param connection: SQLAlchemy Connection object.
+    :param schema: Optional schema name filter. If None, only the
+        connection's current default schema is queried (via
+        ``current_schema()``).
+    :returns: Dictionary mapping view_name to definition SQL.
 
-    Returns:
-        Dictionary mapping view_name to definition SQL.
+    Example::
 
-    Example:
         >>> views = get_database_views(connection)  # current schema only
         >>> views = get_database_views(connection, schema="public")
     """
@@ -58,15 +55,14 @@ def get_database_materialized_views(connection: sa.engine.Connection, schema: st
 
     PostgreSQL-specific. Will raise on non-PostgreSQL dialects.
 
-    Args:
-        connection: SQLAlchemy Connection object.
-        schema: Optional schema name filter. If None, only the connection's
-            current default schema is queried (via ``current_schema()``).
+    :param connection: SQLAlchemy Connection object.
+    :param schema: Optional schema name filter. If None, only the
+        connection's current default schema is queried (via
+        ``current_schema()``).
+    :returns: Dictionary mapping matviewname to definition SQL.
 
-    Returns:
-        Dictionary mapping matviewname to definition SQL.
+    Example::
 
-    Example:
         >>> mvs = get_database_materialized_views(connection)  # current schema only
         >>> mvs = get_database_materialized_views(connection, schema="public")
     """
@@ -78,16 +74,13 @@ def get_dependent_views(connection: sa.engine.Connection, view_name: str, schema
 
     PostgreSQL-specific. Will raise on non-PostgreSQL dialects.
 
-    Args:
-        connection: SQLAlchemy Connection object.
-        view_name: Name of the view to check dependents for.
-        schema: Optional schema name. If None, returns dependents in any
-            schema. When provided, both the dependent and referenced views
-            are constrained to this schema.
-
-    Returns:
-        Dictionary mapping ``(dependent_name, dependent_schema)`` to its
-        definition. Keying by the ``(name, schema)`` tuple avoids
+    :param connection: SQLAlchemy Connection object.
+    :param view_name: Name of the view to check dependents for.
+    :param schema: Optional schema name. If None, returns dependents in
+        any schema. When provided, both the dependent and referenced
+        views are constrained to this schema.
+    :returns: Dictionary mapping ``(dependent_name, dependent_schema)``
+        to its definition. Keying by the ``(name, schema)`` tuple avoids
         cross-schema name collisions: two dependent views sharing a name
         in different schemas would otherwise collide and the second would
         overwrite the first. Empty dict if no dependents.

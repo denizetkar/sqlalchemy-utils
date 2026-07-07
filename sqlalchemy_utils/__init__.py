@@ -97,6 +97,7 @@ from .types import (  # noqa
 )
 from .view import (  # noqa
     create_materialized_view,
+    create_table_from_selectable,
     create_view,
     refresh_materialized_view,
 )
