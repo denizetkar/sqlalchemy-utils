@@ -4015,3 +4015,213 @@ class TestViewTypeChangeOrdering:
             f"{[(type(o).__name__, o.name) for o in upgrade_ops.ops]}"
         )
 
+
+# ===========================================================================
+# Cross-type reordering: deterministic order + dependency preservation
+# ===========================================================================
+
+class TestCrossTypeReorderDeterministic:
+    """When multiple views change type simultaneously, the drop+create
+    pairs emitted by ``_reorder_cross_type_drops_before_creates`` MUST
+    preserve the original relative order from ``ops`` so dependent views
+    are dropped before their dependencies and created after them.
+
+    Iterating over a set (``cross_keys = create_keys & drop_keys``) yields
+    non-deterministic order under Python hash randomization; this tests
+    that the function instead walks ``ops`` in order.
+    """
+
+    def test_preserves_original_order_with_two_views(self):
+        from sqlalchemy_utils.alembic.comparator import (
+            _reorder_cross_type_drops_before_creates,
+        )
+
+        # Two views A and B both change type (regular -> materialized).
+        # In `ops` the create for A precedes the create for B, and the
+        # drop for A precedes the drop for B. The cross-type pairs must
+        # be emitted in the order A's pair, then B's pair (drops before
+        # creates within each pair) — i.e. the order in which each key
+        # FIRST appeared in `ops`.
+        create_a = CreateMaterializedViewOp("v_a", "SELECT 1")
+        create_b = CreateMaterializedViewOp("v_b", "SELECT 2")
+        drop_a = DropViewOp("v_a", definition="SELECT 1 AS id")
+        drop_b = DropViewOp("v_b", definition="SELECT 2 AS id")
+
+        # Creates are listed before drops (matching the comparator's
+        # upgrade_ops.ops layout: create_ops extended before drop_ops).
+        ops = [create_a, create_b, drop_a, drop_b]
+
+        result = _reorder_cross_type_drops_before_creates(list(ops))
+
+        # Expected: drop_a, create_a, drop_b, create_b
+        # (drops emitted before creates for each key, in the order keys
+        # first appeared in `ops` — A appeared first, so A's pair first.)
+        names_and_types = [
+            (type(o).__name__, o.name) for o in result
+        ]
+        expected = [
+            ("DropViewOp", "v_a"),
+            ("CreateMaterializedViewOp", "v_a"),
+            ("DropViewOp", "v_b"),
+            ("CreateMaterializedViewOp", "v_b"),
+        ]
+        assert names_and_types == expected, (
+            f"Cross-type reordering must preserve original order "
+            f"(drop+create pairs in the order keys first appeared in "
+            f"`ops`). Got {names_and_types!r}, expected {expected!r}."
+        )
+
+    def test_order_deterministic_across_runs(self):
+        """The order of cross-type pairs must be identical on every call.
+
+        Because the bug is non-deterministic set iteration under hash
+        randomization, this test asserts the result matches the
+        expected order (i.e. the order from `ops`). When the set is
+        iterated, the order would (probabilistically) vary; this test
+        locks the contract that the function MUST walk `ops` in order.
+        """
+        from sqlalchemy_utils.alembic.comparator import (
+            _reorder_cross_type_drops_before_creates,
+        )
+
+        # Build a list of 5 views changing type, with creates before drops.
+        names = [f"view_{i}" for i in range(5)]
+        creates = [CreateMaterializedViewOp(n, "SELECT 1") for n in names]
+        drops = [DropViewOp(n, definition="SELECT 1 AS id") for n in names]
+        ops = creates + drops
+
+        result = _reorder_cross_type_drops_before_creates(list(ops))
+
+        # Build the expected drop+create pair order: for each name in
+        # the order it first appeared in `ops` (which is `names` order),
+        # emit drop then create.
+        result_names_in_order = [
+            o.name for o in result
+            if isinstance(o, (CreateMaterializedViewOp, DropViewOp))
+        ]
+        expected_pair_order = []
+        for n in names:
+            expected_pair_order.extend([n, n])
+
+        assert result_names_in_order == expected_pair_order, (
+            f"Cross-type reordering is non-deterministic or wrong order. "
+            f"Got {result_names_in_order!r}, expected "
+            f"{expected_pair_order!r} (drop+create pairs in original "
+            f"`ops` order)."
+        )
+
+    def test_drops_before_creates_within_each_pair(self):
+        """For each cross-type key, ALL drops MUST precede ALL creates."""
+        from sqlalchemy_utils.alembic.comparator import (
+            _reorder_cross_type_drops_before_creates,
+        )
+
+        create_a = CreateMaterializedViewOp("v_a", "SELECT 1")
+        drop_a = DropViewOp("v_a", definition="SELECT 1 AS id")
+
+        ops = [create_a, drop_a]
+        result = _reorder_cross_type_drops_before_creates(list(ops))
+
+        assert isinstance(result[0], DropViewOp)
+        assert isinstance(result[1], CreateMaterializedViewOp)
+
+
+# ===========================================================================
+# CreateMaterializedViewOp cascade_on_drop
+# ===========================================================================
+
+class TestCreateMaterializedViewOpCascade:
+    """CreateMaterializedViewOp must carry and honor a cascade_on_drop
+    field, mirroring CreateViewOp. The reverse() must propagate it to
+    the emitted DropMaterializedViewOp instead of hardcoding cascade=True.
+    """
+
+    def test_init_accepts_cascade_on_drop_false(self):
+        op = CreateMaterializedViewOp(
+            "mv", "SELECT 1", cascade_on_drop=False
+        )
+        assert op.cascade_on_drop is False
+
+    def test_init_defaults_cascade_on_drop_true(self):
+        op = CreateMaterializedViewOp("mv", "SELECT 1")
+        assert op.cascade_on_drop is True
+
+    def test_reverse_propagates_cascade_on_drop_false(self):
+        """reverse() must produce a DropMaterializedViewOp with
+        cascade=False when cascade_on_drop=False — not the hardcoded
+        cascade=True."""
+        op = CreateMaterializedViewOp(
+            "mv", "SELECT 1", cascade_on_drop=False
+        )
+        rev = op.reverse()
+        assert isinstance(rev, DropMaterializedViewOp)
+        assert rev.cascade is False, (
+            f"Expected cascade=False from reverse() when "
+            f"cascade_on_drop=False, got {rev.cascade!r}"
+        )
+
+    def test_reverse_defaults_cascade_true(self):
+        """reverse() defaults to cascade=True (behavior-preserving)."""
+        op = CreateMaterializedViewOp("mv", "SELECT 1")
+        rev = op.reverse()
+        assert isinstance(rev, DropMaterializedViewOp)
+        assert rev.cascade is True
+
+    def test_op_create_materialized_view_passes_cascade_on_drop(self):
+        """op.create_materialized_view(..., cascade_on_drop=False) must
+        produce a CreateMaterializedViewOp with cascade_on_drop=False."""
+        operations = MagicMock()
+        operations.invoke.return_value = None
+        CreateMaterializedViewOp.create_materialized_view(
+            operations, "mv", "SELECT 1", cascade_on_drop=False
+        )
+        operations.invoke.assert_called_once()
+        invoked_op = operations.invoke.call_args[0][0]
+        assert isinstance(invoked_op, CreateMaterializedViewOp)
+        assert invoked_op.cascade_on_drop is False
+
+
+# ===========================================================================
+# op.create_view cascade_on_drop passthrough + kwarg ordering
+# ===========================================================================
+
+class TestCreateViewOpCascadePassthrough:
+    """op.create_view must expose and forward cascade_on_drop, and the
+    keyword-only ordering must place schema before replace (matching
+    the other op.* helpers).
+    """
+
+    def test_op_create_view_accepts_cascade_on_drop_false(self):
+        operations = MagicMock()
+        operations.invoke.return_value = None
+        CreateViewOp.create_view(
+            operations, "v", "SELECT 1", cascade_on_drop=False
+        )
+        operations.invoke.assert_called_once()
+        invoked_op = operations.invoke.call_args[0][0]
+        assert isinstance(invoked_op, CreateViewOp)
+        assert invoked_op.cascade_on_drop is False
+
+    def test_op_create_view_defaults_cascade_on_drop_true(self):
+        operations = MagicMock()
+        operations.invoke.return_value = None
+        CreateViewOp.create_view(operations, "v", "SELECT 1")
+        operations.invoke.assert_called_once()
+        invoked_op = operations.invoke.call_args[0][0]
+        assert isinstance(invoked_op, CreateViewOp)
+        assert invoked_op.cascade_on_drop is True
+
+    def test_op_create_view_signature_schema_before_replace(self):
+        """The signature must be `*, schema=None, replace=False,
+        cascade_on_drop=True` — schema first, matching other op.* helpers."""
+        sig = inspect.signature(CreateViewOp.create_view)
+        params = list(sig.parameters.values())
+        # classmethod: cls is stripped, so params are
+        # [operations, name, definition, <keyword-only...>]. The keyword-only
+        # params start after `definition` (index 3).
+        kw_names = [p.name for p in params[3:]]
+        assert kw_names == ["schema", "replace", "cascade_on_drop"], (
+            f"Expected keyword-only params "
+            f"['schema', 'replace', 'cascade_on_drop'], got {kw_names!r}"
+        )
+

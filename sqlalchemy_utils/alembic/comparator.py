@@ -264,10 +264,11 @@ def _diff_views(
     Materialized-view ops are created with ``with_data=False`` (matches the
     previous inline behavior — autogenerate emits ``WITH NO DATA``).
 
-    ``cascade_by_name`` is consulted only for materialized-view Replace ops
-    so the user's ``cascade_on_drop`` preference propagates from the model
-    to the emitted ``ReplaceMaterializedViewOp``. Regular-view Replace ops
-    do not carry a ``cascade`` field (``CREATE OR REPLACE VIEW`` does not
+    ``cascade_by_name`` is consulted for materialized-view Create and
+    Replace ops so the user's ``cascade_on_drop`` preference propagates
+    from the model to the emitted ``CreateMaterializedViewOp`` /
+    ``ReplaceMaterializedViewOp``. Regular-view Replace ops do not
+    carry a ``cascade`` field (``CREATE OR REPLACE VIEW`` does not
     drop). Missing entries default to ``True`` (behavior-preserving).
     """
     if cascade_by_name is None:
@@ -278,7 +279,8 @@ def _diff_views(
             if is_materialized:
                 ops.append(
                     CreateMaterializedViewOp(
-                        name, definition, schema=schema, with_data=False
+                        name, definition, schema=schema, with_data=False,
+                        cascade_on_drop=cascade_by_name.get((name, schema), True),
                     )
                 )
             else:
@@ -407,18 +409,26 @@ def _reorder_cross_type_drops_before_creates(ops: list) -> list:
     if not cross_keys:
         return ops
 
+    # Walk `ops` in order so the cross-type keys are emitted in the
+    # order they FIRST appear. Iterating `cross_keys` (a set) would give
+    # non-deterministic order under Python hash randomization, which can
+    # reorder drop+create pairs of dependent views and break migrations.
     result: list = []
     buffered: dict = {}
-    emitted: set = set()
+    seen_keys: set = set()
+    cross_order: list = []
     for op in ops:
         key = (getattr(op, "name", None), getattr(op, "schema", None))
         if key not in cross_keys:
             result.append(op)
             continue
         buffered.setdefault(key, []).append(op)
+        if key not in seen_keys:
+            seen_keys.add(key)
+            cross_order.append(key)
 
     cross_ops_in_order = []
-    for key in cross_keys:
+    for key in cross_order:
         drops = [o for o in buffered.get(key, []) if _is_drop_family(o)]
         creates = [o for o in buffered.get(key, []) if _is_create_family(o)]
         cross_ops_in_order.extend(drops)
