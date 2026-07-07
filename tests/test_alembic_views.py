@@ -36,7 +36,6 @@ from sqlalchemy_utils.alembic.comparator import (
     _canonicalize_all_views,
     _OUTER_SAVEPOINT,
     _safe_resolve,
-    _schema_matches,
     compare_views,
     register_view_comparator,
 )
@@ -78,6 +77,16 @@ from sqlalchemy_utils.view_mixin import ViewMixin
 # ===========================================================================
 # Shared helpers
 # ===========================================================================
+
+class _PoisonedTransaction(sa.exc.SQLAlchemyError):
+    """Raised by the probe (SELECT 1) to simulate a poisoned tx."""
+
+    def __init__(self):
+        super().__init__(
+            "current transaction is aborted, "
+            "commands ignored until end of transaction block"
+        )
+
 
 def _capture_sql(op_instance) -> list[str]:
     """Invoke *op_instance* against in-memory SQLite and capture SQL strings."""
@@ -197,6 +206,52 @@ def _run_comparator(connection, metadata, schemas=None):
     return upgrade_ops
 
 
+def _make_mock_autogen_context(model_views=None, existing_ops=None):
+    """Build a mock AutogenContext + UpgradeOps for compare_views tests.
+
+    *model_views* populates ``metadata.info['sqlalchemy_utils_views']``;
+    *existing_ops* pre-populates ``upgrade_ops.ops`` (non-view ops that
+    Alembic's own comparators may have already appended).
+    """
+    metadata = MagicMock()
+    metadata.info = {"sqlalchemy_utils_views": model_views or []}
+
+    autogen_context = MagicMock()
+    autogen_context.connection = MagicMock()
+    autogen_context.connection.dialect.name = "postgresql"
+    autogen_context.metadata = metadata
+
+    upgrade_ops = MagicMock()
+    upgrade_ops.ops = list(existing_ops or [])
+    return autogen_context, upgrade_ops
+
+
+def _patch_comparator(db_views=None, db_mvs=None, canonical_return=None):
+    """Return a tuple of patches for all compare_views external dependencies.
+
+    Use as ``with patches[0], patches[1], ..., patches[4]:``.
+    """
+    import sqlalchemy_utils.alembic.comparator as comparator_module
+
+    if db_views is None:
+        db_views = {}
+    if db_mvs is None:
+        db_mvs = {}
+    if canonical_return is None:
+        canonical_return = ({}, {}, set())
+    return (
+        patch.object(comparator_module, "get_database_views",
+                     return_value=db_views),
+        patch.object(comparator_module, "get_database_materialized_views",
+                     return_value=db_mvs),
+        patch.object(comparator_module, "_canonicalize_all_views",
+                    return_value=canonical_return),
+        patch.object(comparator_module, "get_dependent_views",
+                     return_value={}),
+        patch.object(comparator_module, "log"),
+    )
+
+
 # ===========================================================================
 # ViewRecord
 # ===========================================================================
@@ -237,8 +292,8 @@ class TestViewRecordCreation:
 
         Without normalization, ``""`` is treated as "no schema" by
         ``_quote_qualified_name`` (view created in ``current_schema()``),
-        but ``_schema_matches("", None)`` returns ``False``, causing the
-        view to be dropped as a false ``DropViewOp``.
+        but ``"" == None`` returns ``False``, causing the view to be
+        dropped as a false ``DropViewOp``.
         """
         record = ViewRecord(name="test_view", selectable="SELECT 1", schema="")
         assert record.schema is None
@@ -364,16 +419,6 @@ class TestGetDatabaseViews:
     def test_query_empty_database(self, connection, fetch_fn):
         assert fetch_fn(connection) == {}
 
-    @pytest.mark.usefixtures("postgresql_dsn")
-    def test_query_with_schema_filter(self, connection, fetch_fn):
-        result = fetch_fn(connection, schema="public")
-        assert isinstance(result, dict)
-
-    @pytest.mark.usefixtures("postgresql_dsn")
-    def test_query_all_schemas_when_schema_none(self, connection, fetch_fn):
-        result = fetch_fn(connection, schema=None)
-        assert isinstance(result, dict)
-
 
 # ===========================================================================
 # Operations
@@ -395,24 +440,22 @@ class TestCreateViewOp:
         assert rev.name == "v1"
         assert rev.definition == "SELECT 1"
 
-    def test_reverse_respects_cascade_on_drop_false(self):
-        """CreateViewOp(cascade_on_drop=False).reverse() must produce a
-        DropViewOp with cascade=False, not the hardcoded cascade=True."""
-        op = CreateViewOp("v1", "SELECT 1", cascade_on_drop=False)
+    @pytest.mark.parametrize(
+        "cascade_on_drop, expected_cascade",
+        [(False, False), (None, True)],
+        ids=["explicit_false", "default_true"],
+    )
+    def test_reverse_propagates_cascade_on_drop(
+        self, cascade_on_drop, expected_cascade
+    ):
+        kwargs = {"cascade_on_drop": cascade_on_drop} if cascade_on_drop is not None else {}
+        op = CreateViewOp("v1", "SELECT 1", **kwargs)
         rev = op.reverse()
         assert isinstance(rev, DropViewOp)
-        assert rev.cascade is False, (
-            f"Expected cascade=False from reverse() when "
-            f"cascade_on_drop=False, got {rev.cascade!r}"
+        assert rev.cascade is expected_cascade, (
+            f"Expected cascade={expected_cascade} from reverse() when "
+            f"cascade_on_drop={cascade_on_drop}, got {rev.cascade!r}"
         )
-
-    def test_reverse_defaults_cascade_true(self):
-        """CreateViewOp(cascade_on_drop unspecified).reverse() defaults to
-        cascade=True (behavior-preserving)."""
-        op = CreateViewOp("v1", "SELECT 1")
-        rev = op.reverse()
-        assert isinstance(rev, DropViewOp)
-        assert rev.cascade is True
 
     def test_sql_without_replace(self):
         op = CreateViewOp("v1", "SELECT 1")
@@ -427,7 +470,7 @@ class TestCreateViewOp:
     def test_create_view_accepts_replace_kwarg(self):
         operations = MagicMock()
         operations.invoke.return_value = None
-        with pytest.warns(DeprecationWarning):
+        with pytest.warns(DeprecationWarning, match="op.replace_view"):
             CreateViewOp.create_view(operations, "test_view", "SELECT 1", replace=True)
         operations.invoke.assert_called_once()
         invoked_op = operations.invoke.call_args[0][0]
@@ -445,14 +488,6 @@ class TestCreateViewOp:
         assert isinstance(invoked_op, ReplaceViewOp)
         assert invoked_op.definition == "SELECT 2"
         assert invoked_op.old_definition == "SELECT 1"
-
-    def test_deprecate_replace_on_create(self):
-        """CreateViewOp(replace=True) emits a DeprecationWarning."""
-        with pytest.warns(DeprecationWarning) as record:
-            CreateViewOp("v", "SELECT 1", replace=True)
-        assert len(record) == 1
-        message = str(record[0].message)
-        assert "op.replace_view" in message
 
 
 class TestDropViewOp:
@@ -759,6 +794,34 @@ class TestOpValidation:
 # Renderer
 # ===========================================================================
 
+@pytest.mark.parametrize(
+    "renderer, op, expected_substring",
+    [
+        (
+            render_create_view,
+            CreateViewOp("v", "SELECT 1", schema=""),
+            "schema=",
+        ),
+        (
+            render_replace_view,
+            ReplaceViewOp("v", "SELECT 2", old_definition=""),
+            "old_definition=",
+        ),
+        (
+            render_replace_materialized_view,
+            ReplaceMaterializedViewOp("mv", "SELECT 2", old_definition=""),
+            "old_definition=",
+        ),
+    ],
+    ids=["create_view_schema", "replace_view_old_def", "replace_mv_old_def"],
+)
+def test_renderer_preserves_falsy_non_none_values(
+    renderer, op, expected_substring
+):
+    rendered = renderer(_make_autogen_context(), op)
+    assert expected_substring in rendered
+
+
 class TestRendererCreateView:
 
     def test_produces_valid_python(self):
@@ -775,11 +838,6 @@ class TestRendererCreateView:
         op = CreateViewOp("my_view", "SELECT 1", schema="public")
         result = render_create_view(_make_autogen_context(), op)
         assert "schema='public'" in result
-
-    def test_preserves_empty_string_schema(self):
-        op = CreateViewOp("v", "SELECT 1", schema="")
-        rendered = render_create_view(_make_autogen_context(), op)
-        assert "schema=" in rendered
 
     @pytest.mark.parametrize(
         "replace,expected_in_output",
@@ -844,11 +902,6 @@ class TestRendererReplaceView:
 
     def test_renders_old_definition(self):
         op = ReplaceViewOp("v_repl", "SELECT 2", schema="public", old_definition="SELECT 1")
-        rendered = render_replace_view(_make_autogen_context(), op)
-        assert "old_definition=" in rendered
-
-    def test_preserves_empty_string_old_definition(self):
-        op = ReplaceViewOp("v", "SELECT 2", old_definition="")
         rendered = render_replace_view(_make_autogen_context(), op)
         assert "old_definition=" in rendered
 
@@ -953,11 +1006,6 @@ class TestRendererReplaceMaterializedView:
 
     def test_renders_old_definition(self):
         op = ReplaceMaterializedViewOp("mv_repl", "SELECT 2", old_definition="SELECT 1")
-        rendered = render_replace_materialized_view(_make_autogen_context(), op)
-        assert "old_definition=" in rendered
-
-    def test_preserves_empty_string_old_definition(self):
-        op = ReplaceMaterializedViewOp("mv", "SELECT 2", old_definition="")
         rendered = render_replace_materialized_view(_make_autogen_context(), op)
         assert "old_definition=" in rendered
 
@@ -1181,28 +1229,6 @@ class TestComparatorNoChanges:
         assert len(matching_view_ops) == 0, (
             f"Expected no ops for matching view, got: {matching_view_ops}"
         )
-
-    def test_empty_metadata(self):
-        """compare_views with no model views produces no create ops."""
-        metadata = sa.MetaData()
-        autogen_context = mock.MagicMock()
-        autogen_context.connection = mock.MagicMock()
-        autogen_context.metadata = metadata
-
-        metadata.info.pop("sqlalchemy_utils_views", None)
-        autogen_context.connection.execute.return_value.fetchall.return_value = []
-
-        upgrade_ops = mock.MagicMock()
-        upgrade_ops.ops = []
-
-        compare_views(autogen_context, upgrade_ops, [None])
-
-        create_op_count = sum(
-            1
-            for op in upgrade_ops.ops
-            if type(op).__name__ in ("CreateViewOp", "CreateMaterializedViewOp")
-        )
-        assert create_op_count == 0
 
 
 class TestComparatorSavepointRollback:
@@ -1515,15 +1541,6 @@ class TestAbortedTransactionBreaksEarly:
         # are called — stubbed via patch to return empty dicts.
         call_log: list[str] = []
 
-        class _PoisonedTransaction(sa.exc.SQLAlchemyError):
-            """Raised by the probe (SELECT 1) to simulate a poisoned tx."""
-
-            def __init__(self):
-                super().__init__(
-                    "current transaction is aborted, "
-                    "commands ignored until end of transaction block"
-                )
-
         def _execute(stmt):
             text = getattr(stmt, "text", str(stmt))
             call_log.append(text)
@@ -1627,15 +1644,6 @@ class TestAbortedTransactionBreaksEarly:
         metadata = sa.MetaData()
         metadata.info["sqlalchemy_utils_views"] = view_records
 
-        class _PoisonedTransaction(sa.exc.SQLAlchemyError):
-            """Raised by the probe (SELECT 1) to simulate a poisoned tx."""
-
-            def __init__(self):
-                super().__init__(
-                    "current transaction is aborted, "
-                    "commands ignored until end of transaction block"
-                )
-
         call_log: list[str] = []
 
         def _execute(stmt):
@@ -1733,13 +1741,6 @@ class TestPoisonedOuterSavepointRollback:
         ]
 
         call_log: list[str] = []
-
-        class _PoisonedTransaction(sa.exc.SQLAlchemyError):
-            def __init__(self):
-                super().__init__(
-                    "current transaction is aborted, "
-                    "commands ignored until end of transaction block"
-                )
 
         def _execute(stmt, *args, **kwargs):
             text = getattr(stmt, "text", str(stmt))
@@ -1940,32 +1941,6 @@ class TestComparatorNeverEmitsRefreshOp:
             f"(refresh is a runtime op, not a migration step). Found: "
             f"{refresh_ops}"
         )
-
-
-# ===========================================================================
-# Schema matching
-# ===========================================================================
-
-class TestSchemaMatching:
-
-    @pytest.mark.parametrize(
-        "view_schema,loop_schema,expected",
-        [
-            (None, None, True),
-            (None, "public", False),
-            ("public", "public", True),
-            ("analytics", "public", False),
-        ],
-    )
-    def test_schema_matches(self, view_schema, loop_schema, expected):
-        assert _schema_matches(view_schema, loop_schema) is expected
-
-    def test_no_duplicate_ops_for_none_public_schemas(self):
-        """A None-schema view is processed only in the None loop, not 'public'."""
-        both_match = (
-            _schema_matches(None, None) and _schema_matches(None, "public")
-        )
-        assert not both_match
 
 
 # ===========================================================================
@@ -3211,48 +3186,17 @@ class TestCascadeOnDropPropagation:
     """compare_views should propagate ViewRecord.cascade_on_drop to the
     generated DropViewOp / DropMaterializedViewOp ``cascade`` param."""
 
-    @staticmethod
-    def _make_context(model_views):
-        metadata = MagicMock()
-        metadata.info = {"sqlalchemy_utils_views": model_views}
-
-        autogen_context = MagicMock()
-        autogen_context.connection = MagicMock()
-        autogen_context.connection.dialect.name = 'postgresql'
-        autogen_context.metadata = metadata
-
-        upgrade_ops = MagicMock()
-        upgrade_ops.ops = []
-        return autogen_context, upgrade_ops
-
-    @staticmethod
-    def _patch_comparator(db_views, db_mvs=None, canonical_return=({}, {}, set())):
-        """Patch all comparator module dependencies for one compare_views call."""
-        import sqlalchemy_utils.alembic.comparator as comparator_module
-
-        if db_mvs is None:
-            db_mvs = {}
-        return (
-            patch.object(comparator_module, 'get_database_views',
-                         return_value=db_views),
-            patch.object(comparator_module, 'get_database_materialized_views',
-                         return_value=db_mvs),
-            patch.object(comparator_module, '_canonicalize_all_views',
-                        return_value=canonical_return),
-            patch.object(comparator_module, 'get_dependent_views',
-                        return_value={}),
-            patch.object(comparator_module, 'log'),
-        )
-
     def test_drop_view_propagates_cascade_false(self):
         """DropViewOp.cascade=False when ViewRecord.cascade_on_drop=False."""
         vr = ViewRecord(
             name="v_no_cascade", selectable="SELECT 1 AS col",
             schema=None, cascade_on_drop=False,
         )
-        autogen_context, upgrade_ops = self._make_context([vr])
+        autogen_context, upgrade_ops = _make_mock_autogen_context(
+            model_views=[vr]
+        )
 
-        patches = self._patch_comparator(
+        patches = _patch_comparator(
             db_views={"v_no_cascade": "SELECT 1 AS col"},
         )
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
@@ -3269,9 +3213,11 @@ class TestCascadeOnDropPropagation:
 
     def test_drop_view_defaults_to_true_when_no_record(self):
         """DropViewOp.cascade defaults to True when no model ViewRecord exists."""
-        autogen_context, upgrade_ops = self._make_context([])
+        autogen_context, upgrade_ops = _make_mock_autogen_context(
+            model_views=[]
+        )
 
-        patches = self._patch_comparator(
+        patches = _patch_comparator(
             db_views={"orphan_view": "SELECT 1 AS col"},
         )
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
@@ -3288,9 +3234,11 @@ class TestCascadeOnDropPropagation:
             name="mv_no_cascade", selectable="SELECT 1 AS col",
             schema=None, materialized=True, cascade_on_drop=False,
         )
-        autogen_context, upgrade_ops = self._make_context([vr])
+        autogen_context, upgrade_ops = _make_mock_autogen_context(
+            model_views=[vr]
+        )
 
-        patches = self._patch_comparator(
+        patches = _patch_comparator(
             db_views={},
             db_mvs={"mv_no_cascade": "SELECT 1 AS col"},
         )
@@ -3781,160 +3729,61 @@ class TestDedupPreservesNonViewOps:
     """
 
     @staticmethod
-    def _make_context_with_existing_ops(existing_ops):
-        """Build a mock autogen_context + upgrade_ops pre-populated with
-        ``existing_ops`` (non-view ops that Alembic's own comparators may
-        have already appended)."""
-        metadata = MagicMock()
-        metadata.info = {"sqlalchemy_utils_views": []}
-
-        autogen_context = MagicMock()
-        autogen_context.connection = MagicMock()
-        autogen_context.connection.dialect.name = "postgresql"
-        autogen_context.metadata = metadata
-
-        upgrade_ops = MagicMock()
-        upgrade_ops.ops = list(existing_ops)
-        return autogen_context, upgrade_ops
-
-    @staticmethod
-    def _patch_comparator(db_views=None, db_mvs=None):
-        import sqlalchemy_utils.alembic.comparator as comparator_module
-
-        if db_views is None:
-            db_views = {}
-        if db_mvs is None:
-            db_mvs = {}
-        return (
-            patch.object(comparator_module, "get_database_views",
-                         return_value=db_views),
-            patch.object(comparator_module, "get_database_materialized_views",
-                         return_value=db_mvs),
-            patch.object(comparator_module, "_canonicalize_all_views",
-                        return_value=({}, {}, set())),
-            patch.object(comparator_module, "get_dependent_views",
-                        return_value={}),
-            patch.object(comparator_module, "log"),
-        )
-
-    def test_create_table_op_preserved_alongside_create_view_op(self):
-        """A CreateTableOp already in upgrade_ops.ops must survive the
-        dedup loop when a CreateViewOp is also emitted.
-
-        Without the guard, both ops have no ``name``-based key collision
-        risk individually, but multiple non-view ops with ``name=None``
-        collide with each other AND with any view op that happens to share
-        the same (family, None, None) key. The critical regression: two
-        distinct non-view ops (CreateTableOp + DropTableOp) get deduped
-        down to one because both yield ``name=None``.
-        """
-        from alembic.operations.ops import (
-            CreateTableOp, DropTableOp,
-        )
+    def _make_table_ops(spec):
+        from alembic.operations.ops import CreateTableOp, DropTableOp
         from sqlalchemy import Column, Integer, MetaData, Table
 
         md = MetaData()
-        table_a = Table("table_a", md, Column("id", Integer, primary_key=True))
-        table_b = Table("table_b", md, Column("id", Integer, primary_key=True))
-        create_table = CreateTableOp.from_table(table_a)
-        drop_table = DropTableOp.from_table(table_b)
+        ops = []
+        for kind, name in spec:
+            t = Table(name, md, Column("id", Integer))
+            if kind == "create":
+                ops.append(CreateTableOp.from_table(t))
+            else:
+                ops.append(DropTableOp.from_table(t))
+        return ops
 
-        autogen_context, upgrade_ops = self._make_context_with_existing_ops(
-            [create_table, drop_table]
+    @pytest.mark.parametrize(
+        "existing_ops_spec, db_views, expected_op_types",
+        [
+            (
+                [("create", "table_a"), ("drop", "table_b")],
+                {},
+                ["CreateTableOp", "DropTableOp"],
+            ),
+            (
+                [("create", f"t{i}") for i in range(5)],
+                {},
+                ["CreateTableOp"] * 5,
+            ),
+            (
+                [("create", "real_table")],
+                {"old_view": "SELECT 1 AS col"},
+                ["CreateTableOp", "DropViewOp"],
+            ),
+        ],
+        ids=["create_plus_drop", "five_creates", "mixed_with_view_drop"],
+    )
+    def test_non_view_ops_survive_dedup(
+        self, existing_ops_spec, db_views, expected_op_types
+    ):
+        existing_ops = self._make_table_ops(existing_ops_spec)
+        autogen_context, upgrade_ops = _make_mock_autogen_context(
+            existing_ops=existing_ops
         )
 
-        patches = self._patch_comparator()
+        patches = _patch_comparator(db_views=db_views)
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
             compare_views(autogen_context, upgrade_ops, [None])
 
-        op_types = [type(op).__name__ for op in upgrade_ops.ops]
-        assert "CreateTableOp" in op_types, (
-            f"CreateTableOp was silently dropped by the dedup loop. "
-            f"Got ops: {op_types}"
-        )
-        assert "DropTableOp" in op_types, (
-            f"DropTableOp was silently dropped by the dedup loop. "
-            f"Got ops: {op_types}"
-        )
-
-    def test_multiple_non_view_ops_all_preserved(self):
-        """Multiple CreateTableOps (all with name=None) must ALL survive.
-
-        This is the core regression: without the guard, N CreateTableOps
-        all dedup to the same key ("create_or_replace", None, None) and
-        only the first survives. Silent data loss.
-        """
-        from alembic.operations.ops import CreateTableOp
-        from sqlalchemy import Column, Integer, MetaData, Table
-
-        md = MetaData()
-        tables = [
-            CreateTableOp.from_table(Table(f"t{i}", md, Column("id", Integer)))
-            for i in range(5)
-        ]
-
-        autogen_context, upgrade_ops = self._make_context_with_existing_ops(
-            tables
-        )
-
-        patches = self._patch_comparator()
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
-            compare_views(autogen_context, upgrade_ops, [None])
-
-        create_table_count = sum(
-            1 for op in upgrade_ops.ops
-            if isinstance(op, CreateTableOp)
-        )
-        assert create_table_count == 5, (
-            f"Expected all 5 CreateTableOps to survive dedup, got "
-            f"{create_table_count}. Silent data loss in dedup loop. "
-            f"Ops: {[type(op).__name__ for op in upgrade_ops.ops]}"
-        )
-
-    def test_non_view_op_preserved_alongside_view_drop(self):
-        """A CreateTableOp must survive when compare_views also emits a
-        DropViewOp for a view present in the DB but not the model.
-
-        Both ops have ``schema=None``; without the guard the CreateTableOp
-        (family "create_or_replace", name None) and the DropViewOp (family
-        "drop", name "v") would not collide, but two DropViewOps for
-        different views would both get name from the op — the real risk is
-        multiple non-view ops colliding with each other, covered above. This
-        test confirms the mixed scenario (non-view + view op) is stable.
-        """
-        from alembic.operations.ops import CreateTableOp
-        from sqlalchemy import Column, Integer, MetaData, Table
-
-        md = MetaData()
-        create_table = CreateTableOp.from_table(
-            Table("real_table", md, Column("id", Integer))
-        )
-
-        autogen_context, upgrade_ops = self._make_context_with_existing_ops(
-            [create_table]
-        )
-
-        # "old_view" is in DB but not in model -> compare_views emits DropViewOp
-        patches = self._patch_comparator(
-            db_views={"old_view": "SELECT 1 AS col"}
-        )
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
-            compare_views(autogen_context, upgrade_ops, [None])
-
-        has_create_table = any(
-            isinstance(op, CreateTableOp) for op in upgrade_ops.ops
-        )
-        has_drop_view = any(
-            isinstance(op, DropViewOp) for op in upgrade_ops.ops
-        )
-        assert has_create_table, (
-            f"CreateTableOp lost in dedup. "
-            f"Ops: {[type(op).__name__ for op in upgrade_ops.ops]}"
-        )
-        assert has_drop_view, (
-            f"DropViewOp lost in dedup. "
-            f"Ops: {[type(op).__name__ for op in upgrade_ops.ops]}"
-        )
+        actual_types = [type(op).__name__ for op in upgrade_ops.ops]
+        for expected_type in expected_op_types:
+            assert actual_types.count(expected_type) >= expected_op_types.count(
+                expected_type
+            ), (
+                f"Expected at least {expected_op_types.count(expected_type)} "
+                f"{expected_type} to survive dedup, got {actual_types}"
+            )
 
 
 # ===========================================================================

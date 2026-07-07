@@ -176,8 +176,6 @@ class ViewMixin:
             for col in cls.__table__.columns:
                 declared_col_names.add(col.name)
                 declared_col_types[col.name] = col.type
-
-        if hasattr(cls, '__table__') and cls.__table__ is not None:
             metadata.remove(cls.__table__)
 
         # metadata=None so DDL is not emitted by metadata.create_all();

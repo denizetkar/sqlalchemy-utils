@@ -537,7 +537,7 @@ def compare_views(
         # savepoint. Views that fail to canonicalize are returned in
         # `skipped` so drop detection can ignore them.
         schema_records = [
-            vr for vr in model_records if _schema_matches(vr.schema, schema)
+            vr for vr in model_records if vr.schema == schema
         ]
         model_view_defs, model_mv_defs, skipped = _canonicalize_all_views(
             connection, schema_records, all_db
@@ -660,11 +660,6 @@ def compare_views(
     upgrade_ops.ops = deduped
 
 
-def _schema_matches(view_schema: str | None, loop_schema: str | None) -> bool:
-    """Check whether a view's schema matches the current loop schema (exact match)."""
-    return view_schema == loop_schema
-
-
 def register_view_comparator() -> None:
     """Register view autogenerate hooks with Alembic.
 
@@ -693,9 +688,7 @@ def register_view_comparator() -> None:
     try:
         from . import renderer  # noqa: F401
     except ImportError as exc:
-        import logging
-
-        logging.getLogger(__name__).warning(
+        log.warning(
             "Failed to import renderer module; autogenerate will detect but "
             "not render view operations: %s",
             exc,

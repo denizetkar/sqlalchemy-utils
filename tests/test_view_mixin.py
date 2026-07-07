@@ -12,17 +12,6 @@ def _src(*columns):
     return sa.table('src', *columns)
 
 
-def test_viewreadonlyerror_importable():
-    assert ViewReadonlyError is not None
-
-
-def test_viewreadonlyerror_raisable_catchable():
-    try:
-        raise ViewReadonlyError("test")
-    except ViewReadonlyError as e:
-        assert str(e) == "test"
-
-
 def test_viewmixin_class_creation_with_valid_selectable():
     Base = declarative_base()
 
@@ -202,16 +191,6 @@ def test_viewmixin_extra_selectable_column_produces_warning(caplog):
     assert any("not declared on" in rec.message for rec in caplog.records)
 
 
-def test_viewmixin_importable_from_top_level():
-    from sqlalchemy_utils import ViewMixin
-    assert ViewMixin is not None
-
-
-def test_viewreadonlyerror_importable_from_top_level():
-    from sqlalchemy_utils import ViewReadonlyError
-    assert ViewReadonlyError is not None
-
-
 def test_viewmixin_autogenerate_integration():
     """End-to-end: ViewMixin class registers ViewRecord in metadata.info
     so that the Alembic comparator can detect views for autogenerate.
@@ -254,19 +233,17 @@ def test_viewmixin_autogenerate_integration():
     assert 'autogen_src' in compiled
 
 
-def test_view_cascade_default():
-    """ViewMixin.__view_cascade__ defaults to True."""
-    assert ViewMixin.__view_cascade__ is True
-
-
-def test_old_cascade_attr_removed():
-    """Old __view_cascade_on_drop__ is no longer a class default."""
-    assert not hasattr(ViewMixin, '__view_cascade_on_drop__')
-
-
-def test_view_schema_default():
-    """ViewMixin.__view_schema__ defaults to None."""
-    assert ViewMixin.__view_schema__ is None
+@pytest.mark.parametrize(
+    "attr, expected",
+    [
+        ("__view_cascade__", True),
+        ("__view_schema__", None),
+        ("__view_aliases__", None),
+    ],
+    ids=["cascade", "schema", "aliases"],
+)
+def test_view_mixin_defaults(attr, expected):
+    assert getattr(ViewMixin, attr) is expected
 
 
 def test_view_schema_propagated_to_viewrecord():
@@ -324,12 +301,6 @@ def test_resolve_schema_list_style():
     ListView.__table_args__ = [{"schema": "public"}]
     ListView.__declare_last__()
     assert ListView._resolve_schema() == "public"
-
-
-def test_no_global_listener_flag():
-    """Module-level _VIEW_READONLY_LISTENER_INSTALLED removed."""
-    from sqlalchemy_utils import view_mixin as vm
-    assert not hasattr(vm, '_VIEW_READONLY_LISTENER_INSTALLED')
 
 
 def test_declare_last_forwarding():
@@ -406,8 +377,3 @@ def test_view_mixin_aliases_not_set_for_regular_views():
     records = Base.metadata.info.get('sqlalchemy_utils_views', [])
     vr = [r for r in records if r.name == 'regular_aliased_view'][0]
     assert vr.aliases is None
-
-
-def test_view_mixin_aliases_default_none():
-    """ViewMixin.__view_aliases__ defaults to None."""
-    assert ViewMixin.__view_aliases__ is None

@@ -19,11 +19,9 @@ import sqlalchemy as sa
 from sqlalchemy import create_engine
 
 from sqlalchemy_utils.alembic.pg_catalog import (
+    get_database_materialized_views,
     get_database_views,
     get_dependent_views,
-)
-from sqlalchemy_utils.alembic.pg_catalog import (
-    get_database_materialized_views,
 )
 
 

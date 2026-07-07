@@ -1,9 +1,7 @@
 """
 Regression tests for validated schema-parameter and related bugs.
 
-These tests document bugs that exist in the current codebase. They are
-intentionally written to FAIL against the unfixed code, proving each bug
-is real. Each test names the bug it covers.
+Each test locks a previously-fixed bug so regressions are caught immediately.
 
 Run:
     PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 python3 -m pytest \
