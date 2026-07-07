@@ -45,3 +45,10 @@ exclude_patterns = ["_build"]
 # pygments_style = "sphinx"
 
 html_theme = "sphinx_rtd_theme"
+
+# -- Cross-references to other projects' docs ---------------------------------
+intersphinx_mapping = {
+    "python": ("https://docs.python.org/3", None),
+    "sqlalchemy": ("https://docs.sqlalchemy.org/en/20/", None),
+    "alembic": ("https://alembic.sqlalchemy.org/en/latest/", None),
+}

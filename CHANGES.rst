@@ -13,8 +13,10 @@ Unreleased
 
   NULL values continue to return ``None``.
 - Add Alembic integration for views: migration operations (``create_view``,
-  ``drop_view``, ``replace_view``, and materialized equivalents), autogenerate
-  comparator (``register_view_comparator()``), and renderer. Requires
+  ``drop_view``, ``replace_view``, ``create_materialized_view``,
+  ``drop_materialized_view``, ``replace_materialized_view``,
+  ``refresh_materialized_view``), autogenerate comparator
+  (``register_view_comparator()``), and renderer. Requires
   ``pip install sqlalchemy-utils[alembic]``. Activate by calling
   ``register_view_comparator()`` in your Alembic ``env.py`` before
   ``context.configure()``; see the View Migrations guide.

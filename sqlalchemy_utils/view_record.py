@@ -83,8 +83,8 @@ class ViewRecord:
 
         This is the single source of truth for selectable-to-string
         compilation used by
-        :func:`sqlalchemy_utils.alembic.comparator._build_create_sql`
-        and :func:`sqlalchemy_utils.alembic.depend._build_dependency_graph`.
+        ``sqlalchemy_utils.alembic.comparator._build_create_sql``
+        and ``sqlalchemy_utils.alembic.depend._build_dependency_graph``.
         """
         sel = self.selectable
         if isinstance(sel, str):
