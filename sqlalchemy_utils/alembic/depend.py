@@ -31,21 +31,10 @@ def _build_dependency_graph(
     *,
     dialect: sa.engine.Dialect | None = None,
 ) -> dict[str, set[str]]:
-    """Build a ``{name: {dep_name, ...}}`` mapping.
-
-    For every view in *view_records*, we scan its definition for references
-    to **other** view names (from *view_records* or *db_views*) using
-    word-boundary regex matching.
-
-    *db_views* represents views that already exist in the database — they
-    are potential dependencies but are NOT included in the sort output.
-
-    *dialect*, when provided, is forwarded to
-    :meth:`ViewRecord.compiled_definition` so the dependency scan matches
-    the dialect-qualified SQL that will actually be emitted (e.g.
-    schema-qualified identifiers rendered the same way the comparator
-    renders them).  When *None*, default compilation is used.
-    """
+    """Build ``{name: {dep_name, ...}}`` by word-boundary matching each view's
+    definition against other view names (model + DB).  *db_views* names are
+    potential dependencies but excluded from sort output.  *dialect* is
+    forwarded to ``compiled_definition`` so scanning matches emitted SQL."""
     # All known view names (model + DB) for matching
     model_names: set[str] = {vr.name for vr in view_records}
     db_names: set[str] = set(db_views.keys()) - model_names  # only DB-only
@@ -69,8 +58,8 @@ def _build_dependency_graph(
 def _records_by_name(
     view_records: list[ViewRecord],
 ) -> dict[str, list[ViewRecord]]:
-    """Return a ``{name: [ViewRecord, ...]}`` lookup preserving all records
-    with the same name (e.g. same name in different schemas)."""
+    """Return ``{name: [ViewRecord, ...]}`` preserving all records (e.g. same
+    name across schemas)."""
     result: dict[str, list[ViewRecord]] = {}
     for vr in view_records:
         result.setdefault(vr.name, []).append(vr)
@@ -86,17 +75,8 @@ def _toposort(
 ) -> list[ViewRecord]:
     """Core topological sort with cycle detection.
 
-    :param view_records: The model views to sort.
-    :param db_views: Current database view definitions (name → SQL).
-        These are considered as pre-existing dependencies.
-    :param reverse: If *True*, return drop order (dependents before
-        dependencies).
-    :param dialect: Optional SQLAlchemy dialect forwarded to
-        :meth:`ViewRecord.compiled_definition` so dependency detection
-        matches the dialect-qualified SQL emitted by the comparator.
-    :returns: Sorted view records.
-    :raises ValueError: If a cycle is detected among the view dependencies.
-    """
+    *reverse* returns drop order (dependents first).  *dialect* is forwarded
+    to ``compiled_definition``.  Raises ``ValueError`` on cycles."""
     if db_views is None:
         db_views = {}
     graph = _build_dependency_graph(view_records, db_views, dialect=dialect)

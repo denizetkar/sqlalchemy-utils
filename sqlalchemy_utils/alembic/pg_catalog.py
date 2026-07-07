@@ -93,22 +93,12 @@ def get_dependent_views(connection: sa.engine.Connection, view_name: str, schema
     params: dict[str, str] = {"view_name": view_name}
     if schema:
         params["schema"] = schema
-    # ``pg_depend`` columns: classid, objid, objsubid, refclassid, refobjid,
-    # refobjsubid, deptype. To resolve the referenced object's name we join
-    # ``pg_class ref`` on ``dep.refobjid = ref.oid`` and filter on
-    # ``ref.relname``. The dependent view's name comes from ``c.relname``.
-    # Join ``pg_namespace`` on both sides to qualify by schema, preventing
-    # cross-schema name collisions. A UNION ALL joins regular views
-    # (pg_views) and materialized views (pg_matviews) so both dependent
-    # kinds are returned; the two subqueries are disjoint by ``relkind``,
-    # so UNION ALL avoids silently deduping same-named regular + MV rows
-    # that a plain UNION would collapse. ``pg_views``/``pg_matviews`` carry
-    # both the dependent view's schema (schemaname) and definition
-    # (definition); the join ties the dependent class row to its catalog
-    # entry via (schema, name). When ``schema`` is given, both the
-    # dependent view's schema (``v.schemaname``) AND the referenced view's
-    # namespace (``refn.nspname``) are filtered to avoid false positives
-    # from same-named referenced views in other schemas.
+    # pg_depend joins pg_rewrite/pg_class to resolve dependent and referenced
+    # view names; pg_namespace qualifies both sides to prevent cross-schema
+    # name collisions. UNION ALL of pg_views and pg_matviews keeps same-named
+    # regular + MV rows distinct (plain UNION would dedupe them). When *schema*
+    # is given, both the dependent (v.schemaname) and referenced (refn.nspname)
+    # schemas are filtered to avoid false positives from other schemas.
     base_select = (
         "SELECT c.relname AS dependent_name, "
         "v.definition AS dependent_definition, "

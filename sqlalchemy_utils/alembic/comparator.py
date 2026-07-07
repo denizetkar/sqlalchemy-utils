@@ -231,25 +231,6 @@ def _canonicalize_all_views(
                 exc,
             )
 
-    # Probe the connection: if the outer savepoint was poisoned (the
-    # ROLLBACK TO above failed), the transaction is still aborted and every
-    # subsequent query in the caller's next schema loop would crash. Probe
-    # with SELECT 1; on failure log a warning (the data we have may be
-    # unreliable but the savepoint rollback is best-effort). The caller
-    # proceeds — subsequent schemas may still be processable if the driver
-    # recovers, and ``skipped`` already guards against false drops.
-    if not db_views and not db_mvs and ordered:
-        try:
-            connection.execute(sa.text("SELECT 1"))
-        except (sa.exc.SQLAlchemyError, sa.exc.DBAPIError, OSError) as exc:
-            log.warning(
-                "Outer savepoint appears poisoned after rollback for "
-                "schema %r: %s. Subsequent schema processing may be "
-                "affected.",
-                schema,
-                exc,
-            )
-
     for vr in ordered:
         if vr.name in skipped or vr.name not in processed:
             continue
@@ -347,6 +328,15 @@ def _warn_if_dependents(
         )
         dependents = {}
     if dependents:
+        formatted = []
+        for k in sorted(dependents):
+            if isinstance(k, tuple) and len(k) == 2:
+                dep_name, dep_schema = k
+                formatted.append(
+                    f"{dep_schema}.{dep_name}" if dep_schema else dep_name
+                )
+            else:
+                formatted.append(str(k))
         log.warning(
             "Dropping %s %r which has %d dependent view(s): %s. "
             "CASCADE will drop them automatically. "
@@ -354,18 +344,8 @@ def _warn_if_dependents(
             kind_label,
             name,
             len(dependents),
-            ", ".join(sorted(_format_dependent_key(k) for k in dependents)),
+            ", ".join(formatted),
         )
-
-
-def _format_dependent_key(key) -> str:
-    """Render a dependent-view dict key as ``schema.name`` (or just name)."""
-    if isinstance(key, tuple) and len(key) == 2:
-        dep_name, dep_schema = key
-        if dep_schema:
-            return f"{dep_schema}.{dep_name}"
-        return dep_name
-    return str(key)
 
 
 def _safe_resolve(records, db, resolver_fn, action_label, *, dialect=None):
