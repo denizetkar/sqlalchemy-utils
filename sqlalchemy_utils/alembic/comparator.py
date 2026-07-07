@@ -394,6 +394,58 @@ def _safe_resolve(records, db, resolver_fn, action_label, *, dialect=None):
         return records
 
 
+def _is_create_family(op) -> bool:
+    return isinstance(
+        op,
+        (CreateViewOp, CreateMaterializedViewOp, ReplaceViewOp, ReplaceMaterializedViewOp),
+    )
+
+
+def _is_drop_family(op) -> bool:
+    return isinstance(op, (DropViewOp, DropMaterializedViewOp))
+
+
+def _reorder_cross_type_drops_before_creates(ops: list) -> list:
+    """Reorder so a Drop for a view name precedes a Create for the same name.
+
+    When a view changes type (regular <-> materialized) the comparator emits
+    a Create-family op for the new type and a Drop-family op for the old
+    type. Creates are appended before drops, so without reordering the
+    migration would CREATE while the old-type view still exists (which
+    fails). For any (name, schema) present in BOTH a drop and a create op,
+    the drop is moved immediately before the first create op for that key.
+    """
+    create_keys = {
+        (getattr(op, "name", None), getattr(op, "schema", None))
+        for op in ops if _is_create_family(op)
+    }
+    drop_keys = {
+        (getattr(op, "name", None), getattr(op, "schema", None))
+        for op in ops if _is_drop_family(op)
+    }
+    cross_keys = create_keys & drop_keys
+    if not cross_keys:
+        return ops
+
+    result: list = []
+    buffered: dict = {}
+    emitted: set = set()
+    for op in ops:
+        key = (getattr(op, "name", None), getattr(op, "schema", None))
+        if key not in cross_keys:
+            result.append(op)
+            continue
+        buffered.setdefault(key, []).append(op)
+
+    cross_ops_in_order = []
+    for key in cross_keys:
+        drops = [o for o in buffered.get(key, []) if _is_drop_family(o)]
+        creates = [o for o in buffered.get(key, []) if _is_create_family(o)]
+        cross_ops_in_order.extend(drops)
+        cross_ops_in_order.extend(creates)
+    return result + cross_ops_in_order
+
+
 def _order_ops(ops, records, db, resolver_fn, action_label, *, dialect=None):
     """Order *ops* by dependency using *resolver_fn*.
 
@@ -442,7 +494,7 @@ def compare_views(
         detected ``CreateViewOp`` / ``DropViewOp`` / ``ReplaceViewOp``
         (and materialized variants) are appended.
     :param schemas:
-        Iterable of schema names to compare. ``None`` is treated as
+        List of schema names to compare. ``None`` is treated as
         ``[None]`` (i.e. the connection's default schema only); pass an
         explicit list of schema names to compare non-default schemas.
     :returns: ``None``. Detected differences are appended to
@@ -579,6 +631,14 @@ def compare_views(
                     dialect=connection.dialect,
                 )
             )
+
+    # Cross-type conflict resolution: when a view changes from regular to
+    # materialized (or vice versa), the above per-schema loops emit BOTH a
+    # Create op (new type) and a Drop op (old type). Because creates are
+    # extended before drops, the migration would CREATE while the old-type
+    # view still exists, which fails. For any view name that has BOTH a
+    # create-family op and a drop-family op, move the drop before the create.
+    upgrade_ops.ops = _reorder_cross_type_drops_before_creates(upgrade_ops.ops)
 
     seen: set = set()
     deduped: list = []

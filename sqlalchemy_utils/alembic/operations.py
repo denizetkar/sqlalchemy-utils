@@ -28,7 +28,9 @@ from sqlalchemy_utils.view import _quote_qualified_name
 
 def _validate_definition(definition: str) -> None:
     if not isinstance(definition, str) or not definition:
-        raise TypeError("definition must be a non-empty string")
+        raise TypeError(
+            f"definition must be a non-empty string, got {type(definition).__name__}"
+        )
 
 
 # ===================================================================
@@ -47,6 +49,7 @@ class CreateViewOp(MigrateOperation):
         *,
         schema: str | None = None,
         replace: bool = False,
+        cascade_on_drop: bool = True,
     ) -> None:
         _validate_definition(definition)
         if replace:
@@ -62,6 +65,7 @@ class CreateViewOp(MigrateOperation):
         self.definition = definition
         self.schema = schema
         self.replace = replace
+        self.cascade_on_drop = cascade_on_drop
 
     @classmethod
     def create_view(
@@ -96,7 +100,7 @@ class CreateViewOp(MigrateOperation):
         return DropViewOp(
             self.name,
             schema=self.schema,
-            cascade=True,
+            cascade=self.cascade_on_drop,
             definition=self.definition,
         )
 

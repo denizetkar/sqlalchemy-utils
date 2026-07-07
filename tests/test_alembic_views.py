@@ -395,6 +395,25 @@ class TestCreateViewOp:
         assert rev.name == "v1"
         assert rev.definition == "SELECT 1"
 
+    def test_reverse_respects_cascade_on_drop_false(self):
+        """CreateViewOp(cascade_on_drop=False).reverse() must produce a
+        DropViewOp with cascade=False, not the hardcoded cascade=True."""
+        op = CreateViewOp("v1", "SELECT 1", cascade_on_drop=False)
+        rev = op.reverse()
+        assert isinstance(rev, DropViewOp)
+        assert rev.cascade is False, (
+            f"Expected cascade=False from reverse() when "
+            f"cascade_on_drop=False, got {rev.cascade!r}"
+        )
+
+    def test_reverse_defaults_cascade_true(self):
+        """CreateViewOp(cascade_on_drop unspecified).reverse() defaults to
+        cascade=True (behavior-preserving)."""
+        op = CreateViewOp("v1", "SELECT 1")
+        rev = op.reverse()
+        assert isinstance(rev, DropViewOp)
+        assert rev.cascade is True
+
     def test_sql_without_replace(self):
         op = CreateViewOp("v1", "SELECT 1")
         sqls = _capture_sql(op)
@@ -3168,6 +3187,23 @@ class TestCrossSchemaDedup:
         result = resolve_create_order(views, db_views={})
         assert len(result) == 2
 
+    def test_build_dependency_graph_merges_deps_same_name_diff_schema(self):
+        """When two ViewRecords share a name across schemas, their
+        dependencies must be MERGED in the graph rather than the second
+        overwriting the first."""
+        views = [
+            ViewRecord(name="foo", schema="a", selectable="SELECT * FROM bar"),
+            ViewRecord(name="foo", schema="b", selectable="SELECT * FROM baz"),
+            ViewRecord(name="bar", selectable="SELECT 1"),
+            ViewRecord(name="baz", selectable="SELECT 1"),
+        ]
+        graph = _build_dependency_graph(views, db_views={})
+        # Both "bar" (from schema A) and "baz" (from schema B) must be
+        # present as dependencies of the shared name "foo".
+        assert graph["foo"] == {"bar", "baz"}, (
+            f"Expected deps merged to {{'bar', 'baz'}}, got {graph.get('foo')!r}"
+        )
+
 
 # ===========================================================================
 # Interface audit: migration refresh, dead listener, mapped_column guard
@@ -4063,5 +4099,84 @@ class TestDedupPreservesNonViewOps:
         assert has_drop_view, (
             f"DropViewOp lost in dedup. "
             f"Ops: {[type(op).__name__ for op in upgrade_ops.ops]}"
+        )
+
+
+# ===========================================================================
+# View type change (regular <-> materialized) drop-before-create ordering
+# ===========================================================================
+
+class TestViewTypeChangeOrdering:
+    """When a view changes from regular to materialized (or vice versa),
+    ``compare_views`` emits a Drop for the old type and a Create for the
+    new type. The Drop MUST come before the Create so the migration does
+    not fail trying to CREATE while the old-type view still exists.
+    """
+
+    def test_regular_to_materialized_drops_before_creates(self):
+        import sqlalchemy_utils.alembic.comparator as comparator_module
+
+        # DB has the view as a regular view; model defines it as materialized.
+        # _canonicalize_all_views is called per schema. For schema=None the
+        # model materialized view is canonicalized → mv_defs={"v": "..."}.
+        metadata = MagicMock()
+        metadata.info = {"sqlalchemy_utils_views": [
+            ViewRecord(
+                name="v",
+                selectable="SELECT 1 AS id",
+                schema=None,
+                materialized=True,
+            ),
+        ]}
+
+        autogen_context = MagicMock()
+        autogen_context.connection = MagicMock()
+        autogen_context.connection.dialect.name = "postgresql"
+        autogen_context.metadata = metadata
+
+        upgrade_ops = MagicMock()
+        upgrade_ops.ops = []
+
+        with patch.object(
+            comparator_module, "get_database_views",
+            return_value={"v": "SELECT 1 AS id"},
+        ), patch.object(
+            comparator_module, "get_database_materialized_views",
+            return_value={},
+        ), patch.object(
+            comparator_module, "_canonicalize_all_views",
+            return_value=({}, {"v": "SELECT 1 AS id"}, set()),
+        ), patch.object(
+            comparator_module, "get_dependent_views", return_value={}
+        ), patch.object(comparator_module, "log"):
+            comparator_module.compare_views(
+                autogen_context, upgrade_ops, [None]
+            )
+
+        # Find indices of the drop (DropViewOp) and create
+        # (CreateMaterializedViewOp) for the same view name.
+        drop_idx = next(
+            (i for i, op in enumerate(upgrade_ops.ops)
+             if isinstance(op, DropViewOp) and op.name == "v"),
+            None,
+        )
+        create_idx = next(
+            (i for i, op in enumerate(upgrade_ops.ops)
+             if isinstance(op, CreateMaterializedViewOp) and op.name == "v"),
+            None,
+        )
+        assert drop_idx is not None, (
+            f"Missing DropViewOp for 'v'; ops="
+            f"{[(type(o).__name__, o.name) for o in upgrade_ops.ops]}"
+        )
+        assert create_idx is not None, (
+            f"Missing CreateMaterializedViewOp for 'v'; ops="
+            f"{[(type(o).__name__, o.name) for o in upgrade_ops.ops]}"
+        )
+        assert drop_idx < create_idx, (
+            f"DropViewOp must come before CreateMaterializedViewOp when the "
+            f"view type changes (regular -> materialized); got drop_idx="
+            f"{drop_idx}, create_idx={create_idx}; ops="
+            f"{[(type(o).__name__, o.name) for o in upgrade_ops.ops]}"
         )
 

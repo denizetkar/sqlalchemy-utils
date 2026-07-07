@@ -61,7 +61,7 @@ def _build_dependency_graph(
                 continue  # skip self-reference
             if re.search(rf"\b{re.escape(other_name)}\b", definition):
                 deps.add(other_name)
-        graph[vr.name] = deps
+        graph.setdefault(vr.name, set()).update(deps)
 
     return graph
 
@@ -86,29 +86,16 @@ def _toposort(
 ) -> list[ViewRecord]:
     """Core topological sort with cycle detection.
 
-    Parameters
-    ----------
-    view_records:
-        The model views to sort.
-    db_views:
-        Current database view definitions (name → SQL).  These are
-        considered as pre-existing dependencies.
-    reverse:
-        If *True*, return drop order (dependents before dependencies).
-    dialect:
-        Optional SQLAlchemy dialect forwarded to
+    :param view_records: The model views to sort.
+    :param db_views: Current database view definitions (name → SQL).
+        These are considered as pre-existing dependencies.
+    :param reverse: If *True*, return drop order (dependents before
+        dependencies).
+    :param dialect: Optional SQLAlchemy dialect forwarded to
         :meth:`ViewRecord.compiled_definition` so dependency detection
         matches the dialect-qualified SQL emitted by the comparator.
-
-    Returns
-    -------
-    list[ViewRecord]
-        Sorted view records.
-
-    Raises
-    ------
-    ValueError
-        If a cycle is detected among the view dependencies.
+    :returns: Sorted view records.
+    :raises ValueError: If a cycle is detected among the view dependencies.
     """
     if db_views is None:
         db_views = {}
@@ -155,30 +142,18 @@ def resolve_create_order(
     This is the order in which views should be **created** (or recreated
     during a migration).
 
-    Parameters
-    ----------
-    view_records:
-        List of :class:`ViewRecord` instances representing the desired views.
-    db_views:
-        Mapping of ``{view_name: sql_definition}`` for views that already
-        exist in the database.  These are treated as pre-satisfied
-        dependencies — a model view may depend on a DB view, but the DB
-        view is not included in the output.
-    dialect:
-        Optional SQLAlchemy dialect forwarded to
+    :param view_records: List of :class:`ViewRecord` instances
+        representing the desired views.
+    :param db_views: Mapping of ``{view_name: sql_definition}`` for views
+        that already exist in the database.  These are treated as
+        pre-satisfied dependencies — a model view may depend on a DB view,
+        but the DB view is not included in the output.
+    :param dialect: Optional SQLAlchemy dialect forwarded to
         :meth:`ViewRecord.compiled_definition` so dependency detection
         scans the same dialect-qualified SQL the comparator emits.  When
         *None*, default compilation is used.
-
-    Returns
-    -------
-    list[ViewRecord]
-        Views in safe creation order.
-
-    Raises
-    ------
-    ValueError
-        If a circular dependency is detected.
+    :returns: Views in safe creation order.
+    :raises ValueError: If a circular dependency is detected.
     """
     return _toposort(view_records, db_views, reverse=False, dialect=dialect)
 
@@ -194,27 +169,15 @@ def resolve_drop_order(
     This is the **reverse** of :func:`resolve_create_order` — views that
     depend on others are dropped first, so no dangling references remain.
 
-    Parameters
-    ----------
-    view_records:
-        List of :class:`ViewRecord` instances.
-    db_views:
-        Mapping of ``{view_name: sql_definition}`` for existing database
-        views.  Used for dependency detection but not included in output.
-    dialect:
-        Optional SQLAlchemy dialect forwarded to
+    :param view_records: List of :class:`ViewRecord` instances.
+    :param db_views: Mapping of ``{view_name: sql_definition}`` for
+        existing database views.  Used for dependency detection but not
+        included in output.
+    :param dialect: Optional SQLAlchemy dialect forwarded to
         :meth:`ViewRecord.compiled_definition` so dependency detection
         scans the same dialect-qualified SQL the comparator emits.  When
         *None*, default compilation is used.
-
-    Returns
-    -------
-    list[ViewRecord]
-        Views in safe drop order.
-
-    Raises
-    ------
-    ValueError
-        If a circular dependency is detected.
+    :returns: Views in safe drop order.
+    :raises ValueError: If a circular dependency is detected.
     """
     return _toposort(view_records, db_views, reverse=True, dialect=dialect)
