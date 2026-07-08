@@ -12,8 +12,9 @@ Views whose ``CREATE`` fails are **skipped** (not dropped) — they are tracked
 in a ``skipped`` set so the drop-detection loop does not emit a false
 ``DropViewOp`` for an existing view that merely failed to canonicalize.
 
-Differences are emitted as :class:`CreateViewOp`, :class:`DropViewOp`,
-:class:`ReplaceViewOp` (and their materialized-view equivalents).
+Differences are emitted as :class:`~sqlalchemy_utils.alembic.operations.CreateViewOp`,
+:class:`~sqlalchemy_utils.alembic.operations.DropViewOp`,
+:class:`~sqlalchemy_utils.alembic.operations.ReplaceViewOp` (and their materialized-view equivalents).
 
 Usage in ``env.py``::
 
@@ -77,31 +78,35 @@ _registered = False
 
 
 def _build_create_sql(connection: sa.engine.Connection, view_record: ViewRecord) -> list[str]:
-    """Build the CREATE (OR REPLACE) VIEW / MATERIALIZED VIEW statement(s).
+    """Build the CREATE VIEW / MATERIALIZED VIEW statement(s).
 
     Returns a list of SQL strings so the caller can execute each statement
     separately. Multi-statement ``sa.text()`` relies on the simple-query
     protocol, which is driver-specific (psycopg2 supports it; asyncpg does
     not); returning a list keeps canonicalization portable across drivers.
 
-    For a materialized view returns two statements (``DROP`` then ``CREATE``)
-    because PG has no ``CREATE OR REPLACE MATERIALIZED VIEW``. For a regular
-    view returns a single ``CREATE OR REPLACE VIEW`` statement.
+    For both regular and materialized views returns two statements
+    (``DROP`` then ``CREATE``). PG has no ``CREATE OR REPLACE MATERIALIZED
+    VIEW``, and ``CREATE OR REPLACE VIEW`` fails when the new view's
+    column structure differs from the existing view (e.g. removing or
+    reordering columns) — which would skip the view and silently miss the
+    definition change. DROP+CREATE avoids this because it runs inside a
+    savepoint that is rolled back. CASCADE is needed so dependent views
+    in the DB do not block the DROP.
     """
     definition = view_record.compiled_definition(dialect=connection.dialect)
     dialect = connection.dialect
     qualified = _quote_qualified_name(dialect, view_record.name, view_record.schema)
     if view_record.materialized:
-        # PG has no CREATE OR REPLACE MATERIALIZED VIEW; drop first. CASCADE
-        # is required so a dependent view in the DB does not block the DROP
-        # (which would skip the MV and silently miss definition changes).
-        # Safe because this runs inside a savepoint that is rolled back.
         return [
             f"DROP MATERIALIZED VIEW IF EXISTS {qualified} CASCADE",
             f"CREATE MATERIALIZED VIEW {qualified} "
             f"AS {definition} WITH NO DATA",
         ]
-    return [f"CREATE OR REPLACE VIEW {qualified} AS {definition}"]
+    return [
+        f"DROP VIEW IF EXISTS {qualified} CASCADE",
+        f"CREATE VIEW {qualified} AS {definition}",
+    ]
 
 
 def _canonicalize_all_views(
@@ -674,11 +679,10 @@ def compare_views(
         # so conflicting ops for the same view are deduped. Refresh ops
         # are excluded from dedup entirely — they are idempotent side
         # effects, not state transitions that conflict with create/drop.
-        op_name = type(op).__name__.lower()
-        if op_name.startswith("refresh"):
+        if isinstance(op, RefreshMaterializedViewOp):
             deduped.append(op)
             continue
-        if op_name.startswith("create") or op_name.startswith("replace"):
+        if _is_create_family(op):
             op_family = "create_or_replace"
         else:
             op_family = "drop"

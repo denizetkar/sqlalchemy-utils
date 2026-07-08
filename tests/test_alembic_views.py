@@ -48,6 +48,7 @@ from sqlalchemy_utils.alembic.operations import (
     CreateViewOp,
     DropMaterializedViewOp,
     DropViewOp,
+    RefreshMaterializedViewOp,
     ReplaceMaterializedViewOp,
     ReplaceViewOp,
 )
@@ -748,11 +749,6 @@ class TestOpValidation:
     "renderer, op, expected_substring",
     [
         (
-            render_create_view,
-            CreateViewOp("v", "SELECT 1", schema=""),
-            "schema=",
-        ),
-        (
             render_replace_view,
             ReplaceViewOp("v", "SELECT 2", old_definition=""),
             "old_definition=",
@@ -763,7 +759,7 @@ class TestOpValidation:
             "old_definition=",
         ),
     ],
-    ids=["create_view_schema", "replace_view_old_def", "replace_mv_old_def"],
+    ids=["replace_view_old_def", "replace_mv_old_def"],
 )
 def test_renderer_preserves_falsy_non_none_values(
     renderer, op, expected_substring
@@ -1525,12 +1521,13 @@ class TestAbortedTransactionBreaksEarly:
         # statements issued by _canonicalize_all_views is:
         #   1. SAVEPOINT su_view_cmp                       (outer)
         #   2. SAVEPOINT su_view_cmp_v                    (view_a inner)
-        #   3. CREATE OR REPLACE VIEW abort_a AS ...      (FAILS — view_a)
-        #   4. ROLLBACK TO SAVEPOINT su_view_cmp_v        (view_a cleanup)
-        #   5. RELEASE SAVEPOINT su_view_cmp_v            (view_a cleanup)
-        #   6. SELECT 1                                   (PROBE — FAILS)
+        #   3. DROP VIEW IF EXISTS abort_a CASCADE        (succeeds)
+        #   4. CREATE VIEW abort_a AS ...                 (FAILS — view_a)
+        #   5. ROLLBACK TO SAVEPOINT su_view_cmp_v        (view_a cleanup)
+        #   6. RELEASE SAVEPOINT su_view_cmp_v            (view_a cleanup)
+        #   7. SELECT 1                                   (PROBE — FAILS)
         #   --- loop breaks; view_b is never touched ---
-        #   7. ROLLBACK TO SAVEPOINT su_view_cmp          (finally)
+        #   8. ROLLBACK TO SAVEPOINT su_view_cmp          (finally)
         # After the loop, get_database_views / get_database_materialized_views
         # are called — stubbed via patch to return empty dicts.
         call_log: list[str] = []
@@ -1541,7 +1538,7 @@ class TestAbortedTransactionBreaksEarly:
             stripped = text.strip()
 
             # view_a CREATE fails — this is the trigger for the inner except.
-            if stripped.startswith("CREATE OR REPLACE VIEW abort_a"):
+            if stripped.startswith("CREATE VIEW abort_a"):
                 raise sa.exc.ProgrammingError(
                     statement=text,
                     params=None,
@@ -1554,7 +1551,7 @@ class TestAbortedTransactionBreaksEarly:
                 raise _PoisonedTransaction()
 
             # All other statements (SAVEPOINT, ROLLBACK TO, RELEASE, the
-            # outer ROLLBACK TO) succeed.
+            # outer ROLLBACK TO, DROP VIEW) succeed.
             return MagicMock()
 
         connection = MagicMock()
@@ -1646,7 +1643,7 @@ class TestAbortedTransactionBreaksEarly:
             stripped = text.strip()
 
             # view_a CREATE fails — triggers the inner except block.
-            if stripped.startswith("CREATE OR REPLACE VIEW view_a"):
+            if stripped.startswith("CREATE VIEW view_a"):
                 raise sa.exc.ProgrammingError(
                     statement=text,
                     params=None,
@@ -3546,11 +3543,12 @@ class TestMvCanonicalizationCascade:
 class TestBuildCreateSqlReturnsListForMv:
     """``_build_create_sql`` must always return a list of SQL strings.
 
-    For regular (non-materialized) views a single-statement string list is
-    returned — the public contract is always a list of strings.
+    For regular (non-materialized) views a DROP+CREATE pair is returned
+    (DROP is needed because ``CREATE OR REPLACE VIEW`` fails on column
+    structure changes). The public contract is always a list of strings.
     """
 
-    def test_regular_view_returns_single_statement_list(self):
+    def test_regular_view_returns_drop_then_create_list(self):
         connection = MagicMock()
         connection.dialect = sa.dialects.postgresql.dialect()
         with patch(
@@ -3568,11 +3566,15 @@ class TestBuildCreateSqlReturnsListForMv:
         assert isinstance(result, list), (
             f"_build_create_sql must always return a list; got {type(result)}"
         )
-        assert len(result) == 1, (
-            f"Regular view must produce a single statement; got {result!r}"
+        assert len(result) == 2, (
+            f"Regular view must produce DROP+CREATE (two statements); "
+            f"got {result!r}"
         )
-        assert "CREATE OR REPLACE VIEW" in result[0].upper(), (
-            f"Statement must be CREATE OR REPLACE VIEW; got {result[0]!r}"
+        assert "DROP VIEW IF EXISTS" in result[0].upper(), (
+            f"First statement must be DROP VIEW IF EXISTS; got {result[0]!r}"
+        )
+        assert "CREATE VIEW" in result[1].upper(), (
+            f"Second statement must be CREATE VIEW; got {result[1]!r}"
         )
 
 
@@ -4033,5 +4035,216 @@ class TestCreateViewOpCascadePassthrough:
         assert kw_names == ["schema", "replace", "cascade_on_drop"], (
             f"Expected keyword-only params "
             f"['schema', 'replace', 'cascade_on_drop'], got {kw_names!r}"
+        )
+
+
+# ===========================================================================
+# Bug 1: CREATE OR REPLACE VIEW fails on column structure changes
+# ===========================================================================
+
+_COLUMN_CHANGE_VIEW_NAMES = ["col_change_view"]
+
+
+class TestCanonicalizationColumnStructureChange:
+    """Regression: canonicalization must detect column-structure changes.
+
+    When a view exists in the DB with columns (id, name) and the model
+    changes to columns (id, name, email), PG refuses ``CREATE OR REPLACE
+    VIEW`` because the new column structure differs from the existing view.
+    The old code used ``CREATE OR REPLACE VIEW`` for regular views during
+    canonicalization; when it failed, the view was skipped and the
+    definition change was silently missed (false negative — no
+    ReplaceViewOp emitted).
+
+    The fix uses DROP+CREATE (same pattern as materialized views), which
+    succeeds inside the rolled-back savepoint and lets the definition
+    change be detected.
+    """
+
+    def test_build_create_sql_regular_view_uses_drop_then_create(self):
+        """``_build_create_sql`` for a regular view must emit DROP+CREATE
+        (two statements), NOT ``CREATE OR REPLACE VIEW``.
+
+        ``CREATE OR REPLACE VIEW`` fails when the new view's column
+        structure differs from the existing view (e.g. adding/removing
+        columns). DROP+CREATE works because it's inside a rolled-back
+        savepoint and CASCADE handles dependent views.
+        """
+        connection = MagicMock()
+        connection.dialect = sa.dialects.postgresql.dialect()
+        with patch(
+            "sqlalchemy_utils.alembic.comparator.ViewRecord.compiled_definition",
+            return_value="SELECT id, name, email FROM users",
+        ):
+            vr = ViewRecord(
+                name="col_change_view",
+                selectable="SELECT id, name, email FROM users",
+                schema=None,
+                materialized=False,
+            )
+            stmts = _build_create_sql(connection, vr)
+
+        assert isinstance(stmts, list), (
+            f"_build_create_sql must return a list; got {type(stmts)}"
+        )
+        assert len(stmts) == 2, (
+            f"Regular view must produce DROP+CREATE (two statements) so "
+            f"column-structure changes do not fail canonicalization; got "
+            f"{stmts!r}"
+        )
+        drop_sql = stmts[0].upper()
+        create_sql = stmts[1].upper()
+        assert "DROP VIEW IF EXISTS" in drop_sql, (
+            f"First statement must be DROP VIEW IF EXISTS; got {stmts[0]!r}"
+        )
+        assert "CASCADE" in drop_sql, (
+            f"DROP must include CASCADE so dependent views do not block "
+            f"canonicalization (same rationale as materialized views); "
+            f"got {stmts[0]!r}"
+        )
+        assert "CREATE VIEW" in create_sql, (
+            f"Second statement must be CREATE VIEW; got {stmts[1]!r}"
+        )
+        assert "OR REPLACE" not in create_sql, (
+            f"CREATE must NOT be CREATE OR REPLACE (that fails on column "
+            f"structure changes); got {stmts[1]!r}"
+        )
+
+    @pytest.mark.infrastructure
+    @pytest.mark.usefixtures("postgresql_dsn")
+    def test_column_structure_change_detected_not_skipped(self, connection):
+        """End-to-end: a view with columns (id, name, value) in the DB changed
+        to (id, name) in the model must emit a ReplaceViewOp.
+
+        PG refuses ``CREATE OR REPLACE VIEW`` when the new view has FEWER
+        columns than the existing view (``cannot drop columns from view``).
+        With the old code the canonicalization failed, the view was skipped,
+        and the change was silently missed. With DROP+CREATE the
+        canonicalization succeeds and the change is detected.
+        """
+        _create_base_table(connection)
+        _drop_views(connection, _COLUMN_CHANGE_VIEW_NAMES)
+        try:
+            # Pre-create view with OLD column structure (id, name, value) —
+            # three columns. PG refuses CREATE OR REPLACE VIEW when the new
+            # view has FEWER columns, so removing 'value' triggers the bug.
+            connection.execute(
+                sa.text(
+                    "CREATE VIEW col_change_view AS "
+                    "SELECT id, name, value FROM _cmp_test_base"
+                )
+            )
+            connection.commit()
+
+            # Model defines the view with NEW columns (id, name) — a column
+            # REMOVAL that CREATE OR REPLACE VIEW refuses.
+            metadata = sa.MetaData()
+            metadata.info["sqlalchemy_utils_views"] = [
+                ViewRecord(
+                    name="col_change_view",
+                    selectable="SELECT id, name FROM _cmp_test_base",
+                    schema=None,
+                ),
+            ]
+
+            upgrade_ops = _run_comparator(connection, metadata, schemas=[None])
+
+            replace_ops = [
+                op
+                for op in upgrade_ops.ops
+                if isinstance(op, ReplaceViewOp) and op.name == "col_change_view"
+            ]
+            assert len(replace_ops) == 1, (
+                f"Regression: column-structure change for col_change_view "
+                f"was silently missed (CREATE OR REPLACE VIEW failed during "
+                f"canonicalization and the view was skipped). Expected a "
+                f"ReplaceViewOp; got {replace_ops}. "
+                f"All ops: {[(type(o).__name__, o.name) for o in upgrade_ops.ops]}"
+            )
+        finally:
+            _drop_views(connection, _COLUMN_CHANGE_VIEW_NAMES)
+            _drop_base_table(connection)
+
+
+# ===========================================================================
+# Interface 2: DropViewOp/DropMaterializedViewOp validate definition
+# ===========================================================================
+
+class TestDropOpValidatesDefinition:
+    """Drop ops must validate ``definition`` at construction time.
+
+    ``_validate_definition`` is called by Create/Replace ops but NOT by
+    Drop ops. If ``definition=""`` is passed to ``DropViewOp``, it's
+    silently stored but will fail later in ``reverse()`` with a confusing
+    ``TypeError`` from ``CreateViewOp``'s validation. Validate at
+    construction so the error points at the actual misuse site.
+    """
+
+    def test_drop_view_op_rejects_empty_definition(self):
+        with pytest.raises(TypeError, match="(?i)definition"):
+            DropViewOp("v", definition="")
+
+    def test_drop_view_op_rejects_non_string_definition(self):
+        with pytest.raises(TypeError, match="(?i)definition"):
+            DropViewOp("v", definition=123)
+
+    def test_drop_view_op_accepts_none_definition(self):
+        """``definition=None`` (the default) is valid — means no reverse."""
+        op = DropViewOp("v")
+        assert op.definition is None
+
+    def test_drop_view_op_accepts_valid_definition(self):
+        op = DropViewOp("v", definition="SELECT 1")
+        assert op.definition == "SELECT 1"
+
+    def test_drop_materialized_view_op_rejects_empty_definition(self):
+        with pytest.raises(TypeError, match="(?i)definition"):
+            DropMaterializedViewOp("mv", definition="")
+
+    def test_drop_materialized_view_op_rejects_non_string_definition(self):
+        with pytest.raises(TypeError, match="(?i)definition"):
+            DropMaterializedViewOp("mv", definition=[])
+
+    def test_drop_materialized_view_op_accepts_none_definition(self):
+        op = DropMaterializedViewOp("mv")
+        assert op.definition is None
+
+
+# ===========================================================================
+# Interface 3: schema="" normalization to None in all 7 op classes
+# ===========================================================================
+
+class TestOpSchemaNormalization:
+    """All 7 view op classes must normalize ``schema=""`` to ``None``.
+
+    ``ViewRecord`` normalizes ``schema=""`` to ``None`` so the
+    schema-match check in the comparator works (``"" != None`` would
+    cause a false DropViewOp). The op classes must do the same so ops
+    constructed with ``schema=""`` (e.g. from a renderer round-trip)
+    dedup correctly against ``schema=None`` ops.
+    """
+
+    @pytest.mark.parametrize(
+        "op_class,kwargs",
+        [
+            (CreateViewOp, {"definition": "SELECT 1"}),
+            (DropViewOp, {}),
+            (ReplaceViewOp, {"definition": "SELECT 1"}),
+            (CreateMaterializedViewOp, {"definition": "SELECT 1"}),
+            (DropMaterializedViewOp, {}),
+            (ReplaceMaterializedViewOp, {"definition": "SELECT 1"}),
+            (RefreshMaterializedViewOp, {}),
+        ],
+        ids=[
+            "create_view", "drop_view", "replace_view",
+            "create_materialized_view", "drop_materialized_view",
+            "replace_materialized_view", "refresh_materialized_view",
+        ],
+    )
+    def test_empty_string_schema_normalized_to_none(self, op_class, kwargs):
+        op = op_class("v", schema="", **kwargs)
+        assert op.schema is None, (
+            f"{op_class.__name__}(schema='') must normalize schema to None; "
+            f"got {op.schema!r}"
         )
 
