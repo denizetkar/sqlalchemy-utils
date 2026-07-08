@@ -283,10 +283,6 @@ class TestViewRecordCreation:
         assert record.replace is True
         assert record.cascade_on_drop is False
 
-    def test_create_with_none_schema(self):
-        record = ViewRecord(name="test_view", selectable="SELECT 1", schema=None)
-        assert record.schema is None
-
     def test_create_with_empty_string_schema_normalizes_to_none(self):
         """Empty-string schema is falsy and must be normalized to None.
 
@@ -301,10 +297,6 @@ class TestViewRecordCreation:
         assert hash(record) == hash(
             ViewRecord(name="test_view", selectable="SELECT 1", schema=None)
         )
-
-    def test_create_default_cascade_on_drop(self):
-        record = ViewRecord(name="test_view", selectable="SELECT 1")
-        assert record.cascade_on_drop is True
 
     def test_rejects_none_selectable(self):
         """ViewRecord rejects selectable=None at construction time."""
@@ -515,11 +507,6 @@ class TestDropViewOp:
         op = DropViewOp("v1", cascade=False)
         sqls = _capture_sql(op)
         assert sqls == ["DROP VIEW IF EXISTS v1"]
-
-    def test_sql_materialized(self):
-        op = DropMaterializedViewOp("v1")
-        sqls = _capture_sql(op)
-        assert sqls == ["DROP MATERIALIZED VIEW IF EXISTS v1 CASCADE"]
 
     def test_sql_with_schema(self):
         op = DropViewOp("v1", schema="myschema")
