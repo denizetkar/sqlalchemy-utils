@@ -353,7 +353,7 @@ def _warn_if_dependents(
 def _safe_resolve(records, db, resolver_fn, action_label, *, dialect=None):
     """Resolve view ordering, falling back to model order on failure.
 
-    Wraps *resolver_fn* (e.g. :func:`resolve_create_order`) in a
+    Wraps *resolver_fn* (e.g. :func:`~sqlalchemy_utils.alembic.depend.resolve_create_order`) in a
     try/except. If a circular dependency (``ValueError``) is detected, or
     a view's ``ClauseElement`` fails compilation
     (``sa.exc.SQLAlchemyError`` — e.g. ``CompileError``,
@@ -395,7 +395,16 @@ def _reorder_cross_type_drops_before_creates(ops: list) -> list:
     type. Creates are appended before drops, so without reordering the
     migration would CREATE while the old-type view still exists (which
     fails). For any (name, schema) present in BOTH a drop and a create op,
-    the drop is moved immediately before the first create op for that key.
+    the drop is moved immediately before the create op for that key.
+
+    The drop+create pair for each cross-type key is inserted AT THE POSITION
+    where the FIRST cross-type op for that key originally appeared in
+    ``ops`` (rather than buffering all cross-type ops to the end of the
+    result). This preserves the relative dependency ordering: a non-
+    cross-type op that was positioned after a cross-type op stays after it,
+    so a dependent view's create is not reordered before its dependency's
+    new type exists (which would cause a cascade-drop to silently drop the
+    dependent view).
     """
     create_keys = {
         (getattr(op, "name", None), getattr(op, "schema", None))
@@ -409,31 +418,40 @@ def _reorder_cross_type_drops_before_creates(ops: list) -> list:
     if not cross_keys:
         return ops
 
-    # Walk `ops` in order so the cross-type keys are emitted in the
-    # order they FIRST appear. Iterating `cross_keys` (a set) would give
-    # non-deterministic order under Python hash randomization, which can
-    # reorder drop+create pairs of dependent views and break migrations.
-    result: list = []
+    # Walk `ops` in order so cross-type keys are emitted in the order they
+    # FIRST appear. Iterating `cross_keys` (a set) would give non-deterministic
+    # order under Python hash randomization, which can reorder drop+create
+    # pairs of dependent views and break migrations.
     buffered: dict = {}
-    seen_keys: set = set()
+    first_position: dict = {}
     cross_order: list = []
-    for op in ops:
+    for idx, op in enumerate(ops):
         key = (getattr(op, "name", None), getattr(op, "schema", None))
         if key not in cross_keys:
-            result.append(op)
             continue
         buffered.setdefault(key, []).append(op)
-        if key not in seen_keys:
-            seen_keys.add(key)
+        if key not in first_position:
+            first_position[key] = idx
             cross_order.append(key)
 
-    cross_ops_in_order = []
-    for key in cross_order:
-        drops = [o for o in buffered.get(key, []) if _is_drop_family(o)]
-        creates = [o for o in buffered.get(key, []) if _is_create_family(o)]
-        cross_ops_in_order.extend(drops)
-        cross_ops_in_order.extend(creates)
-    return result + cross_ops_in_order
+    result: list = []
+    inserted: set = set()
+    for idx, op in enumerate(ops):
+        for key in cross_order:
+            if key in inserted:
+                continue
+            if first_position[key] != idx:
+                continue
+            drops = [o for o in buffered[key] if _is_drop_family(o)]
+            creates = [o for o in buffered[key] if _is_create_family(o)]
+            result.extend(drops)
+            result.extend(creates)
+            inserted.add(key)
+        key = (getattr(op, "name", None), getattr(op, "schema", None))
+        if key in cross_keys:
+            continue
+        result.append(op)
+    return result
 
 
 def _order_ops(ops, records, db, resolver_fn, action_label, *, dialect=None):
@@ -480,7 +498,7 @@ def compare_views(
         The Alembic :class:`~alembic.autogenerate.api.AutogenContext`
         providing the live database connection and model metadata.
     :param upgrade_ops:
-        The :class:`~alembic.runtime.migration.OpContainer` into which
+        The :class:`~alembic.operations.ops.UpgradeOps` into which
         detected ``CreateViewOp`` / ``DropViewOp`` / ``ReplaceViewOp``
         (and materialized variants) are appended.
     :param schemas:
