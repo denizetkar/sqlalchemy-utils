@@ -5,6 +5,23 @@ from __future__ import annotations
 import sqlalchemy as sa
 
 
+def _assert_postgres(connection: sa.engine.Connection) -> None:
+    """Fail fast if *connection* is not backed by a PostgreSQL dialect.
+
+    The pg_catalog queries in this module are PostgreSQL-specific.  Calling
+    them against any other dialect produces confusing low-level errors
+    (e.g. "no such table: pg_views" on SQLite) instead of a clear message.
+
+    :param connection: SQLAlchemy Connection object.
+    :raises NotImplementedError: if the connection dialect is not PostgreSQL.
+    """
+    if connection.dialect.name != 'postgresql':
+        raise NotImplementedError(
+            f"pg_catalog queries require PostgreSQL; got dialect "
+            f"'{connection.dialect.name}'"
+        )
+
+
 def _query_view_catalog(connection: sa.engine.Connection, table: str, name_col: str, schema: str | None = None) -> dict[str, str]:
     """Query a pg_catalog view table for names and definitions.
 
@@ -47,6 +64,7 @@ def get_database_views(connection: sa.engine.Connection, schema: str | None = No
         >>> views = get_database_views(connection)  # current schema only
         >>> views = get_database_views(connection, schema="public")
     """
+    _assert_postgres(connection)
     return _query_view_catalog(connection, "pg_views", "viewname", schema)
 
 
@@ -66,16 +84,17 @@ def get_database_materialized_views(connection: sa.engine.Connection, schema: st
         >>> mvs = get_database_materialized_views(connection)  # current schema only
         >>> mvs = get_database_materialized_views(connection, schema="public")
     """
+    _assert_postgres(connection)
     return _query_view_catalog(connection, "pg_matviews", "matviewname", schema)
 
 
-def get_dependent_views(connection: sa.engine.Connection, view_name: str, schema: str | None = None) -> dict[tuple[str, str | None], str]:
+def get_dependent_views(connection: sa.engine.Connection, name: str, schema: str | None = None) -> dict[tuple[str, str | None], str]:
     """Query pg_depend for views that depend on the given view.
 
     PostgreSQL-specific. Will raise on non-PostgreSQL dialects.
 
     :param connection: SQLAlchemy Connection object.
-    :param view_name: Name of the view to check dependents for.
+    :param name: Name of the view to check dependents for.
     :param schema: Optional schema name. If None, returns dependents in
         any schema. When provided, both the dependent and referenced
         views are constrained to this schema.
@@ -85,12 +104,13 @@ def get_dependent_views(connection: sa.engine.Connection, view_name: str, schema
         in different schemas would otherwise collide and the second would
         overwrite the first. Empty dict if no dependents.
     """
+    _assert_postgres(connection)
     schema_clause = (
         " AND v.schemaname = :schema AND refn.nspname = :schema"
         if schema
         else ""
     )
-    params: dict[str, str] = {"view_name": view_name}
+    params: dict[str, str] = {"view_name": name}
     if schema:
         params["schema"] = schema
     # pg_depend joins pg_rewrite/pg_class to resolve dependent and referenced
