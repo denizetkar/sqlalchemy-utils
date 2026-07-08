@@ -58,8 +58,7 @@ def _build_dependency_graph(
 def _records_by_name(
     view_records: list[ViewRecord],
 ) -> dict[str, list[ViewRecord]]:
-    """Return ``{name: [ViewRecord, ...]}`` preserving all records (e.g. same
-    name across schemas)."""
+    """Return ``{name: [ViewRecord, ...]}`` preserving all records."""
     result: dict[str, list[ViewRecord]] = {}
     for vr in view_records:
         result.setdefault(vr.name, []).append(vr)
@@ -87,12 +86,16 @@ def _toposort(
         # catch cycles but ``static_order`` is the convenient public API.
         sorted_names = list(sorter.static_order())
     except CycleError as exc:
-        # exc.args typically contains (cycle_nodes..., message) — we
-        # extract what we can for a helpful error.
-        cycle_info = exc.args if exc.args else ()
-        raise ValueError(
-            f"Circular dependency detected among views: {cycle_info}"
-        ) from exc
+        # exc.args is ``(message, cycle_nodes)`` where ``cycle_nodes`` is a
+        # list like ``['view_a', 'view_b', 'view_a']``. Format it as a
+        # readable chain for a helpful error message.
+        cycle_nodes = exc.args[1] if len(exc.args) > 1 else exc.args
+        if cycle_nodes:
+            cycle_chain = " -> ".join(str(n) for n in cycle_nodes)
+            msg = f"Circular dependency detected among views: {cycle_chain}"
+        else:
+            msg = "Circular dependency detected among views"
+        raise ValueError(msg) from exc
 
     if reverse:
         sorted_names = list(reversed(sorted_names))

@@ -1,6 +1,13 @@
 View Migrations
 ===============
 
+.. warning::
+
+   If upgrading from a previous version, ``__view_cascade_on_drop__`` has
+   been renamed to ``__view_cascade__``. The old name is no longer honored.
+   ``CreateViewOp(replace=True)`` is deprecated; use ``op.replace_view()``
+   instead.
+
 Quick start
 -----------
 
@@ -16,6 +23,7 @@ Requires ``pip install sqlalchemy-utils[alembic]``.
 
     # Point Alembic at the same MetaData your views were registered on.
     # For ORM projects, this is your declarative Base's MetaData:
+    # from your_app.models import Base  # your declarative Base
     target_metadata = Base.metadata
 
 Operations reference
@@ -81,6 +89,10 @@ comparator for view DDL:
   - New views that need to be created
   - Existing views no longer defined in your models
   - Changed view definitions matching ``CREATE OR REPLACE`` logic
+
+  ``__view_replace__`` (ViewMixin) controls whether runtime DDL emits
+  ``CREATE OR REPLACE VIEW``; autogenerate emits ``ReplaceViewOp`` when
+  the definition changes regardless of this flag.
 
 * Known limitations:
 
@@ -223,9 +235,9 @@ database), adopting the autogenerate integration needs a little care.
 Downgrade generation
 --------------------
 
-Each operation class implements ``reverse()`` for automatic downgrade
-generation.  Calls without a stored ``definition`` or ``old_definition``
-raise ``NotImplementedError``.  See the API reference below for details.
+Create-family ops always reverse to a Drop. Drop-family and Replace-family
+ops require a stored ``definition``/``old_definition``; without one they
+raise ``NotImplementedError``.
 
 .. note::
 

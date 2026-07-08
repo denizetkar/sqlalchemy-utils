@@ -8,7 +8,7 @@ To enable autogenerate for views, call :func:`register_view_comparator`
 in your Alembic ``env.py`` before ``context.configure()``.
 """
 
-from .comparator import compare_views, register_view_comparator
+from .comparator import register_view_comparator
 from .depend import resolve_create_order, resolve_drop_order
 from .operations import (CreateViewOp, DropViewOp, ReplaceViewOp,
                            CreateMaterializedViewOp, DropMaterializedViewOp,

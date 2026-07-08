@@ -39,6 +39,8 @@ Unreleased
 - Deprecate ``CreateViewOp(replace=True)`` in favor of ``op.replace_view()``
   / ``ReplaceViewOp``; the ``reverse()`` of the deprecated form emits a
   destructive ``DROP``.
+- ``ReplaceMaterializedViewOp`` accepts ``cascade=`` (defaults ``True``) to
+  control ``CASCADE`` on the internal ``DROP MATERIALIZED VIEW``.
 - ``with_data`` diverges between runtime and autogenerate: the runtime
   :func:`~sqlalchemy_utils.view.create_materialized_view` (and
   ``metadata.create_all()``) emit a plain ``CREATE MATERIALIZED VIEW``,

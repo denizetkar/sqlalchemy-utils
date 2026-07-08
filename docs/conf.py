@@ -52,3 +52,5 @@ intersphinx_mapping = {
     "sqlalchemy": ("https://docs.sqlalchemy.org/en/20/", None),
     "alembic": ("https://alembic.sqlalchemy.org/en/latest/", None),
 }
+
+nitpicky = True

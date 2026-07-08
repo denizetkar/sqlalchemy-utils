@@ -68,8 +68,6 @@ log = logging.getLogger(__name__)
 _OUTER_SAVEPOINT = "su_view_cmp"
 
 # Exception types treated as expected during view canonicalization.
-# ``DBAPIError`` is a subclass of ``SQLAlchemyError`` so listing both is
-# redundant; programming errors (``TypeError``, etc.) must propagate.
 _CANON_ERRORS = (sa.exc.SQLAlchemyError, OSError)
 
 # Idempotency guard: register_view_comparator may be called multiple times
@@ -346,15 +344,10 @@ def _warn_if_dependents(
         )
         dependents = {}
     if dependents:
-        formatted = []
-        for k in sorted(dependents):
-            if isinstance(k, tuple) and len(k) == 2:
-                dep_name, dep_schema = k
-                formatted.append(
-                    f"{dep_schema}.{dep_name}" if dep_schema else dep_name
-                )
-            else:
-                formatted.append(str(k))
+        formatted = [
+            f"{s}.{n}" if s else n
+            for n, s in sorted(dependents)
+        ]
         log.warning(
             "Dropping %s %r which has %d dependent view(s): %s. "
             "CASCADE will drop them automatically. "

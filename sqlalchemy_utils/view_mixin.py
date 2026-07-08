@@ -61,7 +61,7 @@ class ViewMixin:
     **Methods:**
 
     * ``refresh(session, concurrently=False)`` — Refresh a materialized view.
-      Raises :exc:`ViewReadonlyError` for non-materialized views.
+      Raises :exc:`~sqlalchemy_utils.exceptions.ViewReadonlyError` for non-materialized views.
 
     **Implementation note:** ``cls.__table__.metadata`` is a throwaway
     ``MetaData()`` instance so that ``create_all()`` does not emit both

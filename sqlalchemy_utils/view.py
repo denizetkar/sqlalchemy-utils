@@ -30,6 +30,15 @@ def _quote_qualified_name(dialect, name, schema=None):
 class CreateView(DDLElement):
     """DDL element for CREATE VIEW (or CREATE OR REPLACE VIEW).
 
+    :param name: Name of the view to create.
+    :param selectable: An SQLAlchemy selectable (e.g. ``select()``) or
+        string SQL expression defining the view body.
+    :param materialized: When ``True``, emits ``CREATE MATERIALIZED VIEW``
+        (default ``False``).
+    :param replace: When ``True``, emits ``CREATE OR REPLACE VIEW``.
+        Cannot be combined with ``materialized`` (default ``False``).
+    :param schema: Keyword-only. Optional schema name; when given, the
+        view name is schema-qualified in the emitted DDL.
     :raises ValueError: if both ``materialized`` and ``replace`` are True.
     """
 
@@ -65,7 +74,16 @@ def compile_create_materialized_view(element, compiler, **kw):
 
 
 class DropView(DDLElement):
-    """DDL element for DROP VIEW (or DROP MATERIALIZED VIEW)."""
+    """DDL element for DROP VIEW (or DROP MATERIALIZED VIEW).
+
+    :param name: Name of the view to drop.
+    :param materialized: When ``True``, emits ``DROP MATERIALIZED VIEW``
+        (default ``False``).
+    :param cascade: When ``True`` (default), appends ``CASCADE`` to the
+        ``DROP`` so dependent objects are removed as well.
+    :param schema: Keyword-only. Optional schema name; when given, the
+        view name is schema-qualified in the emitted DDL.
+    """
 
     def __init__(
         self,
@@ -378,7 +396,15 @@ def create_view(
 
 
 class RefreshMaterializedView(Executable, ClauseElement):
-    """Executable SQL construct for REFRESH MATERIALIZED VIEW."""
+    """Executable SQL construct for REFRESH MATERIALIZED VIEW.
+
+    :param name: Name of the materialized view to refresh.
+    :param concurrently: Keyword-only. When ``True``, emits
+        ``REFRESH MATERIALIZED VIEW CONCURRENTLY`` (non-blocking refresh;
+        requires a unique index on the MV). Default ``False``.
+    :param schema: Keyword-only. Optional schema name; when given, the
+        view name is schema-qualified in the emitted DDL.
+    """
 
     inherit_cache = True
 
@@ -386,8 +412,8 @@ class RefreshMaterializedView(Executable, ClauseElement):
         self,
         name: str,
         *,
-        concurrently: bool = False,
         schema: str | None = None,
+        concurrently: bool = False,
     ) -> None:
         self.name = name
         self.schema = schema
