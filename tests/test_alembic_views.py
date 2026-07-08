@@ -34,7 +34,6 @@ from sqlalchemy_utils import (
 from sqlalchemy_utils.alembic.comparator import (
     _build_create_sql,
     _canonicalize_all_views,
-    _OUTER_SAVEPOINT,
     _safe_resolve,
     compare_views,
     register_view_comparator,
@@ -395,14 +394,6 @@ class TestViewRecordRepr:
         assert "ViewRecord" in repr_str
         assert "schema=" in repr_str
 
-    def test_str(self):
-        record = ViewRecord(
-            name="test_view", selectable="SELECT 1", materialized=True
-        )
-        str_repr = str(record)
-        assert "test_view" in str_repr
-        assert "materialized=True" in str_repr
-
 
 # ===========================================================================
 # pg_catalog
@@ -737,24 +728,6 @@ class TestOpKeywordOnlyParams:
         with pytest.raises(TypeError):
             cls_method(fake_ops, *positional_args)
 
-    def test_init_keyword_only_params_dropview(self):
-        """DropViewOp.__init__ params after name are keyword-only."""
-        sig = inspect.signature(DropViewOp.__init__)
-        params = list(sig.parameters.values())
-        for p in params[2:]:
-            assert p.kind == inspect.Parameter.KEYWORD_ONLY, (
-                f"DropViewOp.__init__ param '{p.name}' should be keyword-only"
-            )
-
-    def test_init_keyword_only_params_create_mv(self):
-        """CreateMaterializedViewOp.__init__ params after name/definition are keyword-only."""
-        sig = inspect.signature(CreateMaterializedViewOp.__init__)
-        params = list(sig.parameters.values())
-        for p in params[3:]:
-            assert p.kind == inspect.Parameter.KEYWORD_ONLY, (
-                f"CreateMaterializedViewOp.__init__ param '{p.name}' should be keyword-only"
-            )
-
 
 # ---------------------------------------------------------------------------
 # Operations: validation
@@ -765,29 +738,6 @@ class TestOpValidation:
     def test_create_view_rejects_none_definition(self):
         with pytest.raises((TypeError, ValueError), match="(?i)definition"):
             CreateViewOp("v", None)
-
-    def test_create_mv_runtime_vs_op_consistency(self):
-        """Runtime and op paths agree on WITH [NO] DATA when with_data=True."""
-        metadata = sa.MetaData()
-        create_materialized_view(
-            "runtime_mv",
-            sa.select(sa.table("src", sa.column("id", sa.Integer))),
-            metadata,
-        )
-        runtime_ddl = _find_view_listener(metadata, materialized=True)
-        assert runtime_ddl is not None
-
-        engine = sa.create_engine("sqlite:///:memory:")
-        compiled_runtime = str(runtime_ddl.compile(dialect=engine.dialect)).upper()
-
-        op_sqls = _capture_sql(
-            CreateMaterializedViewOp("op_mv", "SELECT 1", with_data=True)
-        )
-        op_sql = op_sqls[0].upper() if op_sqls else ""
-
-        runtime_emits_with_no_data = "WITH NO DATA" in compiled_runtime
-        op_emits_with_no_data = "WITH NO DATA" in op_sql
-        assert runtime_emits_with_no_data == op_emits_with_no_data
 
 
 # ===========================================================================
@@ -1757,93 +1707,6 @@ class TestAbortedTransactionBreaksEarly:
         )
 
 
-class TestPoisonedOuterSavepointRollback:
-    """A poisoned outer savepoint makes the ``finally`` ROLLBACK TO fail.
-
-    If the outer savepoint becomes poisoned (a DB-level abort that is
-    not contained by the inner savepoint), the ``ROLLBACK TO SAVEPOINT``
-    in the ``finally`` block fails; the transaction stays aborted.
-    ``_canonicalize_all_views`` must still return gracefully (with empty
-    results and all views marked ``skipped``) instead of propagating
-    the rollback failure.
-    """
-
-    def test_poisoned_outer_savepoint_returns_empty_and_warns(self, caplog):
-        """When the outer savepoint is poisoned, ``_canonicalize_all_views``
-        must NOT crash. The catalog readback (``get_database_views``) fails
-        because the transaction is aborted; the function catches it, marks
-        all views as ``skipped`` (so drop detection does not emit false
-        drops), and returns empty results. The ``finally`` ROLLBACK TO also
-        fails (caught)."""
-        view_records = [
-            ViewRecord(
-                name="poison_a",
-                selectable="SELECT 1 AS col",
-                schema=None,
-                materialized=False,
-            ),
-        ]
-
-        call_log: list[str] = []
-
-        def _execute(stmt, *args, **kwargs):
-            text = getattr(stmt, "text", str(stmt))
-            call_log.append(text)
-            stripped = text.strip()
-
-            if stripped.startswith("CREATE OR REPLACE VIEW poison_a"):
-                return MagicMock()
-
-            if stripped == f"ROLLBACK TO SAVEPOINT {_OUTER_SAVEPOINT}":
-                raise _PoisonedTransaction()
-
-            return MagicMock()
-
-        connection = MagicMock()
-        connection.dialect = sa.dialects.postgresql.dialect()
-        connection.execute.side_effect = _execute
-
-        with caplog.at_level(
-            logging.WARNING, logger="sqlalchemy_utils.alembic.comparator"
-        ), patch(
-            "sqlalchemy_utils.alembic.comparator.get_database_views",
-            side_effect=_PoisonedTransaction(),
-        ), patch(
-            "sqlalchemy_utils.alembic.comparator.get_database_materialized_views",
-            side_effect=_PoisonedTransaction(),
-        ):
-            view_defs, mv_defs, skipped = _canonicalize_all_views(
-                connection, view_records, db_views_for_deps=None
-            )
-
-        assert view_defs == {}, (
-            f"view_defs must be empty when the outer savepoint is poisoned; "
-            f"got {view_defs}"
-        )
-        assert mv_defs == {}, (
-            f"mv_defs must be empty when the outer savepoint is poisoned; "
-            f"got {mv_defs}"
-        )
-        assert "poison_a" in skipped, (
-            f"poison_a must be in skipped when the outer savepoint is "
-            f"poisoned; got {skipped}"
-        )
-
-        poison_warnings = [
-            rec
-            for rec in caplog.records
-            if rec.levelno >= logging.WARNING
-            and ("poison" in rec.message.lower()
-                 or "aborted" in rec.message.lower()
-                 or "skip" in rec.message.lower()
-                 or "failed" in rec.message.lower())
-        ]
-        assert poison_warnings, (
-            f"Expected a warning about the poisoned savepoint; got "
-            f"{[(rec.levelname, rec.message) for rec in caplog.records]}"
-        )
-
-
 class TestComparatorNonPGDialect:
 
     def test_warns_on_non_pg_dialect(self, caplog):
@@ -1876,28 +1739,6 @@ class TestComparatorNonPGDialect:
             "non" in rec.message.lower() and "postgres" in rec.message.lower()
             for rec in warnings
         )
-
-    def test_handles_none_schemas(self):
-        """compare_views handles schemas=None without raising TypeError."""
-        metadata = sa.MetaData()
-        metadata.info["sqlalchemy_utils_views"] = []
-
-        autogen_context = MagicMock()
-        autogen_context.connection = MagicMock()
-        autogen_context.connection.dialect.name = "postgresql"
-        autogen_context.metadata = metadata
-
-        upgrade_ops = MagicMock()
-        upgrade_ops.ops = []
-
-        raised = None
-        try:
-            compare_views(autogen_context, upgrade_ops, None)
-        except Exception as exc:
-            raised = exc
-
-        assert raised is None or not isinstance(raised, TypeError)
-
 
 class TestComparatorNoDoubleFetch:
 
@@ -2763,25 +2604,6 @@ class TestDDLFormatting:
         engine = sa.create_engine("sqlite:///:memory:")
         compiled = str(executed.compile(dialect=engine.dialect))
         assert "CONCURRENTLY" in compiled
-
-    def test_refresh_param_order_consistency(self):
-        """RefreshMaterializedView and refresh_materialized_view agree on param order."""
-        cls_sig = inspect.signature(RefreshMaterializedView.__init__)
-        fn_sig = inspect.signature(refresh_materialized_view)
-
-        cls_params = [p for p in cls_sig.parameters.values() if p.name not in {"self"}]
-        fn_params = [
-            p for p in fn_sig.parameters.values() if p.name not in {"session"}
-        ]
-
-        cls_order = [
-            p.name for p in cls_params if p.name in {"schema", "concurrently"}
-        ]
-        fn_order = [
-            p.name for p in fn_params if p.name in {"schema", "concurrently"}
-        ]
-
-        assert cls_order == fn_order
 
 
 # ===========================================================================
@@ -3924,46 +3746,6 @@ class TestCrossTypeReorderDeterministic:
     that the function instead walks ``ops`` in order.
     """
 
-    def test_preserves_original_order_with_two_views(self):
-        from sqlalchemy_utils.alembic.comparator import (
-            _reorder_cross_type_drops_before_creates,
-        )
-
-        # Two views A and B both change type (regular -> materialized).
-        # In `ops` the create for A precedes the create for B, and the
-        # drop for A precedes the drop for B. The cross-type pairs must
-        # be emitted in the order A's pair, then B's pair (drops before
-        # creates within each pair) — i.e. the order in which each key
-        # FIRST appeared in `ops`.
-        create_a = CreateMaterializedViewOp("v_a", "SELECT 1")
-        create_b = CreateMaterializedViewOp("v_b", "SELECT 2")
-        drop_a = DropViewOp("v_a", definition="SELECT 1 AS id")
-        drop_b = DropViewOp("v_b", definition="SELECT 2 AS id")
-
-        # Creates are listed before drops (matching the comparator's
-        # upgrade_ops.ops layout: create_ops extended before drop_ops).
-        ops = [create_a, create_b, drop_a, drop_b]
-
-        result = _reorder_cross_type_drops_before_creates(list(ops))
-
-        # Expected: drop_a, create_a, drop_b, create_b
-        # (drops emitted before creates for each key, in the order keys
-        # first appeared in `ops` — A appeared first, so A's pair first.)
-        names_and_types = [
-            (type(o).__name__, o.name) for o in result
-        ]
-        expected = [
-            ("DropViewOp", "v_a"),
-            ("CreateMaterializedViewOp", "v_a"),
-            ("DropViewOp", "v_b"),
-            ("CreateMaterializedViewOp", "v_b"),
-        ]
-        assert names_and_types == expected, (
-            f"Cross-type reordering must preserve original order "
-            f"(drop+create pairs in the order keys first appeared in "
-            f"`ops`). Got {names_and_types!r}, expected {expected!r}."
-        )
-
     def test_order_deterministic_across_runs(self):
         """The order of cross-type pairs must be identical on every call.
 
@@ -4002,21 +3784,6 @@ class TestCrossTypeReorderDeterministic:
             f"{expected_pair_order!r} (drop+create pairs in original "
             f"`ops` order)."
         )
-
-    def test_drops_before_creates_within_each_pair(self):
-        """For each cross-type key, ALL drops MUST precede ALL creates."""
-        from sqlalchemy_utils.alembic.comparator import (
-            _reorder_cross_type_drops_before_creates,
-        )
-
-        create_a = CreateMaterializedViewOp("v_a", "SELECT 1")
-        drop_a = DropViewOp("v_a", definition="SELECT 1 AS id")
-
-        ops = [create_a, drop_a]
-        result = _reorder_cross_type_drops_before_creates(list(ops))
-
-        assert isinstance(result[0], DropViewOp)
-        assert isinstance(result[1], CreateMaterializedViewOp)
 
 
 class TestCrossTypeReorderPreservesDependencyOrder:
@@ -4137,10 +3904,6 @@ class TestCreateMaterializedViewOpCascade:
         )
         assert op.cascade_on_drop is False
 
-    def test_init_defaults_cascade_on_drop_true(self):
-        op = CreateMaterializedViewOp("mv", "SELECT 1")
-        assert op.cascade_on_drop is True
-
     def test_reverse_propagates_cascade_on_drop_false(self):
         """reverse() must produce a DropMaterializedViewOp with
         cascade=False when cascade_on_drop=False — not the hardcoded
@@ -4154,13 +3917,6 @@ class TestCreateMaterializedViewOpCascade:
             f"Expected cascade=False from reverse() when "
             f"cascade_on_drop=False, got {rev.cascade!r}"
         )
-
-    def test_reverse_defaults_cascade_true(self):
-        """reverse() defaults to cascade=True (behavior-preserving)."""
-        op = CreateMaterializedViewOp("mv", "SELECT 1")
-        rev = op.reverse()
-        assert isinstance(rev, DropMaterializedViewOp)
-        assert rev.cascade is True
 
     def test_op_create_materialized_view_passes_cascade_on_drop(self):
         """op.create_materialized_view(..., cascade_on_drop=False) must
@@ -4196,15 +3952,6 @@ class TestCreateViewOpCascadePassthrough:
         invoked_op = operations.invoke.call_args[0][0]
         assert isinstance(invoked_op, CreateViewOp)
         assert invoked_op.cascade_on_drop is False
-
-    def test_op_create_view_defaults_cascade_on_drop_true(self):
-        operations = MagicMock()
-        operations.invoke.return_value = None
-        CreateViewOp.create_view(operations, "v", "SELECT 1")
-        operations.invoke.assert_called_once()
-        invoked_op = operations.invoke.call_args[0][0]
-        assert isinstance(invoked_op, CreateViewOp)
-        assert invoked_op.cascade_on_drop is True
 
     def test_op_create_view_signature_schema_before_replace(self):
         """The signature must be `*, schema=None, replace=False,

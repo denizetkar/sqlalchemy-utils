@@ -15,20 +15,16 @@ from sqlalchemy_utils.view_record import ViewRecord
 # sqlalchemy_utils.alembic.operations and used by alembic.comparator).
 # ---------------------------------------------------------------------------
 
-def _quote_identifier(dialect, name):
-    """Quote *name* using the dialect's identifier preparer."""
-    return dialect.identifier_preparer.quote(name)
-
-
 def _quote_qualified_name(dialect, name, schema=None):
     """Return a schema-qualified, properly quoted identifier.
 
     When *schema* is given the result is ``"schema"."name"`` (both parts
     quoted by the dialect's identifier preparer); otherwise just ``"name"``.
     """
+    quote = dialect.identifier_preparer.quote
     if schema:
-        return f"{_quote_identifier(dialect, schema)}.{_quote_identifier(dialect, name)}"
-    return _quote_identifier(dialect, name)
+        return f"{quote(schema)}.{quote(name)}"
+    return quote(name)
 
 
 class CreateView(DDLElement):

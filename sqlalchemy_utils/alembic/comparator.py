@@ -66,6 +66,11 @@ log = logging.getLogger(__name__)
 # before a dependent is canonicalized does not break the dependent's CREATE.
 _OUTER_SAVEPOINT = "su_view_cmp"
 
+# Exception types treated as expected during view canonicalization.
+# ``DBAPIError`` is a subclass of ``SQLAlchemyError`` so listing both is
+# redundant; programming errors (``TypeError``, etc.) must propagate.
+_CANON_ERRORS = (sa.exc.SQLAlchemyError, OSError)
+
 # Idempotency guard: register_view_comparator may be called multiple times
 # (e.g. across env.py reloads); only the first call registers the hook.
 _registered = False
@@ -153,7 +158,7 @@ def _canonicalize_all_views(
                 for stmt in _build_create_sql(connection, vr):
                     connection.execute(sa.text(stmt))
                 connection.execute(sa.text(f"RELEASE SAVEPOINT {inner_sp}"))
-            except (sa.exc.SQLAlchemyError, sa.exc.DBAPIError, OSError) as exc:
+            except _CANON_ERRORS as exc:
                 log.warning(
                     "Failed to canonicalize view '%s': %s", vr.name, exc
                 )
@@ -167,7 +172,7 @@ def _canonicalize_all_views(
                     connection.execute(
                         sa.text(f"RELEASE SAVEPOINT {inner_sp}")
                     )
-                except (sa.exc.SQLAlchemyError, sa.exc.DBAPIError, OSError):
+                except _CANON_ERRORS:
                     pass
                 skipped.add(vr.name)
 
@@ -178,7 +183,7 @@ def _canonicalize_all_views(
                 # warning instead.
                 try:
                     connection.execute(sa.text("SELECT 1"))
-                except (sa.exc.SQLAlchemyError, sa.exc.DBAPIError, OSError):
+                except _CANON_ERRORS:
                     log.warning(
                         "Outer savepoint is in aborted state after failing to "
                         "canonicalize view '%s'; aborting canonicalization of "
@@ -203,7 +208,7 @@ def _canonicalize_all_views(
         try:
             db_views = get_database_views(connection, schema)
             db_mvs = get_database_materialized_views(connection, schema)
-        except (sa.exc.SQLAlchemyError, sa.exc.DBAPIError, OSError) as exc:
+        except _CANON_ERRORS as exc:
             # The catalog readback itself can fail if the transaction was
             # poisoned mid-loop (the inner-savepoint probe in the loop only
             # fires after a view CREATE failure; a DB-level abort that
@@ -224,7 +229,7 @@ def _canonicalize_all_views(
             connection.execute(
                 sa.text(f"ROLLBACK TO SAVEPOINT {_OUTER_SAVEPOINT}")
             )
-        except (sa.exc.SQLAlchemyError, sa.exc.DBAPIError, OSError) as exc:
+        except _CANON_ERRORS as exc:
             log.warning(
                 "Failed to roll back outer savepoint %r: %s",
                 _OUTER_SAVEPOINT,
