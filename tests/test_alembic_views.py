@@ -13,7 +13,6 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
-from typing import Optional
 from unittest import mock
 from unittest.mock import MagicMock, patch
 
@@ -152,7 +151,7 @@ def _drop_views(connection, names) -> None:
     connection.commit()
 
 
-def _find_view_listener(metadata: sa.MetaData, materialized: Optional[bool] = None):
+def _find_view_listener(metadata: sa.MetaData, materialized: bool | None = None):
     """Find a CreateView DDL element registered on *metadata*.
 
     *materialized*=None returns any CreateView listener; True/False
@@ -160,7 +159,7 @@ def _find_view_listener(metadata: sa.MetaData, materialized: Optional[bool] = No
     """
     listeners = list(metadata.dispatch.after_create)
 
-    def _listener_materialized(listener) -> Optional[bool]:
+    def _listener_materialized(listener) -> bool | None:
         cv = getattr(listener, "__self__", None)
         if isinstance(cv, CreateView):
             return cv.materialized
@@ -550,7 +549,9 @@ class TestReplaceViewOp:
     def test_sql(self):
         op = ReplaceViewOp("v1", "SELECT 2")
         sqls = _capture_sql(op)
-        assert sqls == ["CREATE OR REPLACE VIEW v1 AS SELECT 2"]
+        assert len(sqls) == 2
+        assert sqls[0] == "DROP VIEW IF EXISTS v1 CASCADE"
+        assert sqls[1] == "CREATE VIEW v1 AS SELECT 2"
 
 
 class TestCreateMaterializedViewOp:
@@ -1835,10 +1836,6 @@ class TestComparatorNeverEmitsRefreshOp:
     (refresh is a runtime op, not a reversible migration step)."""
 
     def test_compare_views_never_emits_refresh_materialized_view_op(self):
-        from sqlalchemy_utils.alembic.operations import (
-            RefreshMaterializedViewOp,
-        )
-
         # Mock connection + autogen_context for a postgres dialect, with one
         # materialized view record in the model and a matching definition in
         # the DB so _diff_views produces no ops at all — but even if diffing
@@ -2860,8 +2857,6 @@ def test_create_view_works_without_alembic_installed():
 
 def test_op_drop_materialized_view_accepts_with_data():
     """op.drop_materialized_view should accept with_data for round-trip fidelity."""
-    from unittest.mock import MagicMock
-    from sqlalchemy_utils.alembic.operations import DropMaterializedViewOp
     operations = MagicMock()
     invoked: list = []
     operations.invoke.side_effect = lambda op: invoked.append(op) or op
@@ -2930,8 +2925,6 @@ class TestInterfaceAuditFixes:
 
     def test_viewmixin_init_subclass_catches_mapped_column_without_tablename(self):
         """ViewMixin.__init_subclass__ should catch mapped_column usage without __tablename__ and give a helpful error."""
-        from sqlalchemy_utils.view_mixin import ViewMixin
-        from sqlalchemy.orm import declarative_base, Mapped, mapped_column
         Base = declarative_base()
         with pytest.raises(TypeError, match="__tablename__"):
             class BadView(ViewMixin, Base):
@@ -3983,6 +3976,69 @@ class TestCanonicalizationColumnStructureChange:
             )
         finally:
             _drop_views(connection, _COLUMN_CHANGE_VIEW_NAMES)
+            _drop_base_table(connection)
+
+
+_REPLACE_EXEC_VIEW_NAMES = ["replace_exec_view"]
+
+
+class TestReplaceViewOpExecutionColumnStructureChange:
+    """Regression: ``op.replace_view()`` execution must use DROP+CREATE.
+
+    PG refuses ``CREATE OR REPLACE VIEW`` when the new view has FEWER
+    columns than the existing view (``cannot drop columns from view``).
+    The comparator already emits a ``ReplaceViewOp`` for column-structure
+    changes; the execution path must also use DROP+CREATE so the
+    generated migration is runnable. ``_replace_materialized_view_impl``
+    already uses DROP+CREATE; this makes ``_replace_view_impl``
+    consistent.
+    """
+
+    @pytest.mark.infrastructure
+    @pytest.mark.usefixtures("postgresql_dsn")
+    def test_replace_view_removing_column_succeeds(self, connection):
+        """End-to-end: replace a view removing a column must not raise.
+
+        Pre-create a view with (id, name); then invoke
+        ``ReplaceViewOp`` with a definition that selects only (id).
+        With ``CREATE OR REPLACE VIEW`` PG raises
+        ``cannot drop columns from view``. With DROP+CREATE the replace
+        succeeds.
+        """
+        _create_base_table(connection)
+        _drop_views(connection, _REPLACE_EXEC_VIEW_NAMES)
+        try:
+            connection.execute(
+                sa.text(
+                    "CREATE VIEW replace_exec_view AS "
+                    "SELECT id, name FROM _cmp_test_base"
+                )
+            )
+            connection.commit()
+
+            op = ReplaceViewOp(
+                "replace_exec_view",
+                "SELECT id FROM _cmp_test_base",
+            )
+            ctx = MigrationContext.configure(connection)
+            operations = Operations(ctx)
+            operations.invoke(op)
+            connection.commit()
+
+            result = connection.execute(
+                sa.text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'replace_exec_view' "
+                    "ORDER BY ordinal_position"
+                )
+            )
+            columns = [row[0] for row in result]
+            assert columns == ["id"], (
+                f"After replace_view removing 'name' column, the view "
+                f"should have only the 'id' column; got {columns}"
+            )
+        finally:
+            _drop_views(connection, _REPLACE_EXEC_VIEW_NAMES)
             _drop_base_table(connection)
 
 
