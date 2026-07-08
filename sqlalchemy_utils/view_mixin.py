@@ -132,9 +132,6 @@ class ViewMixin:
         # Resolve schema: __view_schema__ takes precedence over __table_args__['schema']
         table_args = getattr(cls, '__table_args__', None)
         view_schema = cls._resolve_schema()
-        # Store the resolved schema so refresh() (and other runtime callers)
-        # can use it without re-resolving from __table_args__ each time.
-        cls._resolved_view_schema = view_schema
 
         indexes = []
         if table_args:
@@ -240,13 +237,10 @@ class ViewMixin:
         """Resolve the view's schema for DDL operations.
 
         Priority:
-        1. _resolved_view_schema (set by __declare_last__)
-        2. __view_schema__ class attribute
-        3. __table_args__['schema'] if present
+        1. __view_schema__ class attribute
+        2. __table_args__['schema'] if present
         """
-        schema = getattr(cls, '_resolved_view_schema', None)
-        if schema is None:
-            schema = getattr(cls, '__view_schema__', None)
+        schema = getattr(cls, '__view_schema__', None)
         if schema is None:
             table_args = getattr(cls, '__table_args__', None)
             if isinstance(table_args, dict):

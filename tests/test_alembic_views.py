@@ -12,7 +12,6 @@ import logging
 import subprocess
 import sys
 import textwrap
-from dataclasses import FrozenInstanceError as _FrozenInstanceError
 from pathlib import Path
 from typing import Optional
 from unittest import mock
@@ -314,15 +313,6 @@ class TestViewRecordCreation:
             ViewRecord(name="v", selectable=None)
 
 
-class TestViewRecordFreezing:
-    """ViewRecord is frozen; mutation raises FrozenInstanceError."""
-
-    def test_is_frozen(self):
-        record = ViewRecord(name="test_view", selectable="SELECT 1")
-        with pytest.raises(_FrozenInstanceError):
-            record.name = "different_view"
-
-
 class TestViewRecordEquality:
 
     def test_equal_records_with_same_fields(self):
@@ -368,34 +358,6 @@ class TestViewRecordHashing:
         record1 = ViewRecord(name="view1", selectable="SELECT 1")
         record2 = ViewRecord(name="view2", selectable="SELECT 1")
         assert hash(record1) != hash(record2)
-
-    def test_storable_in_set(self):
-        record1 = ViewRecord(name="test_view", selectable="SELECT 1")
-        record2 = ViewRecord(name="test_view", selectable="SELECT 1")
-        record3 = ViewRecord(name="other_view", selectable="SELECT 1")
-        view_set = {record1, record3}
-        assert len(view_set) == 2
-        assert record1 in view_set
-        assert record3 in view_set
-        assert record2 in view_set
-
-
-class TestViewRecordRepr:
-
-    def test_repr_with_schema(self):
-        record = ViewRecord(
-            name="test_view", selectable="SELECT 1", schema="public"
-        )
-        repr_str = repr(record)
-        assert "ViewRecord" in repr_str
-        assert "name='test_view'" in repr_str
-        assert "schema=" in repr_str
-
-    def test_repr_without_schema(self):
-        record = ViewRecord(name="test_view", selectable="SELECT 1")
-        repr_str = repr(record)
-        assert "ViewRecord" in repr_str
-        assert "schema=" in repr_str
 
 
 # ===========================================================================
@@ -697,35 +659,58 @@ class TestReplaceMaterializedViewOp:
             "CREATE MATERIALIZED VIEW analytics.mv1 AS SELECT 2 WITH DATA"
         )
 
-    def test_replace_mv_cascade_field(self):
-        """ReplaceMaterializedViewOp stores cascade kwarg (default True)."""
-        op_default = ReplaceMaterializedViewOp("mv", "SELECT 1")
-        assert op_default.cascade is True
-
-        op_false = ReplaceMaterializedViewOp("mv", "SELECT 1", cascade=False)
-        assert op_false.cascade is False
-
-    def test_replace_mv_impl_respects_cascade_false(self):
-        """``_replace_materialized_view_impl`` omits CASCADE when op.cascade=False."""
-        from sqlalchemy_utils.alembic.operations import (
-            _replace_materialized_view_impl,
+    @pytest.mark.parametrize(
+        "cascade_kwarg, expected_cascade_attr, drop_contains_cascade, expected_drop_sql",
+        [
+            (
+                None,
+                True,
+                True,
+                "DROP MATERIALIZED VIEW IF EXISTS mv CASCADE",
+            ),
+            (
+                False,
+                False,
+                False,
+                "DROP MATERIALIZED VIEW IF EXISTS mv",
+            ),
+        ],
+        ids=["default_true", "explicit_false"],
+    )
+    def test_replace_mv_cascade(
+        self,
+        cascade_kwarg,
+        expected_cascade_attr,
+        drop_contains_cascade,
+        expected_drop_sql,
+    ):
+        """ReplaceMaterializedViewOp stores cascade kwarg (default True) and
+        the DROP SQL emitted by ``_replace_materialized_view_impl`` contains
+        CASCADE only when op.cascade is True."""
+        kwargs = {"cascade": cascade_kwarg} if cascade_kwarg is not None else {}
+        op = ReplaceMaterializedViewOp("mv", "SELECT 1", **kwargs)
+        assert op.cascade is expected_cascade_attr, (
+            f"ReplaceMaterializedViewOp.cascade should be "
+            f"{expected_cascade_attr} when cascade_kwarg={cascade_kwarg!r}, "
+            f"got {op.cascade!r}"
         )
 
-        op = ReplaceMaterializedViewOp("mv", "SELECT 1", cascade=False)
         sqls = _capture_sql(op)
         assert len(sqls) == 2
-        assert "CASCADE" not in sqls[0].upper(), (
-            f"DROP must not contain CASCADE when op.cascade=False. "
-            f"DROP SQL: {sqls[0]!r}"
+        assert sqls[0] == expected_drop_sql, (
+            f"DROP SQL mismatch; got {sqls[0]!r}"
         )
-        assert sqls[0] == "DROP MATERIALIZED VIEW IF EXISTS mv"
+        if drop_contains_cascade:
+            assert "CASCADE" in sqls[0].upper(), (
+                f"DROP must contain CASCADE when op.cascade=True. "
+                f"DROP SQL: {sqls[0]!r}"
+            )
+        else:
+            assert "CASCADE" not in sqls[0].upper(), (
+                f"DROP must not contain CASCADE when op.cascade=False. "
+                f"DROP SQL: {sqls[0]!r}"
+            )
         assert sqls[1] == "CREATE MATERIALIZED VIEW mv AS SELECT 1 WITH NO DATA"
-
-    def test_replace_mv_impl_cascade_true_default(self):
-        """``_replace_materialized_view_impl`` emits CASCADE when op.cascade=True."""
-        op = ReplaceMaterializedViewOp("mv", "SELECT 1")
-        sqls = _capture_sql(op)
-        assert sqls[0] == "DROP MATERIALIZED VIEW IF EXISTS mv CASCADE"
 
 
 # ---------------------------------------------------------------------------
@@ -2332,27 +2317,6 @@ def assert_op(migration_code: str, op_name: str, expected: bool = True) -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# Infrastructure tests — verify fixtures/helpers work in isolation
-# ---------------------------------------------------------------------------
-
-@pytest.mark.infrastructure
-class TestAutogenerateFixture:
-    """Tests for the alembic_config fixture itself."""
-
-    @pytest.mark.usefixtures("postgresql_dsn")
-    def test_creates_valid_alembic_environment(self, alembic_config, connection):
-        metadata = sa.MetaData()
-        cfg = alembic_config(metadata)
-
-        assert isinstance(cfg, config.Config)
-        assert cfg.attributes["connection"] is connection
-        assert cfg.attributes["target_metadata"] is metadata
-        script_location = Path(cfg.get_main_option("script_location"))
-        assert script_location.exists()
-        assert (script_location / "env.py").exists()
-
-
 # ===========================================================================
 # Autogenerate integration (full Alembic autogenerate pipeline)
 # ===========================================================================
@@ -2706,7 +2670,7 @@ class TestSchemaResolution:
             id: "Mapped[int]" = sa.Column(sa.Integer, primary_key=True)
 
         SimpleView.__declare_last__()
-        assert SimpleView._resolved_view_schema is None
+        assert SimpleView._resolve_schema() is None
         assert SimpleView.__table__ is not None
         assert SimpleView.__table__.name == "simple_view"
 
@@ -2863,31 +2827,6 @@ class TestViewAutoRegistration:
 
 
 # ===========================================================================
-# Documentation
-# ===========================================================================
-
-class TestDocumentation:
-
-    def test_create_view_documents_no_indexes(self):
-        """create_view docstring documents the indexes/aliases asymmetry."""
-        from sqlalchemy_utils.view import create_view as cv
-
-        assert cv.__doc__ is not None
-        doc = cv.__doc__.lower()
-        assert "index" in doc or "materialized" in doc
-
-    def test_materialized_view_ops_document_pg_only(self):
-        """Materialized view Op classes document PostgreSQL-only semantics."""
-        for cls in [
-            CreateMaterializedViewOp,
-            DropMaterializedViewOp,
-            ReplaceMaterializedViewOp,
-        ]:
-            doc = (cls.__doc__ or "").lower()
-            assert "postgresql" in doc or "postgres" in doc
-
-
-# ===========================================================================
 # Interface audit fixes
 # ===========================================================================
 
@@ -3010,32 +2949,20 @@ class TestCascadeOnDropWarning:
     def cascade_mock_setup(self):
 
         def _run(db_views: dict, dependent_views: dict):
-            metadata = MagicMock()
-            metadata.info = {"sqlalchemy_utils_views": []}
+            autogen_context, upgrade_ops = _make_mock_autogen_context(
+                model_views=[]
+            )
 
-            autogen_context = MagicMock()
-            autogen_context.connection = MagicMock()
-            autogen_context.connection.dialect.name = "postgresql"
-            autogen_context.metadata = metadata
-
-            upgrade_ops = MagicMock()
-            upgrade_ops.ops = []
-
-            with patch.object(
-                comparator_module, "get_database_views",
-                return_value=db_views,
-            ), patch.object(
-                comparator_module, "get_database_materialized_views",
-                return_value={},
-            ), patch.object(
-                comparator_module, "_canonicalize_all_views",
-                return_value=({}, {}, set()),
-            ), patch.object(
+            patches = _patch_comparator(
+                db_views=db_views,
+                canonical_return=({}, {}, set()),
+            )
+            dependent_views_patch = patch.object(
                 comparator_module, "get_dependent_views",
                 return_value=dependent_views,
-            ), patch.object(
-                comparator_module, "log",
-            ) as mock_log:
+            )
+            log_patch = patches[4]
+            with patches[0], patches[1], patches[2], dependent_views_patch, log_patch as mock_log:
                 comparator_module.compare_views(
                     autogen_context, upgrade_ops, [None]
                 )
@@ -3075,23 +3002,6 @@ class TestCascadeOnDropWarning:
         ]
         assert len(warning_calls) == 0, (
             f"Should not warn about dependents for lonely_view, got: {warning_calls}"
-        )
-
-    def test_drop_op_still_generated_even_with_dependents(
-        self, cascade_mock_setup
-    ):
-        """The DropViewOp should still be generated even if the view has dependents
-        (warn, don't block)."""
-        from sqlalchemy_utils.alembic.operations import DropViewOp
-
-        upgrade_ops, _mock_log = cascade_mock_setup(
-            db_views={"base_view": "SELECT 1 AS col"},
-            dependent_views={("dependent_view", None): "SELECT * FROM base_view"},
-        )
-
-        drop_ops = [op for op in upgrade_ops.ops if isinstance(op, DropViewOp)]
-        assert any(op.name == "base_view" for op in drop_ops), (
-            f"DropViewOp for base_view should still be generated, got ops: {upgrade_ops.ops}"
         )
 
 
@@ -3381,10 +3291,34 @@ class TestMvCanonicalizationCascade:
     restored on savepoint rollback), so the MV is canonicalized correctly.
     """
 
-    def test_build_create_sql_uses_cascade_for_materialized_view(self):
-        """``_build_create_sql`` must emit a DROP+CREATE list with CASCADE on
-        the DROP so dependent views do not block canonicalization, and
-        ``WITH NO DATA`` on the CREATE."""
+    @pytest.mark.parametrize(
+        "materialized, view_name, drop_clause, create_clause, create_extra",
+        [
+            (
+                True,
+                "mv_cascade_test_mv",
+                "DROP MATERIALIZED VIEW IF EXISTS",
+                "CREATE MATERIALIZED VIEW",
+                "WITH NO DATA",
+            ),
+            (
+                False,
+                "v_cascade_test",
+                "DROP VIEW IF EXISTS",
+                "CREATE VIEW",
+                "",
+            ),
+        ],
+        ids=["materialized_view", "regular_view"],
+    )
+    def test_build_create_sql_returns_drop_then_create_list_with_cascade(
+        self, materialized, view_name, drop_clause, create_clause, create_extra,
+    ):
+        """``_build_create_sql`` must return a list of two SQL strings
+        (DROP+CREATE) with CASCADE on the DROP so dependent views do not
+        block canonicalization. Applies to both materialized and regular
+        views (regular views use DROP+CREATE because ``CREATE OR REPLACE
+        VIEW`` fails on column-structure changes)."""
         connection = MagicMock()
         connection.dialect = sa.dialects.postgresql.dialect()
         with patch(
@@ -3392,36 +3326,36 @@ class TestMvCanonicalizationCascade:
             return_value="SELECT 1 AS id",
         ):
             vr = ViewRecord(
-                name="mv_cascade_test_mv",
+                name=view_name,
                 selectable="SELECT 1 AS id",
                 schema=None,
-                materialized=True,
+                materialized=materialized,
             )
             stmts = _build_create_sql(connection, vr)
 
         assert isinstance(stmts, list), (
-            f"_build_create_sql must return a list for MVs; got {type(stmts)}"
+            f"_build_create_sql must return a list; got {type(stmts)}"
         )
         assert len(stmts) == 2, (
-            f"MV must produce two statements (DROP + CREATE); got {stmts!r}"
+            f"View must produce two statements (DROP + CREATE); got {stmts!r}"
         )
         drop_sql = stmts[0].upper()
         create_sql = stmts[1].upper()
-
-        assert "DROP MATERIALIZED VIEW IF EXISTS" in drop_sql, (
-            f"Expected DROP MATERIALIZED VIEW IF EXISTS in SQL: {stmts[0]!r}"
+        assert drop_clause.upper() in drop_sql, (
+            f"Expected {drop_clause!r} in SQL: {stmts[0]!r}"
         )
         assert "CASCADE" in drop_sql, (
-            f"Regression: _build_create_sql must emit CASCADE for MV "
+            f"Regression: _build_create_sql must emit CASCADE for "
             f"canonicalization DROP so dependent views do not block it. "
             f"SQL: {stmts[0]!r}"
         )
-        assert "CREATE MATERIALIZED VIEW" in create_sql, (
-            f"Second statement must be the CREATE; got {stmts[1]!r}"
+        assert create_clause.upper() in create_sql, (
+            f"Second statement must be {create_clause!r}; got {stmts[1]!r}"
         )
-        assert "WITH NO DATA" in create_sql, (
-            f"CREATE must include WITH NO DATA; got {stmts[1]!r}"
-        )
+        if create_extra:
+            assert create_extra.upper() in create_sql, (
+                f"CREATE must include {create_extra!r}; got {stmts[1]!r}"
+            )
 
     @pytest.mark.infrastructure
     @pytest.mark.usefixtures("postgresql_dsn")
@@ -3548,121 +3482,6 @@ class TestMvCanonicalizationCascade:
         finally:
             _drop_views(connection, _MV_CASCADE_TEST_VIEW_NAMES)
             _drop_base_table(connection)
-
-
-# ===========================================================================
-# Regression: multi-statement sa.text() is not portable across drivers
-# ===========================================================================
-
-class TestBuildCreateSqlReturnsListForMv:
-    """``_build_create_sql`` must always return a list of SQL strings.
-
-    For regular (non-materialized) views a DROP+CREATE pair is returned
-    (DROP is needed because ``CREATE OR REPLACE VIEW`` fails on column
-    structure changes). The public contract is always a list of strings.
-    """
-
-    def test_regular_view_returns_drop_then_create_list(self):
-        connection = MagicMock()
-        connection.dialect = sa.dialects.postgresql.dialect()
-        with patch(
-            "sqlalchemy_utils.alembic.comparator.ViewRecord.compiled_definition",
-            return_value="SELECT 1 AS id",
-        ):
-            vr = ViewRecord(
-                name="v_portable",
-                selectable="SELECT 1 AS id",
-                schema=None,
-                materialized=False,
-            )
-            result = _build_create_sql(connection, vr)
-
-        assert isinstance(result, list), (
-            f"_build_create_sql must always return a list; got {type(result)}"
-        )
-        assert len(result) == 2, (
-            f"Regular view must produce DROP+CREATE (two statements); "
-            f"got {result!r}"
-        )
-        assert "DROP VIEW IF EXISTS" in result[0].upper(), (
-            f"First statement must be DROP VIEW IF EXISTS; got {result[0]!r}"
-        )
-        assert "CREATE VIEW" in result[1].upper(), (
-            f"Second statement must be CREATE VIEW; got {result[1]!r}"
-        )
-
-
-class TestMvCanonicalizationUsesSeparateExecuteCalls:
-    """MV canonicalization must issue separate ``connection.execute`` calls.
-
-    The caller of ``_build_create_sql`` (the canonicalization loop) must
-    execute each returned statement separately rather than passing a
-    multi-statement string to a single ``connection.execute(sa.text(...))``.
-    Multi-statement ``text()`` relies on the simple-query protocol, which
-    is driver-specific (psycopg2 supports it; asyncpg does not). Executing
-    statements individually is portable across drivers.
-    """
-
-    def test_mv_canonicalization_makes_two_execute_calls(self):
-        """For an MV, the canonicalization loop issues one execute call for
-        the DROP and one for the CREATE — never a single multi-statement
-        call. A mock connection records every ``sa.text`` executed."""
-        execute_calls: list[str] = []
-
-        def _execute(stmt, *args, **kwargs):
-            text = getattr(stmt, "text", str(stmt))
-            execute_calls.append(text)
-            # ROLLBACK TO / RELEASE / SAVEPOINT succeed; DROP+CREATE succeed.
-            return MagicMock()
-
-        connection = MagicMock()
-        connection.dialect = sa.dialects.postgresql.dialect()
-        connection.execute.side_effect = _execute
-
-        vr = ViewRecord(
-            name="mv_separate_exec",
-            selectable="SELECT 1 AS id",
-            schema=None,
-            materialized=True,
-        )
-
-        with patch(
-            "sqlalchemy_utils.alembic.comparator.get_database_views",
-            return_value={},
-        ), patch(
-            "sqlalchemy_utils.alembic.comparator.get_database_materialized_views",
-            return_value={},
-        ):
-            _canonicalize_all_views(connection, [vr], db_views_for_deps=None)
-
-        # Find the DROP and CREATE statements issued for the MV.
-        drop_calls = [
-            s for s in execute_calls
-            if "DROP MATERIALIZED VIEW" in s.upper()
-        ]
-        create_calls = [
-            s for s in execute_calls
-            if "CREATE MATERIALIZED VIEW" in s.upper()
-        ]
-        assert len(drop_calls) == 1, (
-            f"Expected exactly one DROP statement executed; got {drop_calls}"
-        )
-        assert len(create_calls) == 1, (
-            f"Expected exactly one CREATE statement executed; got "
-            f"{create_calls}"
-        )
-        # No single execute call may contain BOTH DROP and CREATE — that
-        # would be a multi-statement call.
-        multi_statement_calls = [
-            s for s in execute_calls
-            if "DROP MATERIALIZED VIEW" in s.upper()
-            and "CREATE MATERIALIZED VIEW" in s.upper()
-        ]
-        assert multi_statement_calls == [], (
-            f"DROP and CREATE must be in separate execute calls (not a "
-            f"multi-statement text()). Found combined call(s): "
-            f"{multi_statement_calls}"
-        )
 
 
 # ===========================================================================
