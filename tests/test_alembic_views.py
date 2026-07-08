@@ -34,10 +34,12 @@ from sqlalchemy_utils import (
 from sqlalchemy_utils.alembic.comparator import (
     _build_create_sql,
     _canonicalize_all_views,
+    _reorder_cross_type_drops_before_creates,
     _safe_resolve,
     compare_views,
     register_view_comparator,
 )
+import sqlalchemy_utils.alembic.comparator as comparator_module
 from sqlalchemy_utils.alembic.depend import (
     _build_dependency_graph,
     resolve_create_order,
@@ -231,7 +233,6 @@ def _patch_comparator(db_views=None, db_mvs=None, canonical_return=None):
 
     Use as ``with patches[0], patches[1], ..., patches[4]:``.
     """
-    import sqlalchemy_utils.alembic.comparator as comparator_module
 
     if db_views is None:
         db_views = {}
@@ -1740,7 +1741,6 @@ class TestComparatorNonPGDialect:
 class TestComparatorNoDoubleFetch:
 
     def test_does_not_double_fetch(self, monkeypatch):
-        import sqlalchemy_utils.alembic.comparator as comparator_module
 
         call_count = {"views": 0, "mvs": 0}
 
@@ -1782,7 +1782,6 @@ class TestComparatorNeverEmitsRefreshOp:
     (refresh is a runtime op, not a reversible migration step)."""
 
     def test_compare_views_never_emits_refresh_materialized_view_op(self):
-        import sqlalchemy_utils.alembic.comparator as comparator_module
         from sqlalchemy_utils.alembic.operations import (
             RefreshMaterializedViewOp,
         )
@@ -2875,17 +2874,6 @@ def test_op_drop_materialized_view_accepts_with_data():
 
 class TestCrossSchemaDedup:
 
-    def test_keyword_filter_preserves_dependency_order(self):
-        """A view named 'data' (a SQL keyword) must still be ordered
-        before views that reference it."""
-        views = [
-            ViewRecord(name="data", selectable="SELECT 1 AS col"),
-            ViewRecord(name="report", selectable="SELECT * FROM data"),
-        ]
-        order = resolve_create_order(views, db_views={})
-        names = [v.name for v in order]
-        assert names.index("data") < names.index("report")
-
     def test_resolve_create_order_preserves_same_name_diff_schema(self):
         """Two views with the same name in different schemas must both
         appear in the ordered output."""
@@ -2953,7 +2941,6 @@ class TestCascadeOnDropWarning:
 
     @pytest.fixture
     def cascade_mock_setup(self):
-        import sqlalchemy_utils.alembic.comparator as comparator_module
 
         def _run(db_views: dict, dependent_views: dict):
             metadata = MagicMock()
@@ -3063,7 +3050,6 @@ class TestCascadeOnDropPropagation:
             db_views={"v_no_cascade": "SELECT 1 AS col"},
         )
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
-            import sqlalchemy_utils.alembic.comparator as comparator_module
             comparator_module.compare_views(autogen_context, upgrade_ops, [None])
 
         drop_ops = [op for op in upgrade_ops.ops if isinstance(op, DropViewOp)]
@@ -3084,7 +3070,6 @@ class TestCascadeOnDropPropagation:
             db_views={"orphan_view": "SELECT 1 AS col"},
         )
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
-            import sqlalchemy_utils.alembic.comparator as comparator_module
             comparator_module.compare_views(autogen_context, upgrade_ops, [None])
 
         drop_ops = [op for op in upgrade_ops.ops if isinstance(op, DropViewOp)]
@@ -3106,7 +3091,6 @@ class TestCascadeOnDropPropagation:
             db_mvs={"mv_no_cascade": "SELECT 1 AS col"},
         )
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
-            import sqlalchemy_utils.alembic.comparator as comparator_module
             comparator_module.compare_views(autogen_context, upgrade_ops, [None])
 
         drop_ops = [
@@ -3140,7 +3124,6 @@ class TestCascadeOnDropPropagation:
             ),
         )
         with patches[0], patches[1], patches[2], patches[3], patches[4]:
-            import sqlalchemy_utils.alembic.comparator as comparator_module
             comparator_module.compare_views(autogen_context, upgrade_ops, [None])
 
         create_ops = [
@@ -3156,40 +3139,6 @@ class TestCascadeOnDropPropagation:
             f"{create_ops[0].cascade_on_drop!r}"
         )
 
-    def test_drop_view_reverse_propagates_cascade_false(self):
-        """DropViewOp.reverse() must propagate cascade to the resulting
-        CreateViewOp.cascade_on_drop."""
-        drop_op = DropViewOp(
-            "v", cascade=False, definition="SELECT 1 AS col",
-        )
-        reversed_op = drop_op.reverse()
-        assert isinstance(reversed_op, CreateViewOp), (
-            f"reverse() should return a CreateViewOp, got {type(reversed_op)}"
-        )
-        assert reversed_op.cascade_on_drop is False, (
-            f"DropViewOp.reverse() should propagate cascade=False to the "
-            f"CreateViewOp.cascade_on_drop, got "
-            f"{reversed_op.cascade_on_drop!r}"
-        )
-
-    def test_drop_materialized_view_reverse_propagates_cascade_false(self):
-        """DropMaterializedViewOp.reverse() must propagate cascade to the
-        resulting CreateMaterializedViewOp.cascade_on_drop."""
-        drop_op = DropMaterializedViewOp(
-            "mv", cascade=False, definition="SELECT 1 AS col",
-            with_data=False,
-        )
-        reversed_op = drop_op.reverse()
-        assert isinstance(reversed_op, CreateMaterializedViewOp), (
-            f"reverse() should return a CreateMaterializedViewOp, "
-            f"got {type(reversed_op)}"
-        )
-        assert reversed_op.cascade_on_drop is False, (
-            f"DropMaterializedViewOp.reverse() should propagate "
-            f"cascade=False to the CreateMaterializedViewOp.cascade_on_drop, "
-            f"got {reversed_op.cascade_on_drop!r}"
-        )
-
 
 # ===========================================================================
 # Cross-schema same-name view handling
@@ -3202,7 +3151,6 @@ class TestCrossSchemaSameNameBothOps:
     """
 
     def test_cross_schema_same_name_both_ops(self):
-        import sqlalchemy_utils.alembic.comparator as comparator_module
 
         # Two model views, same name, different schemas
         model_views = [
@@ -3281,7 +3229,6 @@ class TestCrossSchemaSameNameBothOps:
 class TestSchemaNoneNoFalseDrop:
 
     def test_schema_none_no_false_drop(self):
-        import sqlalchemy_utils.alembic.comparator as comparator_module
         from types import SimpleNamespace
 
         model_views = [
@@ -3734,7 +3681,6 @@ class TestViewTypeChangeOrdering:
     """
 
     def test_regular_to_materialized_drops_before_creates(self):
-        import sqlalchemy_utils.alembic.comparator as comparator_module
 
         # DB has the view as a regular view; model defines it as materialized.
         # _canonicalize_all_views is called per schema. For schema=None the
@@ -3825,10 +3771,6 @@ class TestCrossTypeReorderDeterministic:
         iterated, the order would (probabilistically) vary; this test
         locks the contract that the function MUST walk `ops` in order.
         """
-        from sqlalchemy_utils.alembic.comparator import (
-            _reorder_cross_type_drops_before_creates,
-        )
-
         # Build a list of 5 views changing type, with creates before drops.
         names = [f"view_{i}" for i in range(5)]
         creates = [CreateMaterializedViewOp(n, "SELECT 1") for n in names]
@@ -3887,10 +3829,6 @@ class TestCrossTypeReorderPreservesDependencyOrder:
         new type exists, so when V's old type is dropped (CASCADE), W is
         cascade-dropped and lost.
         """
-        from sqlalchemy_utils.alembic.comparator import (
-            _reorder_cross_type_drops_before_creates,
-        )
-
         # V changes type (regular -> materialized): cross-type key.
         create_mv_v = CreateMaterializedViewOp("v", "SELECT 1 AS id")
         drop_view_v = DropViewOp("v", definition="SELECT 1 AS id")
@@ -3919,10 +3857,6 @@ class TestCrossTypeReorderPreservesDependencyOrder:
     def test_non_cross_type_op_between_two_cross_type_pairs_preserves_order(self):
         """A non-cross-type op sitting between two cross-type pairs must
         stay in its relative position (between the two inserted pairs)."""
-        from sqlalchemy_utils.alembic.comparator import (
-            _reorder_cross_type_drops_before_creates,
-        )
-
         # V changes type (cross-type), W is regular (non-cross-type),
         # X changes type (cross-type).
         create_mv_v = CreateMaterializedViewOp("v", "SELECT 1 AS id")

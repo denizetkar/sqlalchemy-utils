@@ -229,7 +229,6 @@ class ViewMixin:
             cascade_on_drop=cascade_on_drop,
             schema=view_schema,
             table=table,
-            indexes=indexes if indexes else None,
             aliases=aliases if is_materialized else None,
         )
 

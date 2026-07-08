@@ -169,7 +169,6 @@ def _register_view_ddl(
     cascade_on_drop,
     schema,
     table=None,
-    indexes=None,
     aliases=None,
 ):
     """Register CREATE/DROP DDL listeners and a ViewRecord on *metadata*.
@@ -178,11 +177,11 @@ def _register_view_ddl(
     :class:`~sqlalchemy_utils.view_mixin.ViewMixin.__declare_last__` to avoid
     triplicated listener registration and ViewRecord construction.
 
-    When *materialized* is ``True`` and *indexes* (or *table* with indexes) is
-    provided, a metadata-scoped ``after_create`` listener is registered that
-    creates each index after the view's backing table is created. This is
-    required because the backing table is built with ``metadata=None`` (so a
-    table-scoped listener would never fire during ``metadata.create_all()``).
+    When *materialized* is ``True`` and *table* has indexes, a
+    metadata-scoped ``after_create`` listener is registered that creates each
+    index after the view's backing table is created. This is required because
+    the backing table is built with ``metadata=None`` (so a table-scoped
+    listener would never fire during ``metadata.create_all()``).
     """
     sa.event.listen(
         metadata,
@@ -300,7 +299,6 @@ def create_materialized_view(
         cascade_on_drop=cascade_on_drop,
         schema=schema,
         table=table,
-        indexes=indexes,
         aliases=aliases,
     )
     return table
