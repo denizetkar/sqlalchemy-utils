@@ -10,7 +10,8 @@ class ViewRecord:
     """
     Frozen dataclass representing a view definition for Alembic migrations.
 
-    Mirrors the parameters of create_view() and CreateView.__init__
+    Mirrors the parameters of :func:`~sqlalchemy_utils.view.create_view`
+    and :func:`~sqlalchemy_utils.view.create_materialized_view`
     to enable reconstruction of view definitions from serialized data.
 
     Equality is name-based: two ViewRecords with the same ``name`` and

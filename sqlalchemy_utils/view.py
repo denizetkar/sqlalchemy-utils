@@ -250,15 +250,14 @@ def create_materialized_view(
         database being described.
     :param indexes: An optional list of SQLAlchemy Index instances.
     :param aliases:
-        An optional dictionary containing with keys as column names and values
-        as column aliases.
+        Optional ``{column_name: alias}`` mapping to override column keys.
     :param cascade_on_drop:
         If ``True`` the view will be dropped with ``CASCADE``,
         deleting all dependent objects as well.
     :param schema:
         Keyword-only. An optional string specifying the schema (database) in
         which the view should be created. When supplied, the view name is
-        qualified with the schema in the emitted ``CREATE``/``DROP``/``REFRESH``
+        qualified with the schema in the emitted ``CREATE``/``DROP``
         DDL.
 
     Same as for ``create_view`` except that a ``CREATE MATERIALIZED VIEW``

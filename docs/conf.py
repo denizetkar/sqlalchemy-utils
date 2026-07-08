@@ -32,7 +32,7 @@ master_doc = "index"
 
 # General information about the project.
 project = "SQLAlchemy-Utils"
-copyright = "2013-2022, Konsta Vesterinen"
+copyright = "2013-2026, Konsta Vesterinen"
 
 version = get_version()
 release = version
