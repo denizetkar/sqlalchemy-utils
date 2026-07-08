@@ -299,6 +299,10 @@ def create_materialized_view(
         # Refresh later with refresh_materialized_view(session, "user_summary").
 
     """
+    if indexes is not None and not isinstance(indexes, list):
+        raise TypeError(
+            f"indexes must be a list or None, got {type(indexes).__name__}"
+        )
     table = create_table_from_selectable(
         name=name,
         selectable=selectable,
@@ -448,6 +452,15 @@ def refresh_materialized_view(
         An optional string specifying the schema (database) in which the
         materialized view resides. When supplied, the view name is qualified
         with the schema in the emitted ``REFRESH MATERIALIZED VIEW`` DDL.
+
+    Example::
+
+        from sqlalchemy_utils import refresh_materialized_view
+        refresh_materialized_view(session, "user_summary")
+        # Concurrently refresh a materialized view in the "analytics" schema:
+        refresh_materialized_view(
+            session, "user_summary", concurrently=True, schema="analytics"
+        )
     """
     # Since session.execute() bypasses autoflush, we must manually flush in
     # order to include newly-created/modified objects in the refresh.

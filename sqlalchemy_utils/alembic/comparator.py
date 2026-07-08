@@ -46,6 +46,7 @@ from sqlalchemy_utils.alembic.operations import (
     ReplaceMaterializedViewOp,
     RefreshMaterializedViewOp,
 )
+from sqlalchemy_utils.alembic.depend import resolve_create_order, resolve_drop_order
 
 _VIEW_OP_TYPES: tuple[type, ...] = (
     CreateViewOp,
@@ -56,7 +57,6 @@ _VIEW_OP_TYPES: tuple[type, ...] = (
     ReplaceMaterializedViewOp,
     RefreshMaterializedViewOp,
 )
-from sqlalchemy_utils.alembic.depend import resolve_create_order, resolve_drop_order
 
 log = logging.getLogger(__name__)
 
@@ -494,6 +494,8 @@ def compare_views(
     schemas: list[str | None] | None = None,
 ) -> None:
     """Compare model-defined views against database state.
+
+    .. note:: Internal — registered as the Alembic ``"schema"`` comparator by :func:`register_view_comparator`. Not part of the stable public API.
 
     This function is registered as an Alembic ``"schema"`` comparator and is
     called automatically during ``alembic revision --autogenerate``.

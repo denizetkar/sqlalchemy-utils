@@ -107,6 +107,7 @@ try:
     from .alembic import register_view_comparator  # noqa
 except ImportError:
     def register_view_comparator() -> None:
+        """Register the view comparator with Alembic. Requires alembic; install with ``pip install sqlalchemy-utils[alembic]``."""
         raise ImportError(
             "register_view_comparator requires alembic; install with "
             "'pip install sqlalchemy-utils[alembic]'"

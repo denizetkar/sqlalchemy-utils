@@ -23,7 +23,7 @@ Requires ``pip install sqlalchemy-utils[alembic]``.
 
     # Point Alembic at the same MetaData your views were registered on.
     # For ORM projects, this is your declarative Base's MetaData:
-    # from your_app.models import Base  # your declarative Base
+    from your_app.models import Base  # your declarative Base
     target_metadata = Base.metadata
 
 Operations reference
@@ -88,7 +88,7 @@ comparator for view DDL:
 
   - New views that need to be created
   - Existing views no longer defined in your models
-  - Changed view definitions matching ``CREATE OR REPLACE`` logic
+  - Changed view definitions (detected via canonicalization)
 
   ``__view_replace__`` (ViewMixin) controls whether runtime DDL emits
   ``CREATE OR REPLACE VIEW``; autogenerate emits ``ReplaceViewOp`` when
@@ -105,10 +105,11 @@ comparator for view DDL:
     comparator propagates this preference to the generated ``drop_view`` /
     ``drop_materialized_view`` ops.
   - Dependency detection between views uses word-boundary regex matching
-    on view names in compiled SQL.  View names that coincide with SQL
-    keywords or common identifiers (e.g. ``select``, ``from``, ``user``)
-    may produce false dependencies; prefer distinctive view names.  Full
-    SQL-AST parsing is not yet implemented.
+    on view names in compiled SQL, not SQL-AST parsing.  View names that
+    match common SQL identifiers (e.g. ``id``, ``name``, ``count``,
+    ``select``, ``from``, ``user``) may produce false dependency edges;
+    prefer distinctive view names.  Full SQL-AST parsing is not yet
+    implemented.
 
 .. warning::
 
@@ -145,8 +146,7 @@ env.py snippet (additions to your existing env.py)
     register_view_comparator()
 
     # Import your models for autogenerate to detect
-    from your_app.models import User, ItemView
-    from your_app.models import Base
+    from your_app.models import Base  # your declarative Base
 
     # Interpret the config file for Alembic config.
     config = context.config
@@ -281,18 +281,12 @@ Advanced helpers
 The following helpers are used internally by
 :func:`register_view_comparator`.  ``compare_views`` is the Alembic
 ``"schema"`` comparator entry point registered by
-:func:`register_view_comparator`; it is not part of the public API and may
-change between releases.  The remaining helpers (``resolve_create_order``,
+:func:`register_view_comparator`; it is internal and not part of the
+public API.  The remaining helpers (``resolve_create_order``,
 ``resolve_drop_order``, ``get_database_views``,
 ``get_database_materialized_views``, ``get_dependent_views``) are exposed
 in ``sqlalchemy_utils.alembic.__all__`` and are safe for advanced
 callers to use directly.
-
-``compare_views(autogen_context, upgrade_ops, schemas=None)`` reads model
-view definitions from
-``metadata.info['sqlalchemy_utils_views']``, canonicalizes each view inside a
-rolled-back savepoint, and appends ``CreateViewOp`` / ``DropViewOp`` /
-``ReplaceViewOp`` (and materialized variants) to *upgrade_ops*.
 
 .. autofunction:: sqlalchemy_utils.alembic.depend.resolve_create_order
 .. autofunction:: sqlalchemy_utils.alembic.depend.resolve_drop_order
