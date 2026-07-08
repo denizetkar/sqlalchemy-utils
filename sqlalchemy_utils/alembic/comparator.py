@@ -272,9 +272,12 @@ def _diff_views(
     ``cascade_by_name`` is consulted for materialized-view Create and
     Replace ops so the user's ``cascade_on_drop`` preference propagates
     from the model to the emitted ``CreateMaterializedViewOp`` /
-    ``ReplaceMaterializedViewOp``. Regular-view Replace ops do not
-    carry a ``cascade`` field (``CREATE OR REPLACE VIEW`` does not
-    drop). Missing entries default to ``True`` (behavior-preserving).
+    ``ReplaceMaterializedViewOp``. Regular-view Create ops also consult
+    ``cascade_by_name`` (default ``True``) so a model view created during
+    autogenerate honors the ``cascade_on_drop`` preference. Regular-view
+    Replace ops do not carry a ``cascade`` field (``CREATE OR REPLACE
+    VIEW`` does not drop). Missing entries default to ``True``
+    (behavior-preserving).
     """
     if cascade_by_name is None:
         cascade_by_name = {}
@@ -289,7 +292,10 @@ def _diff_views(
                     )
                 )
             else:
-                ops.append(CreateViewOp(name, definition, schema=schema))
+                ops.append(CreateViewOp(
+                    name, definition, schema=schema,
+                    cascade_on_drop=cascade_by_name.get((name, schema), True),
+                ))
         elif db_defs[name].strip() != definition.strip():
             if is_materialized:
                 ops.append(

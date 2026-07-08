@@ -3125,6 +3125,74 @@ class TestCascadeOnDropPropagation:
             f"ViewRecord.cascade_on_drop=False, got {drop_ops[0].cascade!r}"
         )
 
+    def test_create_view_propagates_cascade_false(self):
+        """CreateViewOp.cascade_on_drop=False when ViewRecord.cascade_on_drop
+        is False and the view is absent from the DB (Create path, not Drop)."""
+        vr = ViewRecord(
+            name="v_new_nocascade", selectable="SELECT 1 AS col",
+            schema=None, cascade_on_drop=False,
+        )
+        autogen_context, upgrade_ops = _make_mock_autogen_context(
+            model_views=[vr]
+        )
+
+        patches = _patch_comparator(
+            db_views={},
+            canonical_return=(
+                {"v_new_nocascade": "SELECT 1 AS col"}, {}, set(),
+            ),
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            import sqlalchemy_utils.alembic.comparator as comparator_module
+            comparator_module.compare_views(autogen_context, upgrade_ops, [None])
+
+        create_ops = [
+            op for op in upgrade_ops.ops if isinstance(op, CreateViewOp)
+        ]
+        assert len(create_ops) == 1, (
+            f"expected one CreateViewOp, got {create_ops}"
+        )
+        assert create_ops[0].name == "v_new_nocascade"
+        assert create_ops[0].cascade_on_drop is False, (
+            f"CreateViewOp.cascade_on_drop should be False when "
+            f"ViewRecord.cascade_on_drop=False, got "
+            f"{create_ops[0].cascade_on_drop!r}"
+        )
+
+    def test_drop_view_reverse_propagates_cascade_false(self):
+        """DropViewOp.reverse() must propagate cascade to the resulting
+        CreateViewOp.cascade_on_drop."""
+        drop_op = DropViewOp(
+            "v", cascade=False, definition="SELECT 1 AS col",
+        )
+        reversed_op = drop_op.reverse()
+        assert isinstance(reversed_op, CreateViewOp), (
+            f"reverse() should return a CreateViewOp, got {type(reversed_op)}"
+        )
+        assert reversed_op.cascade_on_drop is False, (
+            f"DropViewOp.reverse() should propagate cascade=False to the "
+            f"CreateViewOp.cascade_on_drop, got "
+            f"{reversed_op.cascade_on_drop!r}"
+        )
+
+    def test_drop_materialized_view_reverse_propagates_cascade_false(self):
+        """DropMaterializedViewOp.reverse() must propagate cascade to the
+        resulting CreateMaterializedViewOp.cascade_on_drop."""
+        drop_op = DropMaterializedViewOp(
+            "mv", cascade=False, definition="SELECT 1 AS col",
+            with_data=False,
+        )
+        reversed_op = drop_op.reverse()
+        assert isinstance(reversed_op, CreateMaterializedViewOp), (
+            f"reverse() should return a CreateMaterializedViewOp, "
+            f"got {type(reversed_op)}"
+        )
+        assert reversed_op.cascade_on_drop is False, (
+            f"DropMaterializedViewOp.reverse() should propagate "
+            f"cascade=False to the CreateMaterializedViewOp.cascade_on_drop, "
+            f"got {reversed_op.cascade_on_drop!r}"
+        )
+
 
 # ===========================================================================
 # Cross-schema same-name view handling

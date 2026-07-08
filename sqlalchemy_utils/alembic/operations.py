@@ -156,7 +156,10 @@ class DropViewOp(MigrateOperation):
                 "no definition stored. Pass definition= to DropViewOp "
                 "to enable automatic downgrade generation."
             )
-        return CreateViewOp(self.name, self.definition, schema=self.schema)
+        return CreateViewOp(
+            self.name, self.definition, schema=self.schema,
+            cascade_on_drop=self.cascade,
+        )
 
 @Operations.register_operation("replace_view")
 class ReplaceViewOp(MigrateOperation):
@@ -356,6 +359,7 @@ class DropMaterializedViewOp(MigrateOperation):
         return CreateMaterializedViewOp(
             self.name, self.definition, schema=self.schema,
             with_data=self.with_data,
+            cascade_on_drop=self.cascade,
         )
 
 @Operations.register_operation("replace_materialized_view")
