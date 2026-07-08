@@ -237,7 +237,7 @@ def create_materialized_view(
     *,
     schema: str | None = None,
 ) -> sa.Table:
-    """Create a view on a given metadata
+    """Create a materialized view on a given metadata
 
     :param name: The name of the view to create.
     :param selectable: An SQLAlchemy selectable e.g. a select() statement.

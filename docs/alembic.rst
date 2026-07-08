@@ -21,13 +21,26 @@ Requires ``pip install sqlalchemy-utils[alembic]``.
 Operations reference
 ---------------------
 
-.. automethod:: sqlalchemy_utils.alembic.operations.CreateViewOp.create_view
-.. automethod:: sqlalchemy_utils.alembic.operations.DropViewOp.drop_view
-.. automethod:: sqlalchemy_utils.alembic.operations.ReplaceViewOp.replace_view
-.. automethod:: sqlalchemy_utils.alembic.operations.CreateMaterializedViewOp.create_materialized_view
-.. automethod:: sqlalchemy_utils.alembic.operations.DropMaterializedViewOp.drop_materialized_view
-.. automethod:: sqlalchemy_utils.alembic.operations.ReplaceMaterializedViewOp.replace_materialized_view
-.. automethod:: sqlalchemy_utils.alembic.operations.RefreshMaterializedViewOp.refresh_materialized_view
+.. autoclass:: sqlalchemy_utils.alembic.operations.CreateViewOp
+   :members: create_view
+
+.. autoclass:: sqlalchemy_utils.alembic.operations.DropViewOp
+   :members: drop_view
+
+.. autoclass:: sqlalchemy_utils.alembic.operations.ReplaceViewOp
+   :members: replace_view
+
+.. autoclass:: sqlalchemy_utils.alembic.operations.CreateMaterializedViewOp
+   :members: create_materialized_view
+
+.. autoclass:: sqlalchemy_utils.alembic.operations.DropMaterializedViewOp
+   :members: drop_materialized_view
+
+.. autoclass:: sqlalchemy_utils.alembic.operations.ReplaceMaterializedViewOp
+   :members: replace_materialized_view
+
+.. autoclass:: sqlalchemy_utils.alembic.operations.RefreshMaterializedViewOp
+   :members: refresh_materialized_view
 
 .. note::
 
@@ -143,7 +156,8 @@ env.py snippet (additions to your existing env.py)
    view's ``CREATE``/``DROP``/``REFRESH`` statements.
 
 
-**SA2 Core (non-ORM) pattern**:
+SA2 Core (non-ORM) pattern
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: python
 
@@ -250,7 +264,7 @@ implement ``reverse()`` for downgrade generation, and add a renderer via
 
 
 Advanced helpers
----------------------------
+----------------
 
 The following helpers are used internally by
 :func:`register_view_comparator`.  ``compare_views`` is the Alembic
