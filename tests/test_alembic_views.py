@@ -57,6 +57,7 @@ from sqlalchemy_utils.alembic.operations import (
 from sqlalchemy_utils.alembic.pg_catalog import (
     get_database_materialized_views,
     get_database_views,
+    get_dependent_views,
 )
 from sqlalchemy_utils.alembic.renderer import (
     render_create_materialized_view,
@@ -413,6 +414,40 @@ class TestGetDatabaseViews:
         assert fetch_fn(connection) == {}
 
 
+class TestPgCatalogRejectsNonPostgresDialect:
+    """All public pg_catalog functions must fail fast with a clear error
+    when called with a non-PostgreSQL connection.
+
+    These are public API (in ``__all__``) and should not silently emit
+    broken SQL against a dialect that lacks ``pg_catalog``.
+    """
+
+    @staticmethod
+    def _make_sqlite_connection():
+        """Return a real SQLAlchemy Connection backed by SQLite.
+
+        Using a real connection (instead of a MagicMock) ensures the
+        dialect check happens before any SQL is sent to the wire, so
+        SQLite never sees the PostgreSQL-specific catalog query.
+        """
+        engine = sa.create_engine("sqlite:///:memory:")
+        return engine.connect()
+
+    @pytest.mark.parametrize(
+        "fn,fn_args,fn_kwargs",
+        [
+            (get_database_views, (), {}),
+            (get_database_materialized_views, (), {}),
+            (get_dependent_views, ("some_view",), {}),
+        ],
+        ids=["get_database_views", "get_database_materialized_views", "get_dependent_views"],
+    )
+    def test_non_pg_dialect_raises_not_implemented(self, fn, fn_args, fn_kwargs):
+        connection = self._make_sqlite_connection()
+        with pytest.raises(NotImplementedError, match="PostgreSQL"):
+            fn(connection, *fn_args, **fn_kwargs)
+
+
 # ===========================================================================
 # Operations
 # ===========================================================================
@@ -740,6 +775,39 @@ class TestOpValidation:
     def test_create_view_rejects_none_definition(self):
         with pytest.raises((TypeError, ValueError), match="(?i)definition"):
             CreateViewOp("v", None)
+
+    @pytest.mark.parametrize(
+        "op_class,bad_name,extra_kwargs",
+        [
+            (CreateViewOp, "", {"definition": "SELECT 1"}),
+            (CreateViewOp, None, {"definition": "SELECT 1"}),
+            (DropViewOp, "", {}),
+            (DropViewOp, None, {}),
+            (ReplaceViewOp, "", {"definition": "SELECT 1"}),
+            (ReplaceViewOp, None, {"definition": "SELECT 1"}),
+            (CreateMaterializedViewOp, "", {"definition": "SELECT 1"}),
+            (CreateMaterializedViewOp, None, {"definition": "SELECT 1"}),
+            (DropMaterializedViewOp, "", {}),
+            (DropMaterializedViewOp, None, {}),
+            (ReplaceMaterializedViewOp, "", {"definition": "SELECT 1"}),
+            (ReplaceMaterializedViewOp, None, {"definition": "SELECT 1"}),
+            (RefreshMaterializedViewOp, "", {}),
+            (RefreshMaterializedViewOp, None, {}),
+        ],
+        ids=[
+            "CreateViewOp-empty", "CreateViewOp-none",
+            "DropViewOp-empty", "DropViewOp-none",
+            "ReplaceViewOp-empty", "ReplaceViewOp-none",
+            "CreateMaterializedViewOp-empty", "CreateMaterializedViewOp-none",
+            "DropMaterializedViewOp-empty", "DropMaterializedViewOp-none",
+            "ReplaceMaterializedViewOp-empty", "ReplaceMaterializedViewOp-none",
+            "RefreshMaterializedViewOp-empty", "RefreshMaterializedViewOp-none",
+        ],
+    )
+    def test_op_rejects_empty_or_none_name(self, op_class, bad_name, extra_kwargs):
+        """Every view op __init__ must reject None and empty-string name."""
+        with pytest.raises(TypeError, match="(?i)name"):
+            op_class(bad_name, **extra_kwargs)
 
 
 # ===========================================================================
@@ -2489,7 +2557,6 @@ class TestPublicAPIImportable:
             ("sqlalchemy_utils.alembic:CreateMaterializedViewOp", "test_mv", ("test_mv", "SELECT 1"), {}, "SELECT 1"),
             ("sqlalchemy_utils.alembic:DropMaterializedViewOp", "test_mv", ("test_mv",), {"cascade": False}, None),
             ("sqlalchemy_utils.alembic:ReplaceMaterializedViewOp", "test_mv", ("test_mv", "SELECT 2"), {}, "SELECT 2"),
-            ("sqlalchemy_utils.alembic:compare_views", None, None, {}, None),
             ("sqlalchemy_utils.alembic:get_database_materialized_views", None, None, {}, None),
             ("sqlalchemy_utils.alembic:get_database_views", None, None, {}, None),
             ("sqlalchemy_utils.alembic:resolve_create_order", None, None, {}, None),
@@ -2501,7 +2568,7 @@ class TestPublicAPIImportable:
             "create_view_op", "drop_view_op", "replace_view_op",
             "create_materialized_view_op", "drop_materialized_view_op",
             "replace_materialized_view_op",
-            "compare_views", "get_database_materialized_views",
+            "get_database_materialized_views",
             "get_database_views", "resolve_create_order",
             "resolve_drop_order", "view_record",
             "register_view_comparator",
