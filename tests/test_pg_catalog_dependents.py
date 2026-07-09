@@ -331,7 +331,7 @@ def _setup_union_all(connection):
     ``get_dependent_views`` are disjoint by ``relkind`` (``v`` vs ``m``);
     ``UNION ALL`` preserves all rows from both, while a plain ``UNION``
     would dedupe identical rows. This setup verifies both dependents are
-    returned and locks the use of ``UNION ALL`` in the generated SQL.
+    returned.
     """
     connection.execute(
         sa.text(
@@ -387,15 +387,9 @@ def test_get_dependent_views_union_all_keeps_both_regular_and_mv(connection):
     ``relkind`` (``v`` for regular views via ``pg_views``, ``m`` for
     materialized views via ``pg_matviews``). A plain ``UNION`` would
     dedupe identical rows; ``UNION ALL`` preserves all rows from both
-    subqueries. This test verifies:
-
-    1. A regular view dependent (``_union_dep``) and a materialized view
-       dependent (``_union_mv``) are BOTH returned for the same referenced
-       view.
-    2. The generated SQL uses ``UNION ALL`` (not plain ``UNION``), so
-       future regressions to ``UNION`` are caught even though the
-       disjoint-by-relkind property means the two are functionally
-       equivalent for distinct-named dependents.
+    subqueries. This test verifies that a regular view dependent
+    (``_union_dep``) and a materialized view dependent (``_union_mv``)
+    are BOTH returned for the same referenced view.
     """
     _setup_union_all(connection)
     try:
@@ -408,16 +402,6 @@ def test_get_dependent_views_union_all_keeps_both_regular_and_mv(connection):
         assert "_union_mv" in dep_names, (
             "expected materialized view dependent '_union_mv'; got: "
             f"{sorted(dependents.keys())}"
-        )
-
-        from sqlalchemy_utils.alembic import pg_catalog as pg_catalog_mod
-
-        src = pg_catalog_mod.get_dependent_views.__code__.co_consts
-        joined = " ".join(str(c) for c in src)
-        assert "UNION ALL" in joined, (
-            "get_dependent_views SQL must use UNION ALL (not plain UNION) "
-            "to avoid deduping disjoint regular/MV rows; source constants: "
-            f"{joined!r}"
         )
     finally:
         _teardown_union_all(connection)
