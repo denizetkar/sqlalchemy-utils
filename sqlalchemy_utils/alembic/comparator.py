@@ -72,6 +72,14 @@ _CANON_ERRORS = (sa.exc.SQLAlchemyError, OSError)
 
 # Idempotency guard: register_view_comparator may be called multiple times
 # (e.g. across env.py reloads); only the first call registers the hook.
+#
+# The check-then-set pattern in register_view_comparator (read _registered,
+# then later set it True) is intentionally NOT thread-safe. Alembic runs in
+# a single-threaded context (one env.py per migration invocation), so a race
+# cannot occur in practice. Double-registration is harmless anyway because
+# comparators.dispatch_for() is idempotent — re-registering the same callable
+# for the same dispatch name is a no-op. A threading.Lock would add cost and
+# complexity for a race that cannot happen in the intended runtime.
 _registered = False
 
 
