@@ -90,7 +90,7 @@ def get_database_materialized_views(connection: sa.engine.Connection, schema: st
     return _query_view_catalog(connection, "pg_matviews", "matviewname", schema)
 
 
-def get_dependent_views(connection: sa.engine.Connection, name: str, schema: str | None = None) -> dict[tuple[str, str | None], str]:
+def get_dependent_views(connection: sa.engine.Connection, name: str, schema: str | None = None) -> dict[tuple[str, str], str]:
     """Query pg_depend for views that depend on the given view.
 
     PostgreSQL-specific. Will raise on non-PostgreSQL dialects.
