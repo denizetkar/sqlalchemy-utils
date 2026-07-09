@@ -117,8 +117,9 @@ comparator for view DDL:
    view can be created:
 
    1. **Runtime DDL** — :func:`~sqlalchemy_utils.view.create_materialized_view`
-      emits ``CREATE MATERIALIZED VIEW ... WITH DATA`` by default (the
-      PostgreSQL default); pass ``with_data=False`` to defer population.
+      emits ``CREATE MATERIALIZED VIEW`` (PostgreSQL defaults to ``WITH DATA``).
+      The runtime function has no ``with_data`` parameter — only
+      ``op.create_materialized_view()`` supports ``with_data=False``.
    2. **Manual Alembic op** — ``op.create_materialized_view(...)`` defaults to
       ``with_data=False`` (``WITH NO DATA``), so the MV is created empty.
       Pass ``with_data=True`` explicitly to populate it immediately.
