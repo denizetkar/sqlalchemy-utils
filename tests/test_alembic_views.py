@@ -574,6 +574,80 @@ class TestReplaceViewOp:
         assert sqls[0] == "DROP VIEW IF EXISTS v1 CASCADE"
         assert sqls[1] == "CREATE VIEW v1 AS SELECT 2"
 
+    @pytest.mark.parametrize(
+        "cascade_kwarg, expected_cascade_attr, drop_contains_cascade, expected_drop_sql",
+        [
+            (
+                None,
+                True,
+                True,
+                "DROP VIEW IF EXISTS v CASCADE",
+            ),
+            (
+                False,
+                False,
+                False,
+                "DROP VIEW IF EXISTS v",
+            ),
+        ],
+        ids=["default_true", "explicit_false"],
+    )
+    def test_replace_view_cascade(
+        self,
+        cascade_kwarg,
+        expected_cascade_attr,
+        drop_contains_cascade,
+        expected_drop_sql,
+    ):
+        """ReplaceViewOp stores cascade kwarg (default True) and
+        the DROP SQL emitted by ``_replace_view_impl`` contains
+        CASCADE only when op.cascade is True."""
+        kwargs = {"cascade": cascade_kwarg} if cascade_kwarg is not None else {}
+        op = ReplaceViewOp("v", "SELECT 1", **kwargs)
+        assert op.cascade is expected_cascade_attr, (
+            f"ReplaceViewOp.cascade should be "
+            f"{expected_cascade_attr} when cascade_kwarg={cascade_kwarg!r}, "
+            f"got {op.cascade!r}"
+        )
+
+        sqls = _capture_sql(op)
+        assert len(sqls) == 2
+        assert sqls[0] == expected_drop_sql, (
+            f"DROP SQL mismatch; got {sqls[0]!r}"
+        )
+        if drop_contains_cascade:
+            assert "CASCADE" in sqls[0].upper(), (
+                f"DROP must contain CASCADE when op.cascade=True. "
+                f"DROP SQL: {sqls[0]!r}"
+            )
+        else:
+            assert "CASCADE" not in sqls[0].upper(), (
+                f"DROP must not contain CASCADE when op.cascade=False. "
+                f"DROP SQL: {sqls[0]!r}"
+            )
+        assert sqls[1] == "CREATE VIEW v AS SELECT 1"
+
+    def test_replace_view_cascade_propagates_to_reverse(self):
+        """ReplaceViewOp.reverse() must propagate cascade=False."""
+        op = ReplaceViewOp(
+            "v", "SELECT 2", cascade=False, old_definition="SELECT 1"
+        )
+        rev = op.reverse()
+        assert isinstance(rev, ReplaceViewOp)
+        assert rev.cascade is False, (
+            f"reversed ReplaceViewOp.cascade should be False when original "
+            f"had cascade=False, got {rev.cascade!r}"
+        )
+
+    def test_replace_view_cascade_default_propagates_to_reverse(self):
+        """ReplaceViewOp.reverse() must propagate the default cascade=True."""
+        op = ReplaceViewOp(
+            "v", "SELECT 2", old_definition="SELECT 1"
+        )
+        rev = op.reverse()
+        assert isinstance(rev, ReplaceViewOp)
+        assert rev.cascade is True
+
 
 class TestCreateMaterializedViewOp:
 
@@ -963,6 +1037,18 @@ class TestRendererReplaceView:
         op = ReplaceViewOp("v_repl", "SELECT 2", schema="public", old_definition="SELECT 1")
         rendered = render_replace_view(_make_autogen_context(), op)
         assert "old_definition=" in rendered
+
+    def test_cascade_omitted_when_true(self):
+        """Renderer omits cascade when True (the default)."""
+        op = ReplaceViewOp("v", "SELECT 2")
+        result = render_replace_view(_make_autogen_context(), op)
+        assert "cascade=" not in result
+
+    def test_cascade_included_when_false(self):
+        """Renderer includes cascade=False when cascade is disabled."""
+        op = ReplaceViewOp("v", "SELECT 2", cascade=False)
+        result = render_replace_view(_make_autogen_context(), op)
+        assert "cascade=False" in result
 
 
 class TestRendererCreateMaterializedView:
@@ -3070,6 +3156,68 @@ class TestCascadeOnDropPropagation:
             f"ViewRecord.cascade_on_drop=False, got "
             f"{create_ops[0].cascade_on_drop!r}"
         )
+
+    def test_replace_view_propagates_cascade_false(self):
+        """ReplaceViewOp.cascade=False when ViewRecord.cascade_on_drop=False
+        and the view definition changed (Replace path, not Create/Drop)."""
+        vr = ViewRecord(
+            name="v_replace_nocascade",
+            selectable="SELECT 1 AS col",
+            schema=None,
+            cascade_on_drop=False,
+        )
+        autogen_context, upgrade_ops = _make_mock_autogen_context(
+            model_views=[vr]
+        )
+
+        patches = _patch_comparator(
+            db_views={"v_replace_nocascade": "SELECT 2 AS col"},
+            canonical_return=(
+                {"v_replace_nocascade": "SELECT 1 AS col"}, {}, set(),
+            ),
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            comparator_module.compare_views(autogen_context, upgrade_ops, [None])
+
+        replace_ops = [
+            op for op in upgrade_ops.ops if isinstance(op, ReplaceViewOp)
+        ]
+        assert len(replace_ops) == 1, (
+            f"expected one ReplaceViewOp, got {replace_ops}"
+        )
+        assert replace_ops[0].name == "v_replace_nocascade"
+        assert replace_ops[0].cascade is False, (
+            f"ReplaceViewOp.cascade should be False when "
+            f"ViewRecord.cascade_on_drop=False, got "
+            f"{replace_ops[0].cascade!r}"
+        )
+
+    def test_replace_view_defaults_to_cascade_true(self):
+        """ReplaceViewOp.cascade defaults to True when ViewRecord has
+        no cascade_on_drop preference set (model view present, DB differs)."""
+        vr = ViewRecord(
+            name="v_replace_default",
+            selectable="SELECT 1 AS col",
+            schema=None,
+        )
+        autogen_context, upgrade_ops = _make_mock_autogen_context(
+            model_views=[vr]
+        )
+
+        patches = _patch_comparator(
+            db_views={"v_replace_default": "SELECT 2 AS col"},
+            canonical_return=(
+                {"v_replace_default": "SELECT 1 AS col"}, {}, set(),
+            ),
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            comparator_module.compare_views(autogen_context, upgrade_ops, [None])
+
+        replace_ops = [
+            op for op in upgrade_ops.ops if isinstance(op, ReplaceViewOp)
+        ]
+        assert len(replace_ops) == 1
+        assert replace_ops[0].cascade is True
 
 
 # ===========================================================================

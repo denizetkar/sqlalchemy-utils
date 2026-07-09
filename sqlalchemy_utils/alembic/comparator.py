@@ -278,8 +278,9 @@ def _diff_views(
     ``ReplaceMaterializedViewOp``. Regular-view Create ops also consult
     ``cascade_by_name`` (default ``True``) so a model view created during
     autogenerate honors the ``cascade_on_drop`` preference. Regular-view
-    Replace ops do not carry a ``cascade`` field (``CREATE OR REPLACE
-    VIEW`` does not drop). Missing entries default to ``True``
+    Replace ops also consult ``cascade_by_name`` (default ``True``) so
+    the emitted ``ReplaceViewOp`` honors the ``cascade_on_drop``
+    preference on its ``DROP VIEW``. Missing entries default to ``True``
     (behavior-preserving).
     """
     if cascade_by_name is None:
@@ -317,6 +318,7 @@ def _diff_views(
                         name,
                         definition,
                         schema=schema,
+                        cascade=cascade_by_name.get((name, schema), True),
                         old_definition=db_defs[name],
                     )
                 )

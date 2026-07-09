@@ -89,7 +89,7 @@ def render_replace_view(autogen_context: AutogenContext, op: ReplaceViewOp) -> s
     """Render a ReplaceViewOp as op.replace_view(...) code."""
     return (
         f"op.replace_view({op.name!r}, {op.definition!r}"
-        f"{_schema_part(op)}{_old_def_part(op)})"
+        f"{_schema_part(op)}{_cascade_part(op)}{_old_def_part(op)})"
     )
 
 
