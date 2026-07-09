@@ -158,11 +158,7 @@ def _canonicalize_all_views(
     connection.execute(sa.text(f"SAVEPOINT {_OUTER_SAVEPOINT}"))
     try:
         for vr in ordered:
-            # Inner savepoint per view: on success RELEASE (view persists in
-            # the outer savepoint so dependents can see it); on failure
-            # ROLLBACK TO (cleans the aborted sub-transaction without
-            # touching already-created views). Releasing avoids savepoint
-            # accumulation.
+            # Inner savepoint per view: RELEASE on success, ROLLBACK TO on failure.
             inner_sp = f"{_OUTER_SAVEPOINT}_v"
             connection.execute(sa.text(f"SAVEPOINT {inner_sp}"))
             try:
@@ -177,9 +173,7 @@ def _canonicalize_all_views(
                     connection.execute(
                         sa.text(f"ROLLBACK TO SAVEPOINT {inner_sp}")
                     )
-                    # ROLLBACK TO does not destroy the savepoint (PG
-                    # semantics); RELEASE it so the next iteration can
-                    # create a fresh one.
+                    # ROLLBACK TO keeps the savepoint alive; RELEASE for reuse.
                     connection.execute(
                         sa.text(f"RELEASE SAVEPOINT {inner_sp}")
                     )
@@ -187,11 +181,8 @@ def _canonicalize_all_views(
                     pass
                 skipped.add(vr.name)
 
-                # Probe: is the outer savepoint still usable? A DB-level
-                # error may have poisoned the transaction, in which case
-                # every subsequent SAVEPOINT will fail and every remaining
-                # view would be silently skipped. Break early with a
-                # warning instead.
+                # Probe the outer savepoint: a poisoned transaction would
+                # silently skip all remaining views, so break early instead.
                 try:
                     connection.execute(sa.text("SELECT 1"))
                 except _CANON_ERRORS:
@@ -201,30 +192,23 @@ def _canonicalize_all_views(
                         "remaining views", vr.name
                     )
                     processed.add(vr.name)
-                    # Unreached views must land in `skipped` so drop
-                    # detection does not treat them as DB-only and emit a
-                    # false DropViewOp (data loss).
+                    # Unreached views go to `skipped` to avoid false DropViewOps.
                     for remaining_vr in ordered:
                         if remaining_vr.name not in processed:
                             skipped.add(remaining_vr.name)
                     break
             processed.add(vr.name)
 
-        # Batch-read canonical definitions from pg_catalog in one query per
-        # kind (regular + materialized) rather than one per view. This
-        # readback happens INSIDE the outer savepoint (before the
-        # finally-block rollback) so the just-created views are visible.
+        # Batch-read from pg_catalog inside the outer savepoint (before
+        # rollback) so just-created views are visible.
         db_views: dict[str, str] = {}
         db_mvs: dict[str, str] = {}
         try:
             db_views = get_database_views(connection, schema)
             db_mvs = get_database_materialized_views(connection, schema)
         except _CANON_ERRORS as exc:
-            # The catalog readback itself can fail if the transaction was
-            # poisoned mid-loop (the inner-savepoint probe in the loop only
-            # fires after a view CREATE failure; a DB-level abort that
-            # poisons the outer savepoint without a per-view failure would
-            # land here). Treat as poisoned and skip readback.
+            # Catalog readback can fail if the transaction was poisoned
+            # mid-loop without a per-view failure; treat as poisoned.
             log.warning(
                 "Catalog readback failed for schema %r (transaction may be "
                 "poisoned): %s. Marking all views skipped.", schema, exc
@@ -232,10 +216,8 @@ def _canonicalize_all_views(
             for vr in ordered:
                 skipped.add(vr.name)
     finally:
-        # Roll back the outer savepoint so nothing persists.  Guarded
-        # because if the transaction is already poisoned (e.g. a DB-level
-        # error aborted the outer savepoint itself) the ROLLBACK TO would
-        # raise and mask the original exception propagated from the body.
+        # Guarded rollback: a poisoned transaction would raise and mask
+        # the original exception propagated from the body.
         try:
             connection.execute(
                 sa.text(f"ROLLBACK TO SAVEPOINT {_OUTER_SAVEPOINT}")
@@ -272,24 +254,12 @@ def _diff_views(
 ) -> list:
     """Diff model view definitions against DB state, returning create/replace ops.
 
-    For each model view name: if absent from the DB, emit a Create op; if the
-    canonical definition differs from the DB, emit a Replace op. The op class
-    (``CreateViewOp``/``ReplaceViewOp`` vs ``CreateMaterializedViewOp``/
-    ``ReplaceMaterializedViewOp``) is selected by *is_materialized*.
+    Absent views become Create ops; changed definitions become Replace ops.
+    Op class is selected by *is_materialized*; materialized ops use
+    ``with_data=False`` (autogenerate emits ``WITH NO DATA``).
 
-    Materialized-view ops are created with ``with_data=False`` (matches the
-    previous inline behavior — autogenerate emits ``WITH NO DATA``).
-
-    ``cascade_by_name`` is consulted for materialized-view Create and
-    Replace ops so the user's ``cascade_on_drop`` preference propagates
-    from the model to the emitted ``CreateMaterializedViewOp`` /
-    ``ReplaceMaterializedViewOp``. Regular-view Create ops also consult
-    ``cascade_by_name`` (default ``True``) so a model view created during
-    autogenerate honors the ``cascade_on_drop`` preference. Regular-view
-    Replace ops also consult ``cascade_by_name`` (default ``True``) so
-    the emitted ``ReplaceViewOp`` honors the ``cascade_on_drop``
-    preference on its ``DROP VIEW``. Missing entries default to ``True``
-    (behavior-preserving).
+    ``cascade_by_name`` propagates each model's ``cascade_on_drop`` preference
+    to the emitted Create/Replace ops (default ``True``, behavior-preserving).
     """
     if cascade_by_name is None:
         cascade_by_name = {}

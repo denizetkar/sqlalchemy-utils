@@ -81,13 +81,8 @@ from sqlalchemy_utils.view_mixin import ViewMixin
 # ===========================================================================
 
 def _make_poisoned_connection(view_name, call_log):
-    """Return a mock PG connection whose ``CREATE VIEW <view_name>`` fails
-    and whose ``SELECT 1`` probe raises a poisoned-transaction error.
-
-    Every executed SQL statement is appended to *call_log* so callers can
-    assert on the issued SQL sequence. All other statements (SAVEPOINT,
-    ROLLBACK TO, RELEASE, DROP VIEW) succeed.
-    """
+    """Mock PG connection: ``CREATE VIEW <view_name>`` fails and ``SELECT 1``
+    probe raises a poisoned-transaction error. All SQL is logged to *call_log*."""
     def _execute(stmt):
         text = getattr(stmt, "text", str(stmt))
         call_log.append(text)
@@ -1659,12 +1654,11 @@ class TestAbortedTransactionBreaksEarly:
             rec
             for rec in caplog.records
             if rec.levelno >= logging.WARNING
-            and ("aborted state" in rec.message
-                 or "aborting canonicalization" in rec.message)
+            and "aborted state" in rec.message
         ]
         assert abort_warnings, (
-            f"Expected a warning about aborted state / aborting "
-            f"canonicalization after the probe failed. Got log records: "
+            f"Expected a warning about aborted state after the probe failed. "
+            f"Got log records: "
             f"{[(rec.levelname, rec.message) for rec in caplog.records]}"
         )
 
@@ -3024,21 +3018,48 @@ class TestCascadeOnDropPropagation:
     """compare_views should propagate ViewRecord.cascade_on_drop to the
     generated DropViewOp / DropMaterializedViewOp ``cascade`` param."""
 
-    def test_drop_view_propagates_cascade_false(self):
+    @pytest.fixture
+    def run_compare(self):
+        """Run compare_views with one model ViewRecord and patched DB state.
+
+        Returns the ``upgrade_ops`` for op-type filtering and assertions.
+        """
+        def _run(
+            view_record,
+            db_views=None,
+            db_mvs=None,
+            canonical_return=None,
+        ):
+            model_views = [view_record] if view_record else []
+            autogen_context, upgrade_ops = _make_mock_autogen_context(
+                model_views=model_views
+            )
+
+            kwargs = {}
+            if db_views is not None:
+                kwargs["db_views"] = db_views
+            if db_mvs is not None:
+                kwargs["db_mvs"] = db_mvs
+            if canonical_return is not None:
+                kwargs["canonical_return"] = canonical_return
+
+            with _patch_comparator(**kwargs):
+                comparator_module.compare_views(
+                    autogen_context, upgrade_ops, [None]
+                )
+            return upgrade_ops
+
+        return _run
+
+    def test_drop_view_propagates_cascade_false(self, run_compare):
         """DropViewOp.cascade=False when ViewRecord.cascade_on_drop=False."""
         vr = ViewRecord(
             name="v_no_cascade", selectable="SELECT 1 AS col",
             schema=None, cascade_on_drop=False,
         )
-        autogen_context, upgrade_ops = _make_mock_autogen_context(
-            model_views=[vr]
+        upgrade_ops = run_compare(
+            vr, db_views={"v_no_cascade": "SELECT 1 AS col"},
         )
-
-        patches = _patch_comparator(
-            db_views={"v_no_cascade": "SELECT 1 AS col"},
-        )
-        with patches:
-            comparator_module.compare_views(autogen_context, upgrade_ops, [None])
 
         drop_ops = [op for op in upgrade_ops.ops if isinstance(op, DropViewOp)]
         assert len(drop_ops) == 1, f"expected one DropViewOp, got {drop_ops}"
@@ -3048,38 +3069,25 @@ class TestCascadeOnDropPropagation:
             f"ViewRecord.cascade_on_drop=False, got {drop_ops[0].cascade!r}"
         )
 
-    def test_drop_view_defaults_to_true_when_no_record(self):
+    def test_drop_view_defaults_to_true_when_no_record(self, run_compare):
         """DropViewOp.cascade defaults to True when no model ViewRecord exists."""
-        autogen_context, upgrade_ops = _make_mock_autogen_context(
-            model_views=[]
+        upgrade_ops = run_compare(
+            None, db_views={"orphan_view": "SELECT 1 AS col"},
         )
-
-        patches = _patch_comparator(
-            db_views={"orphan_view": "SELECT 1 AS col"},
-        )
-        with patches:
-            comparator_module.compare_views(autogen_context, upgrade_ops, [None])
 
         drop_ops = [op for op in upgrade_ops.ops if isinstance(op, DropViewOp)]
         assert len(drop_ops) == 1
         assert drop_ops[0].cascade is True
 
-    def test_drop_materialized_view_propagates_cascade_false(self):
+    def test_drop_materialized_view_propagates_cascade_false(self, run_compare):
         """DropMaterializedViewOp.cascade=False when cascade_on_drop=False."""
         vr = ViewRecord(
             name="mv_no_cascade", selectable="SELECT 1 AS col",
             schema=None, materialized=True, cascade_on_drop=False,
         )
-        autogen_context, upgrade_ops = _make_mock_autogen_context(
-            model_views=[vr]
+        upgrade_ops = run_compare(
+            vr, db_views={}, db_mvs={"mv_no_cascade": "SELECT 1 AS col"},
         )
-
-        patches = _patch_comparator(
-            db_views={},
-            db_mvs={"mv_no_cascade": "SELECT 1 AS col"},
-        )
-        with patches:
-            comparator_module.compare_views(autogen_context, upgrade_ops, [None])
 
         drop_ops = [
             op for op in upgrade_ops.ops
@@ -3094,25 +3102,20 @@ class TestCascadeOnDropPropagation:
             f"ViewRecord.cascade_on_drop=False, got {drop_ops[0].cascade!r}"
         )
 
-    def test_create_view_propagates_cascade_false(self):
+    def test_create_view_propagates_cascade_false(self, run_compare):
         """CreateViewOp.cascade_on_drop=False when ViewRecord.cascade_on_drop
         is False and the view is absent from the DB (Create path, not Drop)."""
         vr = ViewRecord(
             name="v_new_nocascade", selectable="SELECT 1 AS col",
             schema=None, cascade_on_drop=False,
         )
-        autogen_context, upgrade_ops = _make_mock_autogen_context(
-            model_views=[vr]
-        )
-
-        patches = _patch_comparator(
+        upgrade_ops = run_compare(
+            vr,
             db_views={},
             canonical_return=(
                 {"v_new_nocascade": "SELECT 1 AS col"}, {}, set(),
             ),
         )
-        with patches:
-            comparator_module.compare_views(autogen_context, upgrade_ops, [None])
 
         create_ops = [
             op for op in upgrade_ops.ops if isinstance(op, CreateViewOp)
@@ -3127,7 +3130,7 @@ class TestCascadeOnDropPropagation:
             f"{create_ops[0].cascade_on_drop!r}"
         )
 
-    def test_replace_view_propagates_cascade_false(self):
+    def test_replace_view_propagates_cascade_false(self, run_compare):
         """ReplaceViewOp.cascade=False when ViewRecord.cascade_on_drop=False
         and the view definition changed (Replace path, not Create/Drop)."""
         vr = ViewRecord(
@@ -3136,18 +3139,13 @@ class TestCascadeOnDropPropagation:
             schema=None,
             cascade_on_drop=False,
         )
-        autogen_context, upgrade_ops = _make_mock_autogen_context(
-            model_views=[vr]
-        )
-
-        patches = _patch_comparator(
+        upgrade_ops = run_compare(
+            vr,
             db_views={"v_replace_nocascade": "SELECT 2 AS col"},
             canonical_return=(
                 {"v_replace_nocascade": "SELECT 1 AS col"}, {}, set(),
             ),
         )
-        with patches:
-            comparator_module.compare_views(autogen_context, upgrade_ops, [None])
 
         replace_ops = [
             op for op in upgrade_ops.ops if isinstance(op, ReplaceViewOp)
@@ -3162,7 +3160,7 @@ class TestCascadeOnDropPropagation:
             f"{replace_ops[0].cascade!r}"
         )
 
-    def test_replace_view_defaults_to_cascade_true(self):
+    def test_replace_view_defaults_to_cascade_true(self, run_compare):
         """ReplaceViewOp.cascade defaults to True when ViewRecord has
         no cascade_on_drop preference set (model view present, DB differs)."""
         vr = ViewRecord(
@@ -3170,18 +3168,13 @@ class TestCascadeOnDropPropagation:
             selectable="SELECT 1 AS col",
             schema=None,
         )
-        autogen_context, upgrade_ops = _make_mock_autogen_context(
-            model_views=[vr]
-        )
-
-        patches = _patch_comparator(
+        upgrade_ops = run_compare(
+            vr,
             db_views={"v_replace_default": "SELECT 2 AS col"},
             canonical_return=(
                 {"v_replace_default": "SELECT 1 AS col"}, {}, set(),
             ),
         )
-        with patches:
-            comparator_module.compare_views(autogen_context, upgrade_ops, [None])
 
         replace_ops = [
             op for op in upgrade_ops.ops if isinstance(op, ReplaceViewOp)
