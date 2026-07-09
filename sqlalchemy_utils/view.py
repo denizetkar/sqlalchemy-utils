@@ -410,7 +410,7 @@ class RefreshMaterializedView(Executable, ClauseElement):
         view name is schema-qualified in the emitted DDL.
     """
 
-    inherit_cache = True
+    cache_ok = True
 
     def __init__(
         self,
