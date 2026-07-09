@@ -225,15 +225,10 @@ def _make_autogen_context() -> AutogenContext:
     return ctx
 
 
-def _make_real_autogen_context(connection, metadata):
-    """Create a real AutogenContext backed by a PG connection."""
-    migration_ctx = MigrationContext.configure(connection)
-    return AutogenContext(migration_ctx, metadata=metadata)
-
-
 def _run_comparator(connection, metadata, schemas=None):
     """Run compare_views and return the generated UpgradeOps."""
-    autogen_context = _make_real_autogen_context(connection, metadata)
+    migration_ctx = MigrationContext.configure(connection)
+    autogen_context = AutogenContext(migration_ctx, metadata=metadata)
     upgrade_ops = alembic_ops.UpgradeOps([])
     if schemas is None:
         schemas = [None]
@@ -1467,8 +1462,7 @@ class TestProgrammingErrorPropagates:
 # ===========================================================================
 
 # Distinct names so tests don't collide with other view fixtures.
-_FAILED_CANON_VIEW_NAMES = ["failed_canon_view"]
-_VIEW_ON_VIEW_VIEW_NAMES = ["dep_chain_a", "dep_chain_b"]
+_CLEANUP_VIEW_NAMES = ["failed_canon_view", "dep_chain_a", "dep_chain_b"]
 
 
 class TestCanonicalizeViewOnViewDeps:
@@ -1481,7 +1475,7 @@ class TestCanonicalizeViewOnViewDeps:
     @pytest.mark.infrastructure
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_dependent_view_chain_both_created(self, connection):
-        _drop_views(connection, _FAILED_CANON_VIEW_NAMES + _VIEW_ON_VIEW_VIEW_NAMES)
+        _drop_views(connection, _CLEANUP_VIEW_NAMES)
         _drop_base_table(connection)
         try:
             metadata = sa.MetaData()
@@ -1514,7 +1508,7 @@ class TestCanonicalizeViewOnViewDeps:
                 f"got {sorted(created_names)}"
             )
         finally:
-            _drop_views(connection, _FAILED_CANON_VIEW_NAMES + _VIEW_ON_VIEW_VIEW_NAMES)
+            _drop_views(connection, _CLEANUP_VIEW_NAMES)
             _drop_base_table(connection)
 
 
@@ -1524,7 +1518,7 @@ class TestCanonicalizeSkipDoesNotDrop:
     @pytest.mark.infrastructure
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_failing_canonicalization_does_not_emit_drop(self, connection):
-        _drop_views(connection, _FAILED_CANON_VIEW_NAMES + _VIEW_ON_VIEW_VIEW_NAMES)
+        _drop_views(connection, _CLEANUP_VIEW_NAMES)
         _drop_base_table(connection)
         try:
             # Pre-create the view in the DB with an old, valid definition.
@@ -1555,7 +1549,7 @@ class TestCanonicalizeSkipDoesNotDrop:
                 f"{[(op.name, op.schema) for op in drop_ops]}"
             )
         finally:
-            _drop_views(connection, _FAILED_CANON_VIEW_NAMES + _VIEW_ON_VIEW_VIEW_NAMES)
+            _drop_views(connection, _CLEANUP_VIEW_NAMES)
             _drop_base_table(connection)
 
 
@@ -1743,7 +1737,7 @@ class TestAbortedTransactionBreaksEarly:
             f"executed: {abort_b_creates}"
         )
 
-    def test_aborted_transaction_no_false_drop_in_compare_views(self, caplog):
+    def test_aborted_transaction_no_false_drop_in_compare_views(self):
         """Regression: an aborted transaction must NOT cause a false DropViewOp
         for an un-processed view (it must be in ``skipped`` instead)."""
         # Two model views, both present in the DB mock.
@@ -1782,9 +1776,7 @@ class TestAbortedTransactionBreaksEarly:
             "view_b": "SELECT 2 AS col",
         }
 
-        with caplog.at_level(
-            logging.WARNING, logger="sqlalchemy_utils.alembic.comparator"
-        ), patch(
+        with patch(
             "sqlalchemy_utils.alembic.comparator.get_database_views",
             return_value=db_views_mock,
         ), patch(
@@ -2964,9 +2956,6 @@ class TestInterfaceAuditFixes:
         cannot "un-refresh" a materialized view), so reverse() must
         raise rather than silently emit another REFRESH in the downgrade.
         """
-        from sqlalchemy_utils.alembic.operations import (
-            RefreshMaterializedViewOp,
-        )
         op = RefreshMaterializedViewOp("mv")
         with pytest.raises(NotImplementedError, match="not meaningfully reversible"):
             op.reverse()
@@ -4191,4 +4180,48 @@ class TestOpSchemaNormalization:
             f"{op_class.__name__}(schema='') must normalize schema to None; "
             f"got {op.schema!r}"
         )
+
+
+# ===========================================================================
+# Runtime DDL functions: keyword-only params for create_view / create_materialized_view
+# ===========================================================================
+
+class TestRuntimeKeywordOnlyParams:
+    """The runtime ``create_view`` / ``create_materialized_view`` functions
+    must enforce keyword-only for params introduced after the original API.
+
+    - ``create_view``: ``replace`` is keyword-only (``cascade_on_drop`` stays
+      positional because it pre-dates the keyword-only policy).
+    - ``create_materialized_view``: ``cascade_on_drop`` is keyword-only
+      (``indexes`` and ``aliases`` stay positional because they are data
+      parameters).
+    """
+
+    def test_create_view_replace_is_keyword_only(self):
+        """Passing ``replace`` positionally must raise TypeError."""
+        md = sa.MetaData()
+        sel = sa.select(sa.text("1"))
+        with pytest.raises(TypeError):
+            create_view("v", sel, md, True, True)
+
+    def test_create_materialized_view_cascade_on_drop_is_keyword_only(self):
+        """Passing ``cascade_on_drop`` positionally must raise TypeError."""
+        md = sa.MetaData()
+        sel = sa.select(sa.text("1"))
+        with pytest.raises(TypeError):
+            create_materialized_view("mv", sel, md, None, None, True)
+
+    def test_create_view_replace_keyword_works(self):
+        """Passing ``replace`` as keyword must succeed and return a Table."""
+        md = sa.MetaData()
+        sel = sa.select(sa.text("1"))
+        table = create_view("v", sel, md, replace=True)
+        assert isinstance(table, sa.Table)
+
+    def test_create_materialized_view_cascade_on_drop_keyword_works(self):
+        """Passing ``cascade_on_drop`` as keyword must succeed and return a Table."""
+        md = sa.MetaData()
+        sel = sa.select(sa.text("1"))
+        table = create_materialized_view("mv", sel, md, cascade_on_drop=False)
+        assert isinstance(table, sa.Table)
 

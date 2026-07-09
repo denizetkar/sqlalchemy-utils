@@ -250,8 +250,8 @@ def create_materialized_view(
     metadata: sa.MetaData,
     indexes: list[sa.Index] | None = None,
     aliases: dict[str, str] | None = None,
-    cascade_on_drop: bool = True,
     *,
+    cascade_on_drop: bool = True,
     schema: str | None = None,
 ) -> sa.Table:
     """Create a materialized view on a given metadata
@@ -331,8 +331,8 @@ def create_view(
     selectable: str | ClauseElement,
     metadata: sa.MetaData,
     cascade_on_drop: bool = True,
-    replace: bool = False,
     *,
+    replace: bool = False,
     schema: str | None = None,
 ) -> sa.Table:
     """Create a view on a given metadata
