@@ -61,7 +61,7 @@ class CreateView(DDLElement):
 
 
 @compiler.compiles(CreateView)
-def compile_create_materialized_view(element, compiler, **kw):
+def compile_create_view(element, compiler, **kw):
     """Compile ``CreateView`` to ``CREATE [OR REPLACE] [MATERIALIZED] VIEW``."""
     ip = compiler.dialect.identifier_preparer
     qualified = _quote_qualified_name(compiler.dialect, element.name, element.schema)
@@ -100,7 +100,7 @@ class DropView(DDLElement):
 
 
 @compiler.compiles(DropView)
-def compile_drop_materialized_view(element, compiler, **kw):
+def compile_drop_view(element, compiler, **kw):
     """Compile ``DropView`` to ``DROP [MATERIALIZED] VIEW IF EXISTS [...]``."""
     qualified = _quote_qualified_name(compiler.dialect, element.name, element.schema)
     sql = 'DROP {}VIEW IF EXISTS {}'.format(
