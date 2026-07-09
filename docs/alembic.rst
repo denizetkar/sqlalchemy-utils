@@ -30,25 +30,25 @@ Operations reference
 ---------------------
 
 .. autoclass:: sqlalchemy_utils.alembic.operations.CreateViewOp
-   :members: create_view
+   :members: create_view, reverse
 
 .. autoclass:: sqlalchemy_utils.alembic.operations.DropViewOp
-   :members: drop_view
+   :members: drop_view, reverse
 
 .. autoclass:: sqlalchemy_utils.alembic.operations.ReplaceViewOp
-   :members: replace_view
+   :members: replace_view, reverse
 
 .. autoclass:: sqlalchemy_utils.alembic.operations.CreateMaterializedViewOp
-   :members: create_materialized_view
+   :members: create_materialized_view, reverse
 
 .. autoclass:: sqlalchemy_utils.alembic.operations.DropMaterializedViewOp
-   :members: drop_materialized_view
+   :members: drop_materialized_view, reverse
 
 .. autoclass:: sqlalchemy_utils.alembic.operations.ReplaceMaterializedViewOp
-   :members: replace_materialized_view
+   :members: replace_materialized_view, reverse
 
 .. autoclass:: sqlalchemy_utils.alembic.operations.RefreshMaterializedViewOp
-   :members: refresh_materialized_view
+   :members: refresh_materialized_view, reverse
 
 .. note::
 

@@ -137,6 +137,11 @@ def resolve_create_order(
         *None*, default compilation is used.
     :returns: Views in safe creation order.
     :raises ValueError: If a circular dependency is detected.
+
+    Example::
+
+        >>> ordered = resolve_create_order(view_records, db_views)
+        # ordered[0] has no dependencies; ordered[-1] depends on others
     """
     return _toposort(view_records, db_views, reverse=False, dialect=dialect)
 
@@ -162,5 +167,10 @@ def resolve_drop_order(
         *None*, default compilation is used.
     :returns: Views in safe drop order.
     :raises ValueError: If a circular dependency is detected.
+
+    Example::
+
+        >>> ordered = resolve_drop_order(view_records, db_views)
+        # ordered[0] is a dependent view; ordered[-1] has no dependents
     """
     return _toposort(view_records, db_views, reverse=True, dialect=dialect)
