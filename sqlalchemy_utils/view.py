@@ -272,6 +272,7 @@ def create_materialized_view(
         which the view should be created. When supplied, the view name is
         qualified with the schema in the emitted ``CREATE``/``DROP``
         DDL.
+    :returns: The created :class:`~sqlalchemy.Table` instance.
 
     Same as for ``create_view`` except that a ``CREATE MATERIALIZED VIEW``
     statement is emitted instead of a ``CREATE VIEW``.
@@ -352,6 +353,7 @@ def create_view(
         Keyword-only. An optional string specifying the schema (database) in
         which the view should be created. When supplied, the view name is
         qualified with the schema in the emitted ``CREATE``/``DROP`` DDL.
+    :returns: The created :class:`~sqlalchemy.Table` instance.
 
     The process for creating a view is similar to the standard way that a
     table is constructed, except that a selectable is provided instead of a

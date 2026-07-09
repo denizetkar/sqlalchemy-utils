@@ -26,6 +26,15 @@ class ViewRecord:
     ``metadata.info['sqlalchemy_utils_views']``, which the Alembic
     autogenerate comparator reads during ``alembic revision --autogenerate``.
 
+    :param name: Name of the view.
+    :param selectable: SQLAlchemy selectable or string SQL defining the view body.
+    :param schema: Optional schema name; ``None`` means the default schema.
+    :param materialized: When ``True``, this record describes a materialized view.
+    :param replace: When ``True``, runtime DDL emits ``CREATE OR REPLACE VIEW``.
+    :param cascade_on_drop: When ``True`` (default), appends ``CASCADE`` to
+        ``DROP VIEW``/``DROP MATERIALIZED VIEW``.
+    :param aliases: Optional dict mapping column names to alternative keys.
+
     :raises TypeError: if *selectable* is None.
 
     Example::
