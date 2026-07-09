@@ -7,6 +7,7 @@ ViewMixin integration.
 """
 from __future__ import annotations
 
+import contextlib
 import inspect
 import logging
 import subprocess
@@ -256,29 +257,50 @@ def _make_mock_autogen_context(model_views=None, existing_ops=None):
     return autogen_context, upgrade_ops
 
 
-def _patch_comparator(db_views=None, db_mvs=None, canonical_return=None):
-    """Return a tuple of patches for all compare_views external dependencies.
+def _patch_comparator(
+    db_views=None, db_mvs=None, canonical_return=None, dependent_views=None,
+):
+    """Return an ``ExitStack`` context manager applying all compare_views patches.
 
-    Use as ``with patches[0], patches[1], ..., patches[4]:``.
+    Patches ``get_database_views``, ``get_database_materialized_views``,
+    ``_canonicalize_all_views``, ``get_dependent_views``, and ``log`` on the
+    comparator module. Yields the ``log`` mock so callers can assert on
+    log calls. Use as ``with _patch_comparator(...) as mock_log:``.
     """
-
     if db_views is None:
         db_views = {}
     if db_mvs is None:
         db_mvs = {}
     if canonical_return is None:
         canonical_return = ({}, {}, set())
-    return (
-        patch.object(comparator_module, "get_database_views",
-                     return_value=db_views),
-        patch.object(comparator_module, "get_database_materialized_views",
-                     return_value=db_mvs),
-        patch.object(comparator_module, "_canonicalize_all_views",
-                    return_value=canonical_return),
-        patch.object(comparator_module, "get_dependent_views",
-                     return_value={}),
-        patch.object(comparator_module, "log"),
-    )
+    if dependent_views is None:
+        dependent_views = {}
+
+    @contextlib.contextmanager
+    def _ctx():
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.object(
+                comparator_module, "get_database_views",
+                return_value=db_views,
+            ))
+            stack.enter_context(patch.object(
+                comparator_module, "get_database_materialized_views",
+                return_value=db_mvs,
+            ))
+            stack.enter_context(patch.object(
+                comparator_module, "_canonicalize_all_views",
+                return_value=canonical_return,
+            ))
+            stack.enter_context(patch.object(
+                comparator_module, "get_dependent_views",
+                return_value=dependent_views,
+            ))
+            mock_log = stack.enter_context(
+                patch.object(comparator_module, "log")
+            )
+            yield mock_log
+
+    return _ctx()
 
 
 # ===========================================================================
@@ -1850,16 +1872,9 @@ class TestComparatorNoDoubleFetch:
             call_count["mvs"] += 1
             return {}
 
-        metadata = MagicMock()
-        metadata.info = {"sqlalchemy_utils_views": []}
-
-        autogen_context = MagicMock()
-        autogen_context.connection = MagicMock()
-        autogen_context.connection.dialect.name = "postgresql"
-        autogen_context.metadata = metadata
-
-        upgrade_ops = MagicMock()
-        upgrade_ops.ops = []
+        autogen_context, upgrade_ops = _make_mock_autogen_context(
+            model_views=[]
+        )
 
         with patch.object(
             comparator_module, "get_database_views", mock_get_database_views
@@ -1884,15 +1899,9 @@ class TestComparatorNeverEmitsRefreshOp:
         # materialized view record in the model and a matching definition in
         # the DB so _diff_views produces no ops at all — but even if diffing
         # produced ops, none may be RefreshMaterializedViewOp.
-        metadata = MagicMock()
-        metadata.info = {"sqlalchemy_utils_views": []}
-
-        autogen_context = MagicMock()
-        autogen_context.connection = MagicMock()
-        autogen_context.connection.dialect.name = "postgresql"
-        autogen_context.metadata = metadata
-
-        upgrade_ops = alembic_ops.UpgradeOps([])
+        autogen_context, upgrade_ops = _make_mock_autogen_context(
+            model_views=[]
+        )
 
         with patch.object(
             comparator_module, "get_database_views", return_value={}
@@ -2983,16 +2992,11 @@ class TestCascadeOnDropWarning:
                 model_views=[]
             )
 
-            patches = _patch_comparator(
+            with _patch_comparator(
                 db_views=db_views,
                 canonical_return=({}, {}, set()),
-            )
-            dependent_views_patch = patch.object(
-                comparator_module, "get_dependent_views",
-                return_value=dependent_views,
-            )
-            log_patch = patches[4]
-            with patches[0], patches[1], patches[2], dependent_views_patch, log_patch as mock_log:
+                dependent_views=dependent_views,
+            ) as mock_log:
                 comparator_module.compare_views(
                     autogen_context, upgrade_ops, [None]
                 )
@@ -3056,7 +3060,7 @@ class TestCascadeOnDropPropagation:
         patches = _patch_comparator(
             db_views={"v_no_cascade": "SELECT 1 AS col"},
         )
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        with patches:
             comparator_module.compare_views(autogen_context, upgrade_ops, [None])
 
         drop_ops = [op for op in upgrade_ops.ops if isinstance(op, DropViewOp)]
@@ -3076,7 +3080,7 @@ class TestCascadeOnDropPropagation:
         patches = _patch_comparator(
             db_views={"orphan_view": "SELECT 1 AS col"},
         )
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        with patches:
             comparator_module.compare_views(autogen_context, upgrade_ops, [None])
 
         drop_ops = [op for op in upgrade_ops.ops if isinstance(op, DropViewOp)]
@@ -3097,7 +3101,7 @@ class TestCascadeOnDropPropagation:
             db_views={},
             db_mvs={"mv_no_cascade": "SELECT 1 AS col"},
         )
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        with patches:
             comparator_module.compare_views(autogen_context, upgrade_ops, [None])
 
         drop_ops = [
@@ -3130,7 +3134,7 @@ class TestCascadeOnDropPropagation:
                 {"v_new_nocascade": "SELECT 1 AS col"}, {}, set(),
             ),
         )
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        with patches:
             comparator_module.compare_views(autogen_context, upgrade_ops, [None])
 
         create_ops = [
@@ -3165,7 +3169,7 @@ class TestCascadeOnDropPropagation:
                 {"v_replace_nocascade": "SELECT 1 AS col"}, {}, set(),
             ),
         )
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        with patches:
             comparator_module.compare_views(autogen_context, upgrade_ops, [None])
 
         replace_ops = [
@@ -3199,7 +3203,7 @@ class TestCascadeOnDropPropagation:
                 {"v_replace_default": "SELECT 1 AS col"}, {}, set(),
             ),
         )
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        with patches:
             comparator_module.compare_views(autogen_context, upgrade_ops, [None])
 
         replace_ops = [
@@ -3235,16 +3239,9 @@ class TestCrossSchemaSameNameBothOps:
             ),
         ]
 
-        metadata = MagicMock()
-        metadata.info = {"sqlalchemy_utils_views": model_views}
-
-        autogen_context = MagicMock()
-        autogen_context.connection = MagicMock()
-        autogen_context.connection.dialect.name = "postgresql"
-        autogen_context.metadata = metadata
-
-        upgrade_ops = MagicMock()
-        upgrade_ops.ops = []
+        autogen_context, upgrade_ops = _make_mock_autogen_context(
+            model_views=model_views
+        )
 
         # DB has no views in either schema → both model views become creates.
         # _canonicalize_all_views is called once per schema; return a
@@ -3638,7 +3635,7 @@ class TestDedupPreservesNonViewOps:
         )
 
         patches = _patch_comparator(db_views=db_views)
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        with patches:
             compare_views(autogen_context, upgrade_ops, [None])
 
         actual_types = [type(op).__name__ for op in upgrade_ops.ops]
@@ -3667,23 +3664,16 @@ class TestViewTypeChangeOrdering:
         # DB has the view as a regular view; model defines it as materialized.
         # _canonicalize_all_views is called per schema. For schema=None the
         # model materialized view is canonicalized → mv_defs={"v": "..."}.
-        metadata = MagicMock()
-        metadata.info = {"sqlalchemy_utils_views": [
-            ViewRecord(
-                name="v",
-                selectable="SELECT 1 AS id",
-                schema=None,
-                materialized=True,
-            ),
-        ]}
-
-        autogen_context = MagicMock()
-        autogen_context.connection = MagicMock()
-        autogen_context.connection.dialect.name = "postgresql"
-        autogen_context.metadata = metadata
-
-        upgrade_ops = MagicMock()
-        upgrade_ops.ops = []
+        autogen_context, upgrade_ops = _make_mock_autogen_context(
+            model_views=[
+                ViewRecord(
+                    name="v",
+                    selectable="SELECT 1 AS id",
+                    schema=None,
+                    materialized=True,
+                ),
+            ]
+        )
 
         with patch.object(
             comparator_module, "get_database_views",

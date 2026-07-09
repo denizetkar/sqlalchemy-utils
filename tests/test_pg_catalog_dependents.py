@@ -90,21 +90,29 @@ def _setup_schema(connection):
     connection.commit()
 
 
+def _safe_drop(connection, *sql_statements):
+    """Execute each SQL statement, rolling back on error.
+
+    Teardown helper: catalog objects may already be absent or in a poisoned
+    transaction state; each statement is best-effort and isolated by a
+    rollback on failure.
+    """
+    for stmt in sql_statements:
+        try:
+            connection.execute(sa.text(stmt))
+        except sa.exc.SQLAlchemyError:
+            connection.rollback()
+    connection.commit()
+
+
 def _teardown_schema(connection):
     """Drop the dependent view, base view, and base table."""
-    try:
-        connection.execute(sa.text("DROP VIEW IF EXISTS _dep_test_dep_view CASCADE"))
-    except sa.exc.SQLAlchemyError:
-        connection.rollback()
-    try:
-        connection.execute(sa.text("DROP VIEW IF EXISTS _dep_test_base_view CASCADE"))
-    except sa.exc.SQLAlchemyError:
-        connection.rollback()
-    try:
-        connection.execute(sa.text("DROP TABLE IF EXISTS _dep_test_base CASCADE"))
-    except sa.exc.SQLAlchemyError:
-        connection.rollback()
-    connection.commit()
+    _safe_drop(
+        connection,
+        "DROP VIEW IF EXISTS _dep_test_dep_view CASCADE",
+        "DROP VIEW IF EXISTS _dep_test_base_view CASCADE",
+        "DROP TABLE IF EXISTS _dep_test_base CASCADE",
+    )
 
 
 def test_get_dependent_views_returns_correct_name(connection):
@@ -177,19 +185,12 @@ def _setup_mv_dependent(connection):
 
 
 def _teardown_mv_dependent(connection):
-    try:
-        connection.execute(sa.text("DROP MATERIALIZED VIEW IF EXISTS _mv_dep_mv"))
-    except sa.exc.SQLAlchemyError:
-        connection.rollback()
-    try:
-        connection.execute(sa.text("DROP VIEW IF EXISTS _mv_dep_base_view CASCADE"))
-    except sa.exc.SQLAlchemyError:
-        connection.rollback()
-    try:
-        connection.execute(sa.text("DROP TABLE IF EXISTS _mv_dep_base CASCADE"))
-    except sa.exc.SQLAlchemyError:
-        connection.rollback()
-    connection.commit()
+    _safe_drop(
+        connection,
+        "DROP MATERIALIZED VIEW IF EXISTS _mv_dep_mv",
+        "DROP VIEW IF EXISTS _mv_dep_base_view CASCADE",
+        "DROP TABLE IF EXISTS _mv_dep_base CASCADE",
+    )
 
 
 def test_get_dependent_views_includes_materialized_views(connection):
@@ -268,12 +269,11 @@ def _setup_cross_schema(connection, schema_a: str, schema_b: str):
 
 
 def _teardown_cross_schema(connection, schema_a: str, schema_b: str):
-    for schema in (schema_a, schema_b):
-        try:
-            connection.execute(sa.text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
-        except sa.exc.SQLAlchemyError:
-            connection.rollback()
-    connection.commit()
+    _safe_drop(
+        connection,
+        f"DROP SCHEMA IF EXISTS {schema_a} CASCADE",
+        f"DROP SCHEMA IF EXISTS {schema_b} CASCADE",
+    )
 
 
 @pytest.mark.infrastructure
@@ -360,23 +360,13 @@ def _setup_union_all(connection):
 
 
 def _teardown_union_all(connection):
-    try:
-        connection.execute(sa.text("DROP MATERIALIZED VIEW IF EXISTS _union_mv"))
-    except sa.exc.SQLAlchemyError:
-        connection.rollback()
-    try:
-        connection.execute(sa.text("DROP VIEW IF EXISTS _union_dep CASCADE"))
-    except sa.exc.SQLAlchemyError:
-        connection.rollback()
-    try:
-        connection.execute(sa.text("DROP VIEW IF EXISTS _union_base_view CASCADE"))
-    except sa.exc.SQLAlchemyError:
-        connection.rollback()
-    try:
-        connection.execute(sa.text("DROP TABLE IF EXISTS _union_base CASCADE"))
-    except sa.exc.SQLAlchemyError:
-        connection.rollback()
-    connection.commit()
+    _safe_drop(
+        connection,
+        "DROP MATERIALIZED VIEW IF EXISTS _union_mv",
+        "DROP VIEW IF EXISTS _union_dep CASCADE",
+        "DROP VIEW IF EXISTS _union_base_view CASCADE",
+        "DROP TABLE IF EXISTS _union_base CASCADE",
+    )
 
 
 @pytest.mark.infrastructure
@@ -453,12 +443,11 @@ def _setup_same_name_dependents(connection):
 
 
 def _teardown_same_name_dependents(connection):
-    for schema in ("_same_name_a", "_same_name_b"):
-        try:
-            connection.execute(sa.text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
-        except sa.exc.SQLAlchemyError:
-            connection.rollback()
-    connection.commit()
+    _safe_drop(
+        connection,
+        "DROP SCHEMA IF EXISTS _same_name_a CASCADE",
+        "DROP SCHEMA IF EXISTS _same_name_b CASCADE",
+    )
 
 
 @pytest.mark.infrastructure
