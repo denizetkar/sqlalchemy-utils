@@ -137,7 +137,7 @@ def create_table_from_selectable(
         :func:`create_view` and :func:`create_materialized_view`).
     :param aliases: Optional ``{column_name: alias}`` mapping to override
         column keys.
-    :param schema: Optional schema name.
+    :param schema: Keyword-only. Optional schema name.
     :param kwargs: Additional ``Table`` constructor arguments.
     :returns: The created :class:`~sqlalchemy.Table`.
 
