@@ -26,6 +26,8 @@ class ViewRecord:
     ``metadata.info['sqlalchemy_utils_views']``, which the Alembic
     autogenerate comparator reads during ``alembic revision --autogenerate``.
 
+    :raises TypeError: if *selectable* is None.
+
     Example::
 
         import sqlalchemy as sa

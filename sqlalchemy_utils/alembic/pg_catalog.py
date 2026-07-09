@@ -58,6 +58,7 @@ def get_database_views(connection: sa.engine.Connection, schema: str | None = No
         connection's current default schema is queried (via
         ``current_schema()``).
     :returns: Dictionary mapping view_name to definition SQL.
+    :raises NotImplementedError: if the connection dialect is not PostgreSQL.
 
     Example::
 
@@ -78,6 +79,7 @@ def get_database_materialized_views(connection: sa.engine.Connection, schema: st
         connection's current default schema is queried (via
         ``current_schema()``).
     :returns: Dictionary mapping matviewname to definition SQL.
+    :raises NotImplementedError: if the connection dialect is not PostgreSQL.
 
     Example::
 
@@ -103,6 +105,7 @@ def get_dependent_views(connection: sa.engine.Connection, name: str, schema: str
         cross-schema name collisions: two dependent views sharing a name
         in different schemas would otherwise collide and the second would
         overwrite the first. Empty dict if no dependents.
+    :raises NotImplementedError: if the connection dialect is not PostgreSQL.
     """
     _assert_postgres(connection)
     schema_clause = (
