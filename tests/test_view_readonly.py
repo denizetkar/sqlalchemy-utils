@@ -101,7 +101,6 @@ def test_non_view_class_unaffected():
 
 def test_viewreadonlyerror_catchable_as_invalidrequesterror():
     """ViewReadonlyError can be caught as sa.exc.InvalidRequestError."""
-    import sqlalchemy as sa
     try:
         raise ViewReadonlyError("test")
     except sa.exc.InvalidRequestError:
