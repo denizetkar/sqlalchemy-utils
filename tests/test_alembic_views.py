@@ -2012,6 +2012,46 @@ class TestDependMultipleLevels:
         assert names.index("a") < names.index("b") < names.index("c")
 
 
+class TestDependDiamondDependency:
+    """Diamond graph: A depends on B and C; B and C both depend on D.
+
+    This shape has multiple paths from A to D.  Both ``resolve_create_order``
+    (dependencies first) and ``resolve_drop_order`` (dependents first) must
+    produce a valid topological ordering of all four views.
+    """
+
+    @pytest.fixture
+    def diamond_views(self):
+        return [
+            ViewRecord(name="diamond_a", selectable="SELECT * FROM diamond_b JOIN diamond_c"),
+            ViewRecord(name="diamond_b", selectable="SELECT * FROM diamond_d"),
+            ViewRecord(name="diamond_c", selectable="SELECT * FROM diamond_d"),
+            ViewRecord(name="diamond_d", selectable="SELECT 1 AS col"),
+        ]
+
+    def test_create_order_dependencies_before_dependents(self, diamond_views):
+        result = resolve_create_order(diamond_views, db_views={})
+        names = [v.name for v in result]
+        # D has no deps -> must come before B and C; B and C before A.
+        assert names.index("diamond_d") < names.index("diamond_b")
+        assert names.index("diamond_d") < names.index("diamond_c")
+        assert names.index("diamond_b") < names.index("diamond_a")
+        assert names.index("diamond_c") < names.index("diamond_a")
+        assert names[-1] == "diamond_a"
+        assert names[0] == "diamond_d"
+
+    def test_drop_order_dependents_before_dependencies(self, diamond_views):
+        result = resolve_drop_order(diamond_views, db_views={})
+        names = [v.name for v in result]
+        # A is the top dependent -> dropped first; D has no dependents -> dropped last.
+        assert names[0] == "diamond_a"
+        assert names[-1] == "diamond_d"
+        assert names.index("diamond_a") < names.index("diamond_b")
+        assert names.index("diamond_a") < names.index("diamond_c")
+        assert names.index("diamond_b") < names.index("diamond_d")
+        assert names.index("diamond_c") < names.index("diamond_d")
+
+
 class TestDependCircular:
 
     def test_simple_cycle_raises_value_error(self):

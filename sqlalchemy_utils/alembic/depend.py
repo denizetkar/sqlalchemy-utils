@@ -65,6 +65,20 @@ def _records_by_name(
     return result
 
 
+def _reverse_edges(graph: dict[str, set[str]]) -> dict[str, set[str]]:
+    """Return a new graph with every edge reversed.
+
+    *graph* maps ``{node: {predecessor, ...}}`` (node depends on its
+    predecessors).  The returned graph swaps the direction of each edge so
+    that ``TopologicalSorter`` on it yields dependents before dependencies.
+    """
+    reversed_graph: dict[str, set[str]] = {node: set() for node in graph}
+    for node, predecessors in graph.items():
+        for predecessor in predecessors:
+            reversed_graph.setdefault(predecessor, set()).add(node)
+    return reversed_graph
+
+
 def _toposort(
     view_records: list[ViewRecord],
     db_views: dict[str, str] | None,
@@ -79,7 +93,8 @@ def _toposort(
     if db_views is None:
         db_views = {}
     graph = _build_dependency_graph(view_records, db_views, dialect=dialect)
-    sorter = TopologicalSorter(graph)
+    sort_graph = _reverse_edges(graph) if reverse else graph
+    sorter = TopologicalSorter(sort_graph)
 
     try:
         # ``static_order()`` returns an iterator; ``prepare()`` would also
@@ -96,9 +111,6 @@ def _toposort(
         else:
             msg = "Circular dependency detected among views"
         raise ValueError(msg) from exc
-
-    if reverse:
-        sorted_names = list(reversed(sorted_names))
 
     name_to_record = _records_by_name(view_records)
 
