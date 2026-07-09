@@ -47,7 +47,7 @@ def _validate_name(name: str) -> None:
 
 @Operations.register_operation("create_view")
 class CreateViewOp(MigrateOperation):
-    """Operation that emits ``CREATE [OR REPLACE] VIEW``.
+    """Operation that emits ``CREATE VIEW`` (or ``DROP VIEW`` + ``CREATE VIEW`` when ``replace=True``).
 
     :param name: Name of the view to create.
     :param definition: SQL ``SELECT`` statement defining the view body.
