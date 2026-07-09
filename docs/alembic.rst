@@ -29,6 +29,11 @@ Requires ``pip install sqlalchemy-utils[alembic]``.
 Operations reference
 ---------------------
 
+.. note::
+
+   All operation classes and :class:`~sqlalchemy_utils.view_record.ViewRecord`
+   are also importable directly from ``sqlalchemy_utils.alembic``.
+
 .. autoclass:: sqlalchemy_utils.alembic.operations.CreateViewOp
    :members: create_view, reverse
 
@@ -221,8 +226,8 @@ database), adopting the autogenerate integration needs a little care.
 
 6. **Replace ``CreateViewOp(replace=True)`` with ``op.replace_view()``**.
    The ``replace=True`` keyword on ``CreateViewOp`` is deprecated; use
-   :meth:`~sqlalchemy_utils.alembic.operations.ReplaceViewOp.replace_view`
-   (or ``ReplaceViewOp`` directly) for view-replacement migrations.
+   ``op.replace_view()`` (or ``ReplaceViewOp`` directly) for view-replacement
+   migrations.
 
 .. warning::
 
