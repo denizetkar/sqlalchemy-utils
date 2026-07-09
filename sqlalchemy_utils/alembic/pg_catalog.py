@@ -5,6 +5,10 @@ from __future__ import annotations
 import sqlalchemy as sa
 
 
+_ALLOWED_CATALOG_TABLES = frozenset({"pg_views", "pg_matviews"})
+_ALLOWED_CATALOG_NAME_COLS = frozenset({"viewname", "matviewname"})
+
+
 def _assert_postgres(connection: sa.engine.Connection) -> None:
     """Fail fast if *connection* is not backed by a PostgreSQL dialect.
 
@@ -33,6 +37,16 @@ def _query_view_catalog(connection: sa.engine.Connection, table: str, name_col: 
         ``current_schema()``).
     :returns: Dictionary mapping view name to definition SQL.
     """
+    if table not in _ALLOWED_CATALOG_TABLES:
+        raise ValueError(
+            f"Invalid table {table!r}; expected one of "
+            f"{sorted(_ALLOWED_CATALOG_TABLES)}"
+        )
+    if name_col not in _ALLOWED_CATALOG_NAME_COLS:
+        raise ValueError(
+            f"Invalid name column {name_col!r}; expected one of "
+            f"{sorted(_ALLOWED_CATALOG_NAME_COLS)}"
+        )
     if not schema:  # catches None and ""
         sql = sa.text(
             f"SELECT {name_col}, definition FROM {table} "
