@@ -80,19 +80,9 @@ from sqlalchemy_utils.view_mixin import ViewMixin
 # Shared helpers
 # ===========================================================================
 
-class _PoisonedTransaction(sa.exc.SQLAlchemyError):
-    """Raised by the probe (SELECT 1) to simulate a poisoned tx."""
-
-    def __init__(self):
-        super().__init__(
-            "current transaction is aborted, "
-            "commands ignored until end of transaction block"
-        )
-
-
 def _make_poisoned_connection(view_name, call_log):
     """Return a mock PG connection whose ``CREATE VIEW <view_name>`` fails
-    and whose ``SELECT 1`` probe raises ``_PoisonedTransaction``.
+    and whose ``SELECT 1`` probe raises a poisoned-transaction error.
 
     Every executed SQL statement is appended to *call_log* so callers can
     assert on the issued SQL sequence. All other statements (SAVEPOINT,
@@ -113,7 +103,10 @@ def _make_poisoned_connection(view_name, call_log):
 
         # The probe after the failure: poisoned transaction.
         if stripped == "SELECT 1":
-            raise _PoisonedTransaction()
+            raise sa.exc.SQLAlchemyError(
+                "current transaction is aborted, "
+                "commands ignored until end of transaction block"
+            )
 
         # All other statements succeed.
         return MagicMock()
@@ -591,59 +584,6 @@ class TestReplaceViewOp:
         assert sqls[0] == "DROP VIEW IF EXISTS v1 CASCADE"
         assert sqls[1] == "CREATE VIEW v1 AS SELECT 2"
 
-    @pytest.mark.parametrize(
-        "cascade_kwarg, expected_cascade_attr, drop_contains_cascade, expected_drop_sql",
-        [
-            (
-                None,
-                True,
-                True,
-                "DROP VIEW IF EXISTS v CASCADE",
-            ),
-            (
-                False,
-                False,
-                False,
-                "DROP VIEW IF EXISTS v",
-            ),
-        ],
-        ids=["default_true", "explicit_false"],
-    )
-    def test_replace_view_cascade(
-        self,
-        cascade_kwarg,
-        expected_cascade_attr,
-        drop_contains_cascade,
-        expected_drop_sql,
-    ):
-        """ReplaceViewOp stores cascade kwarg (default True) and
-        the DROP SQL emitted by ``_replace_view_impl`` contains
-        CASCADE only when op.cascade is True."""
-        kwargs = {"cascade": cascade_kwarg} if cascade_kwarg is not None else {}
-        op = ReplaceViewOp("v", "SELECT 1", **kwargs)
-        assert op.cascade is expected_cascade_attr, (
-            f"ReplaceViewOp.cascade should be "
-            f"{expected_cascade_attr} when cascade_kwarg={cascade_kwarg!r}, "
-            f"got {op.cascade!r}"
-        )
-
-        sqls = _capture_sql(op)
-        assert len(sqls) == 2
-        assert sqls[0] == expected_drop_sql, (
-            f"DROP SQL mismatch; got {sqls[0]!r}"
-        )
-        if drop_contains_cascade:
-            assert "CASCADE" in sqls[0].upper(), (
-                f"DROP must contain CASCADE when op.cascade=True. "
-                f"DROP SQL: {sqls[0]!r}"
-            )
-        else:
-            assert "CASCADE" not in sqls[0].upper(), (
-                f"DROP must not contain CASCADE when op.cascade=False. "
-                f"DROP SQL: {sqls[0]!r}"
-            )
-        assert sqls[1] == "CREATE VIEW v AS SELECT 1"
-
     def test_replace_view_cascade_propagates_to_reverse(self):
         """ReplaceViewOp.reverse() must propagate cascade=False."""
         op = ReplaceViewOp(
@@ -772,44 +712,50 @@ class TestReplaceMaterializedViewOp:
             "CREATE MATERIALIZED VIEW analytics.mv1 AS SELECT 2 WITH DATA"
         )
 
+
+class TestReplaceCascadeKwarg:
+
     @pytest.mark.parametrize(
-        "cascade_kwarg, expected_cascade_attr, drop_contains_cascade, expected_drop_sql",
+        "op_class, view_name, drop_keyword, create_suffix",
         [
-            (
-                None,
-                True,
-                True,
-                "DROP MATERIALIZED VIEW IF EXISTS mv CASCADE",
-            ),
-            (
-                False,
-                False,
-                False,
-                "DROP MATERIALIZED VIEW IF EXISTS mv",
-            ),
+            (ReplaceViewOp, "v", "DROP VIEW IF EXISTS", ""),
+            (ReplaceMaterializedViewOp, "mv", "DROP MATERIALIZED VIEW IF EXISTS", " WITH NO DATA"),
+        ],
+        ids=["view", "materialized_view"],
+    )
+    @pytest.mark.parametrize(
+        "cascade_kwarg, expected_cascade_attr, drop_contains_cascade",
+        [
+            (None, True, True),
+            (False, False, False),
         ],
         ids=["default_true", "explicit_false"],
     )
-    def test_replace_mv_cascade(
+    def test_replace_cascade_kwarg(
         self,
+        op_class,
+        view_name,
+        drop_keyword,
+        create_suffix,
         cascade_kwarg,
         expected_cascade_attr,
         drop_contains_cascade,
-        expected_drop_sql,
     ):
-        """ReplaceMaterializedViewOp stores cascade kwarg (default True) and
-        the DROP SQL emitted by ``_replace_materialized_view_impl`` contains
-        CASCADE only when op.cascade is True."""
         kwargs = {"cascade": cascade_kwarg} if cascade_kwarg is not None else {}
-        op = ReplaceMaterializedViewOp("mv", "SELECT 1", **kwargs)
+        op = op_class(view_name, "SELECT 1", **kwargs)
         assert op.cascade is expected_cascade_attr, (
-            f"ReplaceMaterializedViewOp.cascade should be "
+            f"{op_class.__name__}.cascade should be "
             f"{expected_cascade_attr} when cascade_kwarg={cascade_kwarg!r}, "
             f"got {op.cascade!r}"
         )
 
         sqls = _capture_sql(op)
         assert len(sqls) == 2
+
+        if drop_contains_cascade:
+            expected_drop_sql = f"{drop_keyword} {view_name} CASCADE"
+        else:
+            expected_drop_sql = f"{drop_keyword} {view_name}"
         assert sqls[0] == expected_drop_sql, (
             f"DROP SQL mismatch; got {sqls[0]!r}"
         )
@@ -823,7 +769,12 @@ class TestReplaceMaterializedViewOp:
                 f"DROP must not contain CASCADE when op.cascade=False. "
                 f"DROP SQL: {sqls[0]!r}"
             )
-        assert sqls[1] == "CREATE MATERIALIZED VIEW mv AS SELECT 1 WITH NO DATA"
+
+        if op_class is ReplaceViewOp:
+            expected_create = f"CREATE VIEW {view_name} AS SELECT 1"
+        else:
+            expected_create = f"CREATE MATERIALIZED VIEW {view_name} AS SELECT 1{create_suffix}"
+        assert sqls[1] == expected_create
 
 
 # ---------------------------------------------------------------------------
@@ -1075,20 +1026,6 @@ class TestRendererCreateMaterializedView:
         result = render_create_materialized_view(_make_autogen_context(), op)
         compile(result, "<test>", "exec")
 
-    def test_omits_with_data_when_default(self):
-        """Renderer omits with_data by default and when False (the default)."""
-        op = CreateMaterializedViewOp("mv_stats", "SELECT 1")
-        result = render_create_materialized_view(_make_autogen_context(), op)
-        assert "with_data=" not in result
-
-        op_false = CreateMaterializedViewOp("mv_stats", "SELECT 1", with_data=False)
-        result_false = render_create_materialized_view(_make_autogen_context(), op_false)
-        assert "with_data=" not in result_false
-
-        op_true = CreateMaterializedViewOp("mv_stats", "SELECT 1", with_data=True)
-        result_true = render_create_materialized_view(_make_autogen_context(), op_true)
-        assert "with_data=True" in result_true
-
     def test_schema_included_when_provided(self):
         op = CreateMaterializedViewOp("mv_stats", "SELECT 1", schema="analytics")
         result = render_create_materialized_view(_make_autogen_context(), op)
@@ -1133,12 +1070,6 @@ class TestRendererDropMaterializedView:
             f"the downgrade re-creates the MV WITH DATA; got: {rendered!r}"
         )
 
-    def test_omits_with_data_when_default(self):
-        """``with_data`` is omitted when False (the default)."""
-        op = DropMaterializedViewOp("mv", definition="SELECT 1", with_data=False)
-        rendered = render_drop_materialized_view(_make_autogen_context(), op)
-        assert "with_data=" not in rendered
-
 
 class TestRendererReplaceMaterializedView:
 
@@ -1146,20 +1077,6 @@ class TestRendererReplaceMaterializedView:
         op = ReplaceMaterializedViewOp("mv_stats", "SELECT count(*) FROM events")
         result = render_replace_materialized_view(_make_autogen_context(), op)
         compile(result, "<test>", "exec")
-
-    def test_omits_with_data_when_default(self):
-        """Renderer omits with_data by default and when False (the default)."""
-        op = ReplaceMaterializedViewOp("mv_stats", "SELECT 2")
-        result = render_replace_materialized_view(_make_autogen_context(), op)
-        assert "with_data=" not in result
-
-        op_false = ReplaceMaterializedViewOp("mv_stats", "SELECT 2", with_data=False)
-        result_false = render_replace_materialized_view(_make_autogen_context(), op_false)
-        assert "with_data=" not in result_false
-
-        op_true = ReplaceMaterializedViewOp("mv_stats", "SELECT 2", with_data=True)
-        result_true = render_replace_materialized_view(_make_autogen_context(), op_true)
-        assert "with_data=True" in result_true
 
     def test_schema_included_when_provided(self):
         op = ReplaceMaterializedViewOp("mv_stats", "SELECT 2", schema="analytics")
@@ -1170,6 +1087,31 @@ class TestRendererReplaceMaterializedView:
         op = ReplaceMaterializedViewOp("mv_repl", "SELECT 2", old_definition="SELECT 1")
         rendered = render_replace_materialized_view(_make_autogen_context(), op)
         assert "old_definition=" in rendered
+
+
+class TestRendererMaterializedViewWithDataDefault:
+
+    @pytest.mark.parametrize(
+        "factory, render_fn",
+        [
+            (lambda name, **kw: CreateMaterializedViewOp(name, "SELECT 1", **kw), render_create_materialized_view),
+            (lambda name, **kw: DropMaterializedViewOp(name, definition="SELECT 1", **kw), render_drop_materialized_view),
+            (lambda name, **kw: ReplaceMaterializedViewOp(name, "SELECT 1", **kw), render_replace_materialized_view),
+        ],
+        ids=["create", "drop", "replace"],
+    )
+    def test_omits_with_data_when_default(self, factory, render_fn):
+        op = factory("mv")
+        result = render_fn(_make_autogen_context(), op)
+        assert "with_data=" not in result
+
+        op_false = factory("mv", with_data=False)
+        result_false = render_fn(_make_autogen_context(), op_false)
+        assert "with_data=" not in result_false
+
+        op_true = factory("mv", with_data=True)
+        result_true = render_fn(_make_autogen_context(), op_true)
+        assert "with_data=True" in result_true
 
 
 # ===========================================================================
@@ -1240,12 +1182,7 @@ class TestComparatorDropView:
 
         upgrade_ops = _run_comparator(connection, metadata)
 
-        drop_ops = [
-            op
-            for op in upgrade_ops.ops
-            if isinstance(op, DropViewOp)
-            and not getattr(op, "materialized", False)
-        ]
+        drop_ops = [op for op in upgrade_ops.ops if isinstance(op, DropViewOp)]
         assert len(drop_ops) == 1
         assert drop_ops[0].name == "cmp_test_view"
 
