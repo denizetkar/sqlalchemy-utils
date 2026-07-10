@@ -359,6 +359,32 @@ def test_view_mixin_aliases():
     assert vr.aliases == {'old_col': 'new_col'}
 
 
+def test_declarative_base_schema_fallback():
+    """Schema set via ``declarative_base(schema=...)`` is picked up by
+    ``_resolve_schema`` when neither ``__view_schema__`` nor
+    ``__table_args__['schema']`` is set.
+
+    Regression test: ``_resolve_schema`` previously only checked
+    ``__view_schema__`` and ``__table_args__['schema']``, missing the case
+    where the schema is set at the ``MetaData`` level via
+    ``declarative_base(schema='analytics')``. This caused views to be
+    registered with ``schema=None`` instead of the metadata-level schema.
+    """
+    metadata = sa.MetaData(schema='test_schema')
+    Base = declarative_base(metadata=metadata)
+
+    class MetadataSchemaView(ViewMixin, Base):
+        __tablename__ = 'metadata_schema_view'
+        __view_selectable__ = sa.select(_src(sa.column('id', sa.Integer)))
+        id: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
+
+    MetadataSchemaView.__declare_last__()
+
+    records = Base.metadata.info.get('sqlalchemy_utils_views', [])
+    vr = [r for r in records if r.name == 'metadata_schema_view'][0]
+    assert vr.schema == 'test_schema'
+
+
 def test_view_mixin_aliases_not_set_for_regular_views():
     """__view_aliases__ is ignored for non-materialized views."""
     Base = declarative_base()

@@ -239,6 +239,8 @@ class ViewMixin:
         Priority:
         1. __view_schema__ class attribute
         2. __table_args__['schema'] if present
+        3. cls.__table__.schema (set by SQLAlchemy from metadata-level schema)
+        4. cls.metadata.schema (declarative_base(metadata=MetaData(schema=...)))
         """
         schema = getattr(cls, '__view_schema__', None)
         if schema is None:
@@ -251,6 +253,12 @@ class ViewMixin:
                         schema = arg.get('schema')
                         if schema:
                             break
+        if schema is None:
+            table = getattr(cls, '__table__', None)
+            if table is not None:
+                schema = table.schema
+        if schema is None:
+            schema = getattr(cls.metadata, 'schema', None)
         return schema
 
     @classmethod
