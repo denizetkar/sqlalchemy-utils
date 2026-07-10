@@ -1140,6 +1140,32 @@ def cmp_test_base(connection):
     _drop_base_table(connection)
 
 
+@pytest.fixture
+def view_cleanup_factory(connection, request):
+    """Factory fixture for per-test view/table setup+teardown.
+
+    Returns a callable ``setup(view_names, create_base=False)`` that:
+    - drops any leftover views from ``view_names`` (and optionally the base
+      table) for a clean slate,
+    - optionally creates ``_cmp_test_base``,
+    - registers a finalizer that drops those views + the base table.
+
+    Use in tests that manage their own view-name lists (distinct from the
+    ``cmp_test_base`` / ``int_test_base`` fixtures which use fixed lists).
+    """
+
+    def setup(view_names, *, create_base=False):
+        _drop_views(connection, view_names)
+        if not create_base:
+            _drop_base_table(connection)
+        else:
+            _create_base_table(connection)
+        request.addfinalizer(lambda: (_drop_views(connection, view_names), _drop_base_table(connection)))
+        return connection
+
+    return setup
+
+
 class TestComparatorCreateView:
 
     @pytest.mark.usefixtures("postgresql_dsn")
@@ -1428,42 +1454,37 @@ class TestCanonicalizeViewOnViewDeps:
 
     @pytest.mark.infrastructure
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_dependent_view_chain_both_created(self, connection):
-        _drop_views(connection, _CLEANUP_VIEW_NAMES)
-        _drop_base_table(connection)
-        try:
-            metadata = sa.MetaData()
-            metadata.info["sqlalchemy_utils_views"] = [
-                ViewRecord(
-                    name="dep_chain_a",
-                    selectable=sa.select(sa.text("1 AS id")),
-                    schema=None,
-                ),
-                ViewRecord(
-                    name="dep_chain_b",
-                    selectable=sa.select(sa.text("* FROM dep_chain_a")),
-                    schema=None,
-                ),
-            ]
+    def test_dependent_view_chain_both_created(self, view_cleanup_factory):
+        connection = view_cleanup_factory(_CLEANUP_VIEW_NAMES)
+        metadata = sa.MetaData()
+        metadata.info["sqlalchemy_utils_views"] = [
+            ViewRecord(
+                name="dep_chain_a",
+                selectable=sa.select(sa.text("1 AS id")),
+                schema=None,
+            ),
+            ViewRecord(
+                name="dep_chain_b",
+                selectable=sa.select(sa.text("* FROM dep_chain_a")),
+                schema=None,
+            ),
+        ]
 
-            upgrade_ops = _run_comparator(connection, metadata, schemas=[None])
+        upgrade_ops = _run_comparator(connection, metadata, schemas=[None])
 
-            create_ops = [
-                op for op in upgrade_ops.ops if isinstance(op, CreateViewOp)
-            ]
-            created_names = {op.name for op in create_ops}
-            assert "dep_chain_a" in created_names, (
-                f"Regression: dep_chain_a missing from create ops; "
-                f"got {sorted(created_names)}"
-            )
-            assert "dep_chain_b" in created_names, (
-                f"Regression: dep_chain_b missing from create ops "
-                f"(likely rolled back A before canonicalizing B); "
-                f"got {sorted(created_names)}"
-            )
-        finally:
-            _drop_views(connection, _CLEANUP_VIEW_NAMES)
-            _drop_base_table(connection)
+        create_ops = [
+            op for op in upgrade_ops.ops if isinstance(op, CreateViewOp)
+        ]
+        created_names = {op.name for op in create_ops}
+        assert "dep_chain_a" in created_names, (
+            f"Regression: dep_chain_a missing from create ops; "
+            f"got {sorted(created_names)}"
+        )
+        assert "dep_chain_b" in created_names, (
+            f"Regression: dep_chain_b missing from create ops "
+            f"(likely rolled back A before canonicalizing B); "
+            f"got {sorted(created_names)}"
+        )
 
 
 class TestCanonicalizeSkipDoesNotDrop:
@@ -1471,40 +1492,35 @@ class TestCanonicalizeSkipDoesNotDrop:
 
     @pytest.mark.infrastructure
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_failing_canonicalization_does_not_emit_drop(self, connection):
-        _drop_views(connection, _CLEANUP_VIEW_NAMES)
-        _drop_base_table(connection)
-        try:
-            # Pre-create the view in the DB with an old, valid definition.
-            connection.execute(
-                sa.text("CREATE VIEW failed_canon_view AS SELECT 1 AS id")
-            )
-            connection.commit()
+    def test_failing_canonicalization_does_not_emit_drop(self, view_cleanup_factory):
+        connection = view_cleanup_factory(_CLEANUP_VIEW_NAMES)
+        # Pre-create the view in the DB with an old, valid definition.
+        connection.execute(
+            sa.text("CREATE VIEW failed_canon_view AS SELECT 1 AS id")
+        )
+        connection.commit()
 
-            metadata = sa.MetaData()
-            metadata.info["sqlalchemy_utils_views"] = [
-                ViewRecord(
-                    name="failed_canon_view",
-                    selectable=sa.select(sa.text("* FROM nonexistent_table")),
-                    schema=None,
-                ),
-            ]
+        metadata = sa.MetaData()
+        metadata.info["sqlalchemy_utils_views"] = [
+            ViewRecord(
+                name="failed_canon_view",
+                selectable=sa.select(sa.text("* FROM nonexistent_table")),
+                schema=None,
+            ),
+        ]
 
-            upgrade_ops = _run_comparator(connection, metadata, schemas=[None])
+        upgrade_ops = _run_comparator(connection, metadata, schemas=[None])
 
-            drop_ops = [
-                op for op in upgrade_ops.ops if isinstance(op, DropViewOp)
-            ]
-            failed_canon_drops = [op for op in drop_ops if op.name == "failed_canon_view"]
-            assert failed_canon_drops == [], (
-                f"Regression: false DropViewOp emitted for "
-                f"failed_canon_view (canonicalization failed → should be SKIPPED, "
-                f"not dropped). Got drop ops: "
-                f"{[(op.name, op.schema) for op in drop_ops]}"
-            )
-        finally:
-            _drop_views(connection, _CLEANUP_VIEW_NAMES)
-            _drop_base_table(connection)
+        drop_ops = [
+            op for op in upgrade_ops.ops if isinstance(op, DropViewOp)
+        ]
+        failed_canon_drops = [op for op in drop_ops if op.name == "failed_canon_view"]
+        assert failed_canon_drops == [], (
+            f"Regression: false DropViewOp emitted for "
+            f"failed_canon_view (canonicalization failed → should be SKIPPED, "
+            f"not dropped). Got drop ops: "
+            f"{[(op.name, op.schema) for op in drop_ops]}"
+        )
 
 
 # ===========================================================================
@@ -1791,7 +1807,7 @@ class TestComparatorNonPGDialect:
 
 class TestComparatorNoDoubleFetch:
 
-    def test_does_not_double_fetch(self, monkeypatch):
+    def test_does_not_double_fetch(self):
 
         call_count = {"views": 0, "mvs": 0}
 
@@ -3422,7 +3438,7 @@ class TestMvCanonicalizationCascade:
 
     @pytest.mark.infrastructure
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_mv_with_dependent_view_definition_change_detected(self, connection):
+    def test_mv_with_dependent_view_definition_change_detected(self, view_cleanup_factory):
         """MV with a dependent view: definition change is detected, not skipped.
 
         Pre-create an MV with an old definition and a regular view that
@@ -3432,119 +3448,109 @@ class TestMvCanonicalizationCascade:
         succeeds inside the savepoint, the MV is recreated, and the change is
         detected as a ``ReplaceMaterializedViewOp``.
         """
-        _create_base_table(connection)
-        _drop_views(connection, _MV_CASCADE_TEST_VIEW_NAMES)
-        try:
-            # Pre-create MV with OLD definition.
-            connection.execute(
-                sa.text(
-                    "CREATE MATERIALIZED VIEW mv_cascade_test_mv AS "
-                    "SELECT id, name FROM _cmp_test_base WITH DATA"
-                )
+        connection = view_cleanup_factory(_MV_CASCADE_TEST_VIEW_NAMES, create_base=True)
+        # Pre-create MV with OLD definition.
+        connection.execute(
+            sa.text(
+                "CREATE MATERIALIZED VIEW mv_cascade_test_mv AS "
+                "SELECT id, name FROM _cmp_test_base WITH DATA"
             )
-            # Pre-create a dependent regular view on the MV.
-            connection.execute(
-                sa.text(
-                    "CREATE VIEW mv_cascade_test_dep_view AS "
-                    "SELECT * FROM mv_cascade_test_mv"
-                )
+        )
+        # Pre-create a dependent regular view on the MV.
+        connection.execute(
+            sa.text(
+                "CREATE VIEW mv_cascade_test_dep_view AS "
+                "SELECT * FROM mv_cascade_test_mv"
             )
-            connection.commit()
+        )
+        connection.commit()
 
-            metadata = sa.MetaData()
-            metadata.info["sqlalchemy_utils_views"] = [
-                ViewRecord(
-                    name="mv_cascade_test_mv",
-                    selectable="SELECT id, value FROM _cmp_test_base",
-                    schema=None,
-                    materialized=True,
+        metadata = sa.MetaData()
+        metadata.info["sqlalchemy_utils_views"] = [
+            ViewRecord(
+                name="mv_cascade_test_mv",
+                selectable="SELECT id, value FROM _cmp_test_base",
+                schema=None,
+                materialized=True,
+            ),
+            ViewRecord(
+                name="mv_cascade_test_dep_view",
+                selectable=sa.select(
+                    sa.text("* FROM mv_cascade_test_mv")
                 ),
-                ViewRecord(
-                    name="mv_cascade_test_dep_view",
-                    selectable=sa.select(
-                        sa.text("* FROM mv_cascade_test_mv")
-                    ),
-                    schema=None,
-                ),
-            ]
+                schema=None,
+            ),
+        ]
 
-            upgrade_ops = _run_comparator(connection, metadata, schemas=[None])
+        upgrade_ops = _run_comparator(connection, metadata, schemas=[None])
 
-            replace_ops = [
-                op
-                for op in upgrade_ops.ops
-                if isinstance(op, ReplaceMaterializedViewOp)
-                and op.name == "mv_cascade_test_mv"
-            ]
-            assert len(replace_ops) == 1, (
-                f"Regression: MV 'mv_cascade_test_mv' with a dependent view "
-                f"was silently skipped during canonicalization (DROP without "
-                f"CASCADE fails when a dependent view exists). Expected a "
-                f"ReplaceMaterializedViewOp; got {replace_ops}. "
-                f"All ops: {[(type(o).__name__, o.name) for o in upgrade_ops.ops]}"
-            )
-        finally:
-            _drop_views(connection, _MV_CASCADE_TEST_VIEW_NAMES)
-            _drop_base_table(connection)
+        replace_ops = [
+            op
+            for op in upgrade_ops.ops
+            if isinstance(op, ReplaceMaterializedViewOp)
+            and op.name == "mv_cascade_test_mv"
+        ]
+        assert len(replace_ops) == 1, (
+            f"Regression: MV 'mv_cascade_test_mv' with a dependent view "
+            f"was silently skipped during canonicalization (DROP without "
+            f"CASCADE fails when a dependent view exists). Expected a "
+            f"ReplaceMaterializedViewOp; got {replace_ops}. "
+            f"All ops: {[(type(o).__name__, o.name) for o in upgrade_ops.ops]}"
+        )
 
     @pytest.mark.infrastructure
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_mv_with_dependent_view_not_in_skipped(self, connection):
+    def test_mv_with_dependent_view_not_in_skipped(self, view_cleanup_factory):
         """Directly verify ``_canonicalize_all_views`` does not skip an MV
         that has a dependent view in the database."""
-        _create_base_table(connection)
-        _drop_views(connection, _MV_CASCADE_TEST_VIEW_NAMES)
-        try:
-            connection.execute(
-                sa.text(
-                    "CREATE MATERIALIZED VIEW mv_cascade_test_mv AS "
-                    "SELECT id, name FROM _cmp_test_base WITH DATA"
-                )
+        connection = view_cleanup_factory(_MV_CASCADE_TEST_VIEW_NAMES, create_base=True)
+        connection.execute(
+            sa.text(
+                "CREATE MATERIALIZED VIEW mv_cascade_test_mv AS "
+                "SELECT id, name FROM _cmp_test_base WITH DATA"
             )
-            connection.execute(
-                sa.text(
-                    "CREATE VIEW mv_cascade_test_dep_view AS "
-                    "SELECT * FROM mv_cascade_test_mv"
-                )
+        )
+        connection.execute(
+            sa.text(
+                "CREATE VIEW mv_cascade_test_dep_view AS "
+                "SELECT * FROM mv_cascade_test_mv"
             )
-            connection.commit()
+        )
+        connection.commit()
 
-            view_records = [
-                ViewRecord(
-                    name="mv_cascade_test_mv",
-                    selectable="SELECT id, value FROM _cmp_test_base",
-                    schema=None,
-                    materialized=True,
+        view_records = [
+            ViewRecord(
+                name="mv_cascade_test_mv",
+                selectable="SELECT id, value FROM _cmp_test_base",
+                schema=None,
+                materialized=True,
+            ),
+            ViewRecord(
+                name="mv_cascade_test_dep_view",
+                selectable=sa.select(
+                    sa.text("* FROM mv_cascade_test_mv")
                 ),
-                ViewRecord(
-                    name="mv_cascade_test_dep_view",
-                    selectable=sa.select(
-                        sa.text("* FROM mv_cascade_test_mv")
-                    ),
-                    schema=None,
-                ),
-            ]
-            db_views_for_deps = {
-                "mv_cascade_test_mv": "SELECT id, name FROM _cmp_test_base",
-                "mv_cascade_test_dep_view": "SELECT * FROM mv_cascade_test_mv",
-            }
+                schema=None,
+            ),
+        ]
+        db_views_for_deps = {
+            "mv_cascade_test_mv": "SELECT id, name FROM _cmp_test_base",
+            "mv_cascade_test_dep_view": "SELECT * FROM mv_cascade_test_mv",
+        }
 
-            view_defs, mv_defs, skipped = _canonicalize_all_views(
-                connection, view_records, db_views_for_deps
-            )
+        view_defs, mv_defs, skipped = _canonicalize_all_views(
+            connection, view_records, db_views_for_deps
+        )
 
-            assert "mv_cascade_test_mv" not in skipped, (
-                f"Regression: MV was skipped during canonicalization because "
-                f"the DROP failed without CASCADE (dependent view blocks it). "
-                f"skipped={skipped}"
-            )
-            assert "mv_cascade_test_mv" in mv_defs, (
-                f"Regression: MV definition missing from mv_defs. "
-                f"mv_defs={mv_defs}, skipped={skipped}"
-            )
-        finally:
-            _drop_views(connection, _MV_CASCADE_TEST_VIEW_NAMES)
-            _drop_base_table(connection)
+        assert "mv_cascade_test_mv" not in skipped, (
+            f"Regression: MV was skipped during canonicalization because "
+            f"the DROP failed without CASCADE (dependent view blocks it). "
+            f"skipped={skipped}"
+        )
+        assert "mv_cascade_test_mv" in mv_defs, (
+            f"Regression: MV definition missing from mv_defs. "
+            f"mv_defs={mv_defs}, skipped={skipped}"
+        )
 
 
 # ===========================================================================
@@ -4003,7 +4009,7 @@ class TestCanonicalizationColumnStructureChange:
 
     @pytest.mark.infrastructure
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_column_structure_change_detected_not_skipped(self, connection):
+    def test_column_structure_change_detected_not_skipped(self, view_cleanup_factory):
         """End-to-end: a view with columns (id, name, value) in the DB changed
         to (id, name) in the model must emit a ReplaceViewOp.
 
@@ -4013,48 +4019,43 @@ class TestCanonicalizationColumnStructureChange:
         and the change was silently missed. With DROP+CREATE the
         canonicalization succeeds and the change is detected.
         """
-        _create_base_table(connection)
-        _drop_views(connection, _COLUMN_CHANGE_VIEW_NAMES)
-        try:
-            # Pre-create view with OLD column structure (id, name, value) —
-            # three columns. PG refuses CREATE OR REPLACE VIEW when the new
-            # view has FEWER columns, so removing 'value' triggers the bug.
-            connection.execute(
-                sa.text(
-                    "CREATE VIEW col_change_view AS "
-                    "SELECT id, name, value FROM _cmp_test_base"
-                )
+        connection = view_cleanup_factory(_COLUMN_CHANGE_VIEW_NAMES, create_base=True)
+        # Pre-create view with OLD column structure (id, name, value) —
+        # three columns. PG refuses CREATE OR REPLACE VIEW when the new
+        # view has FEWER columns, so removing 'value' triggers the bug.
+        connection.execute(
+            sa.text(
+                "CREATE VIEW col_change_view AS "
+                "SELECT id, name, value FROM _cmp_test_base"
             )
-            connection.commit()
+        )
+        connection.commit()
 
-            # Model defines the view with NEW columns (id, name) — a column
-            # REMOVAL that CREATE OR REPLACE VIEW refuses.
-            metadata = sa.MetaData()
-            metadata.info["sqlalchemy_utils_views"] = [
-                ViewRecord(
-                    name="col_change_view",
-                    selectable="SELECT id, name FROM _cmp_test_base",
-                    schema=None,
-                ),
-            ]
+        # Model defines the view with NEW columns (id, name) — a column
+        # REMOVAL that CREATE OR REPLACE VIEW refuses.
+        metadata = sa.MetaData()
+        metadata.info["sqlalchemy_utils_views"] = [
+            ViewRecord(
+                name="col_change_view",
+                selectable="SELECT id, name FROM _cmp_test_base",
+                schema=None,
+            ),
+        ]
 
-            upgrade_ops = _run_comparator(connection, metadata, schemas=[None])
+        upgrade_ops = _run_comparator(connection, metadata, schemas=[None])
 
-            replace_ops = [
-                op
-                for op in upgrade_ops.ops
-                if isinstance(op, ReplaceViewOp) and op.name == "col_change_view"
-            ]
-            assert len(replace_ops) == 1, (
-                f"Regression: column-structure change for col_change_view "
-                f"was silently missed (CREATE OR REPLACE VIEW failed during "
-                f"canonicalization and the view was skipped). Expected a "
-                f"ReplaceViewOp; got {replace_ops}. "
-                f"All ops: {[(type(o).__name__, o.name) for o in upgrade_ops.ops]}"
-            )
-        finally:
-            _drop_views(connection, _COLUMN_CHANGE_VIEW_NAMES)
-            _drop_base_table(connection)
+        replace_ops = [
+            op
+            for op in upgrade_ops.ops
+            if isinstance(op, ReplaceViewOp) and op.name == "col_change_view"
+        ]
+        assert len(replace_ops) == 1, (
+            f"Regression: column-structure change for col_change_view "
+            f"was silently missed (CREATE OR REPLACE VIEW failed during "
+            f"canonicalization and the view was skipped). Expected a "
+            f"ReplaceViewOp; got {replace_ops}. "
+            f"All ops: {[(type(o).__name__, o.name) for o in upgrade_ops.ops]}"
+        )
 
 
 _REPLACE_EXEC_VIEW_NAMES = ["replace_exec_view"]
@@ -4074,7 +4075,7 @@ class TestReplaceViewOpExecutionColumnStructureChange:
 
     @pytest.mark.infrastructure
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_replace_view_removing_column_succeeds(self, connection):
+    def test_replace_view_removing_column_succeeds(self, view_cleanup_factory):
         """End-to-end: replace a view removing a column must not raise.
 
         Pre-create a view with (id, name); then invoke
@@ -4083,41 +4084,36 @@ class TestReplaceViewOpExecutionColumnStructureChange:
         ``cannot drop columns from view``. With DROP+CREATE the replace
         succeeds.
         """
-        _create_base_table(connection)
-        _drop_views(connection, _REPLACE_EXEC_VIEW_NAMES)
-        try:
-            connection.execute(
-                sa.text(
-                    "CREATE VIEW replace_exec_view AS "
-                    "SELECT id, name FROM _cmp_test_base"
-                )
+        connection = view_cleanup_factory(_REPLACE_EXEC_VIEW_NAMES, create_base=True)
+        connection.execute(
+            sa.text(
+                "CREATE VIEW replace_exec_view AS "
+                "SELECT id, name FROM _cmp_test_base"
             )
-            connection.commit()
+        )
+        connection.commit()
 
-            op = ReplaceViewOp(
-                "replace_exec_view",
-                "SELECT id FROM _cmp_test_base",
-            )
-            ctx = MigrationContext.configure(connection)
-            operations = Operations(ctx)
-            operations.invoke(op)
-            connection.commit()
+        op = ReplaceViewOp(
+            "replace_exec_view",
+            "SELECT id FROM _cmp_test_base",
+        )
+        ctx = MigrationContext.configure(connection)
+        operations = Operations(ctx)
+        operations.invoke(op)
+        connection.commit()
 
-            result = connection.execute(
-                sa.text(
-                    "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_name = 'replace_exec_view' "
-                    "ORDER BY ordinal_position"
-                )
+        result = connection.execute(
+            sa.text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'replace_exec_view' "
+                "ORDER BY ordinal_position"
             )
-            columns = [row[0] for row in result]
-            assert columns == ["id"], (
-                f"After replace_view removing 'name' column, the view "
-                f"should have only the 'id' column; got {columns}"
-            )
-        finally:
-            _drop_views(connection, _REPLACE_EXEC_VIEW_NAMES)
-            _drop_base_table(connection)
+        )
+        columns = [row[0] for row in result]
+        assert columns == ["id"], (
+            f"After replace_view removing 'name' column, the view "
+            f"should have only the 'id' column; got {columns}"
+        )
 
 
 # ===========================================================================
