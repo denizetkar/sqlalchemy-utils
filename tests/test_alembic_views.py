@@ -4319,3 +4319,80 @@ class TestStringSelectableGuard:
         with pytest.raises(TypeError, match="sa.text"):
             create_materialized_view("mv", "SELECT 1", md)
 
+
+# ===========================================================================
+# Cross-schema create ordering
+# ===========================================================================
+
+class TestCrossSchemaCreateOrdering:
+    """When a view in schema A depends on a view in schema B, the generated
+    migration ops must create the dependency (schema B's view) before the
+    dependent (schema A's view), regardless of schema iteration order.
+    """
+
+    def test_cross_schema_dependency_create_order(self):
+        model_views = [
+            ViewRecord(
+                name="dependent_view",
+                schema="schema_a",
+                selectable="SELECT * FROM schema_b.base_view",
+            ),
+            ViewRecord(
+                name="base_view",
+                schema="schema_b",
+                selectable="SELECT 1 AS id",
+            ),
+        ]
+
+        canonical_by_schema = {
+            "schema_a": ({"dependent_view": "SELECT * FROM schema_b.base_view"}, {}, set()),
+            "schema_b": ({"base_view": "SELECT 1 AS id"}, {}, set()),
+        }
+
+        def mock_canonicalize_all(connection, view_records, db_views):
+            schema = view_records[0].schema if view_records else None
+            return canonical_by_schema[schema]
+
+        # Test both schema iteration orders — the bug only manifests when
+        # the dependent's schema is processed before the dependency's.
+        for schema_order in (["schema_b", "schema_a"], ["schema_a", "schema_b"]):
+            autogen_context, upgrade_ops = _make_mock_autogen_context(
+                model_views=model_views
+            )
+
+            with patch.object(
+                comparator_module, "get_database_views", return_value={}
+            ), patch.object(
+                comparator_module, "get_database_materialized_views", return_value={}
+            ), patch.object(
+                comparator_module, "_canonicalize_all_views",
+                side_effect=mock_canonicalize_all,
+            ), patch.object(
+                comparator_module, "get_dependent_views", return_value={}
+            ), patch.object(comparator_module, "log"):
+                comparator_module.compare_views(
+                    autogen_context, upgrade_ops, schema_order
+                )
+
+            create_ops = [
+                op for op in upgrade_ops.ops if isinstance(op, CreateViewOp)
+            ]
+            assert len(create_ops) == 2, (
+                f"Expected 2 CreateViewOps, got {len(create_ops)}: "
+                f"{[(op.name, op.schema) for op in create_ops]}"
+            )
+
+            base_idx = next(
+                i for i, op in enumerate(create_ops)
+                if op.name == "base_view" and op.schema == "schema_b"
+            )
+            dep_idx = next(
+                i for i, op in enumerate(create_ops)
+                if op.name == "dependent_view" and op.schema == "schema_a"
+            )
+            assert base_idx < dep_idx, (
+                f"base_view (schema_b) must be created before "
+                f"dependent_view (schema_a) when schemas={schema_order}. "
+                f"Op order: {[(op.name, op.schema) for op in create_ops]}"
+            )
+

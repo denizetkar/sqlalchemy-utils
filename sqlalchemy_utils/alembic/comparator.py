@@ -539,6 +539,9 @@ def compare_views(
         all_db.update(db_views)
         all_db.update(db_mvs)
 
+    all_create_ops: list = []
+    all_drop_ops: list = []
+
     for schema in schemas:
         db_views = db_views_by_schema[schema]
         db_mvs = db_mvs_by_schema[schema]
@@ -607,30 +610,34 @@ def compare_views(
             )
             _warn_if_dependents(connection, name, schema, "materialized view")
 
-        # Order by dependency
-        if create_ops:
-            upgrade_ops.ops.extend(
-                _order_ops(
-                    create_ops,
-                    model_records,
-                    all_db,
-                    resolve_create_order,
-                    "creating",
-                    dialect=connection.dialect,
-                )
-            )
+        all_create_ops.extend(create_ops)
+        all_drop_ops.extend(drop_ops)
 
-        if drop_ops:
-            upgrade_ops.ops.extend(
-                _order_ops(
-                    drop_ops,
-                    model_records,
-                    all_db,
-                    resolve_drop_order,
-                    "dropping",
-                    dialect=connection.dialect,
-                )
+    # Order by dependency — call once with ALL ops from ALL schemas so
+    # cross-schema view-on-view dependencies are resolved correctly.
+    if all_create_ops:
+        upgrade_ops.ops.extend(
+            _order_ops(
+                all_create_ops,
+                model_records,
+                all_db,
+                resolve_create_order,
+                "creating",
+                dialect=connection.dialect,
             )
+        )
+
+    if all_drop_ops:
+        upgrade_ops.ops.extend(
+            _order_ops(
+                all_drop_ops,
+                model_records,
+                all_db,
+                resolve_drop_order,
+                "dropping",
+                dialect=connection.dialect,
+            )
+        )
 
     # Cross-type conflict resolution: when a view changes from regular to
     # materialized (or vice versa), the above per-schema loops emit BOTH a
