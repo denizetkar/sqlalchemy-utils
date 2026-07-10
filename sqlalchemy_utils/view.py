@@ -252,8 +252,8 @@ def create_materialized_view(
     metadata: sa.MetaData,
     indexes: list[sa.Index] | None = None,
     aliases: dict[str, str] | None = None,
-    *,
     cascade_on_drop: bool = True,
+    *,
     schema: str | None = None,
 ) -> sa.Table:
     """Create a materialized view on a given metadata
@@ -333,9 +333,9 @@ def create_view(
     name: str,
     selectable: str | ClauseElement,
     metadata: sa.MetaData,
-    *,
     cascade_on_drop: bool = True,
     replace: bool = False,
+    *,
     schema: str | None = None,
 ) -> sa.Table:
     """Create a view on a given metadata
@@ -407,7 +407,7 @@ class RefreshMaterializedView(Executable, ClauseElement):
     """Executable SQL construct for REFRESH MATERIALIZED VIEW.
 
     :param name: Name of the materialized view to refresh.
-    :param concurrently: Keyword-only. When ``True``, emits
+    :param concurrently: When ``True``, emits
         ``REFRESH MATERIALIZED VIEW CONCURRENTLY`` (non-blocking refresh;
         requires a unique index on the MV). Default ``False``.
     :param schema: Keyword-only. Optional schema name; when given, the
@@ -419,9 +419,9 @@ class RefreshMaterializedView(Executable, ClauseElement):
     def __init__(
         self,
         name: str,
+        concurrently: bool = False,
         *,
         schema: str | None = None,
-        concurrently: bool = False,
     ) -> None:
         self.name = name
         self.schema = schema
@@ -441,8 +441,8 @@ def compile_refresh_materialized_view(element, compiler, **kw):
 def refresh_materialized_view(
     session: sa.orm.Session,
     name: str,
-    *,
     concurrently: bool = False,
+    *,
     schema: str | None = None,
 ) -> None:
     """Refreshes an already existing materialized view
@@ -469,4 +469,4 @@ def refresh_materialized_view(
     # Since session.execute() bypasses autoflush, we must manually flush in
     # order to include newly-created/modified objects in the refresh.
     session.flush()
-    session.execute(RefreshMaterializedView(name, schema=schema, concurrently=concurrently))
+    session.execute(RefreshMaterializedView(name, concurrently, schema=schema))

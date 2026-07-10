@@ -2085,7 +2085,7 @@ class TestDependNoneDbViews:
         vr = ViewRecord(name="solo", selectable="SELECT 1 AS col")
         assert resolve_create_order([vr], db_views=None) == [vr]
         assert resolve_drop_order([vr], db_views=None) == [vr]
-        assert _build_dependency_graph([vr], {}) == {"solo": set()}
+        assert _build_dependency_graph([vr], {}) == {("solo", None): set()}
 
 
 class TestDependWordBoundary:
@@ -2923,8 +2923,8 @@ class TestCrossSchemaDedup:
 
     def test_build_dependency_graph_merges_deps_same_name_diff_schema(self):
         """When two ViewRecords share a name across schemas, their
-        dependencies must be MERGED in the graph rather than the second
-        overwriting the first."""
+        dependencies must be on SEPARATE graph nodes keyed by
+        ``(name, schema)`` rather than collapsed into one bare-name node."""
         views = [
             ViewRecord(name="foo", schema="a", selectable="SELECT * FROM bar"),
             ViewRecord(name="foo", schema="b", selectable="SELECT * FROM baz"),
@@ -2932,11 +2932,57 @@ class TestCrossSchemaDedup:
             ViewRecord(name="baz", selectable="SELECT 1"),
         ]
         graph = _build_dependency_graph(views, db_views={})
-        # Both "bar" (from schema A) and "baz" (from schema B) must be
-        # present as dependencies of the shared name "foo".
-        assert graph["foo"] == {"bar", "baz"}, (
-            f"Expected deps merged to {{'bar', 'baz'}}, got {graph.get('foo')!r}"
-        )
+        # Each (name, schema) pair is a distinct graph node.
+        assert graph[("foo", "a")] == {("bar", None)}
+        assert graph[("foo", "b")] == {("baz", None)}
+        # No bare-name keys should exist.
+        assert "foo" not in graph
+
+
+class TestCrossSchemaSameNameGraphSeparation:
+    """Cross-schema same-name views must produce separate graph nodes.
+
+    Previously the graph was keyed by bare ``vr.name``, so two views named
+    ``summary`` in schemas ``reporting`` and ``analytics`` collapsed into a
+    single graph node — the second view's deps overwrote the first's,
+    yielding wrong dependency ordering.
+    """
+
+    def test_graph_has_two_distinct_nodes(self):
+        views = [
+            ViewRecord(
+                name="summary",
+                schema="reporting",
+                selectable="SELECT 1 AS col",
+            ),
+            ViewRecord(
+                name="summary",
+                schema="analytics",
+                selectable="SELECT * FROM summary",
+            ),
+        ]
+        graph = _build_dependency_graph(views, db_views={})
+        assert len(graph) == 2
+        assert ("summary", "reporting") in graph
+        assert ("summary", "analytics") in graph
+
+    def test_resolve_create_order_returns_both_views(self):
+        views = [
+            ViewRecord(
+                name="summary",
+                schema="reporting",
+                selectable="SELECT 1 AS col",
+            ),
+            ViewRecord(
+                name="summary",
+                schema="analytics",
+                selectable="SELECT * FROM summary",
+            ),
+        ]
+        result = resolve_create_order(views, db_views={})
+        assert len(result) == 2
+        schemas = {vr.schema for vr in result}
+        assert schemas == {"reporting", "analytics"}
 
 
 # ===========================================================================
@@ -4203,40 +4249,57 @@ class TestOpSchemaNormalization:
 
 
 # ===========================================================================
-# Runtime DDL functions: keyword-only params for create_view / create_materialized_view
+# Runtime DDL functions: positional params for create_view / create_materialized_view
 # ===========================================================================
 
-class TestRuntimeKeywordOnlyParams:
-    """The runtime ``create_view`` / ``create_materialized_view`` functions
-    must enforce keyword-only for params introduced after the original API.
+class TestRuntimePositionalParams:
+    """The runtime ``create_view`` / ``create_materialized_view`` /
+    ``refresh_materialized_view`` functions accept the params that were
+    positional in upstream sqlalchemy-utils 0.42.0 positionally.
 
-    - ``create_view``: ``replace`` is keyword-only (``cascade_on_drop`` stays
-      positional because it pre-dates the keyword-only policy).
-    - ``create_materialized_view``: ``cascade_on_drop`` is keyword-only
-      (``indexes`` and ``aliases`` stay positional because they are data
-      parameters).
+    ``schema`` remains keyword-only (it was always keyword-only in our
+    changes). The keyword form also continues to work.
     """
 
-    def test_create_view_replace_is_keyword_only(self):
-        """Passing ``replace`` positionally must raise TypeError."""
+    def test_create_view_cascade_on_drop_positional_works(self):
+        """Passing ``cascade_on_drop`` positionally must succeed."""
         md = sa.MetaData()
         sel = sa.select(sa.text("1"))
-        with pytest.raises(TypeError):
-            create_view("v", sel, md, True, True)
+        table = create_view("v", sel, md, False)
+        assert isinstance(table, sa.Table)
 
-    def test_create_view_cascade_on_drop_is_keyword_only(self):
-        """Passing ``cascade_on_drop`` positionally must raise TypeError."""
+    def test_create_view_replace_positional_works(self):
+        """Passing ``replace`` positionally must succeed."""
         md = sa.MetaData()
         sel = sa.select(sa.text("1"))
-        with pytest.raises(TypeError):
-            create_view("v", sel, md, False)
+        table = create_view("v", sel, md, True, True)
+        assert isinstance(table, sa.Table)
 
-    def test_create_materialized_view_cascade_on_drop_is_keyword_only(self):
-        """Passing ``cascade_on_drop`` positionally must raise TypeError."""
+    def test_create_materialized_view_cascade_on_drop_positional_works(self):
+        """Passing ``cascade_on_drop`` positionally must succeed."""
         md = sa.MetaData()
         sel = sa.select(sa.text("1"))
-        with pytest.raises(TypeError):
-            create_materialized_view("mv", sel, md, None, None, True)
+        table = create_materialized_view("mv", sel, md, None, None, True)
+        assert isinstance(table, sa.Table)
+
+    def test_refresh_materialized_view_concurrently_positional_works(self):
+        """Passing ``concurrently`` positionally to refresh_materialized_view
+        must succeed (does not touch DB; just constructs the DDL element)."""
+        md = sa.MetaData()
+        sel = sa.select(sa.text("1"))
+        create_materialized_view("mv", sel, md)
+        session = MagicMock()
+        refresh_materialized_view(session, "mv", True)
+        session.execute.assert_called_once()
+        executed = session.execute.call_args[0][0]
+        assert isinstance(executed, RefreshMaterializedView)
+        assert executed.concurrently is True
+
+    def test_refresh_materialized_view_ddl_concurrently_positional_works(self):
+        """Passing ``concurrently`` positionally to RefreshMaterializedView
+        constructor must succeed."""
+        element = RefreshMaterializedView("mv", True)
+        assert element.concurrently is True
 
     def test_create_view_replace_keyword_works(self):
         """Passing ``replace`` as keyword must succeed and return a Table."""
