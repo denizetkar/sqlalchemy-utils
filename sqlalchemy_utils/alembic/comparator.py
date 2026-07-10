@@ -377,23 +377,27 @@ def _is_drop_family(op) -> bool:
 
 
 def _reorder_cross_type_drops_before_creates(ops: list) -> list:
-    """Reorder so a Drop for a view name precedes a Create for the same name.
+    """Reorder so all cross-type drops precede all cross-type creates.
 
     When a view changes type (regular <-> materialized) the comparator emits
     a Create-family op for the new type and a Drop-family op for the old
     type. Creates are appended before drops, so without reordering the
     migration would CREATE while the old-type view still exists (which
     fails). For any (name, schema) present in BOTH a drop and a create op,
-    the drop is moved immediately before the create op for that key.
+    all drops are emitted before all creates at the position of the first
+    cross-type op, so non-cross-type ops keep their relative order.
 
-    The drop+create pair for each cross-type key is inserted AT THE POSITION
-    where the FIRST cross-type op for that key originally appeared in
-    ``ops`` (rather than buffering all cross-type ops to the end of the
-    result). This preserves the relative dependency ordering: a non-
-    cross-type op that was positioned after a cross-type op stays after it,
-    so a dependent view's create is not reordered before its dependency's
-    new type exists (which would cause a cascade-drop to silently drop the
-    dependent view).
+    Drops are collected in their appearance order in ``ops`` — which is
+    drop-order (dependents before dependencies) from
+    :func:`~sqlalchemy_utils.alembic.depend.resolve_drop_order`. Creates
+    are collected in their appearance order — create-order (dependencies
+    before dependents) from
+    :func:`~sqlalchemy_utils.alembic.depend.resolve_create_order`.
+
+    Emitting drops per-key at each create's position (the old approach)
+    produced drops in create-order (dependencies first), which fails with
+    ``cascade=False``: dropping a dependency while a dependent still
+    references it is refused by PG.
     """
     create_keys = {
         (getattr(op, "name", None), getattr(op, "schema", None))
@@ -407,37 +411,26 @@ def _reorder_cross_type_drops_before_creates(ops: list) -> list:
     if not cross_keys:
         return ops
 
-    # Walk `ops` in order so cross-type keys are emitted in the order they
-    # FIRST appear. Iterating `cross_keys` (a set) would give non-deterministic
-    # order under Python hash randomization, which can reorder drop+create
-    # pairs of dependent views and break migrations.
-    buffered: dict = {}
-    first_position: dict = {}
-    cross_order: list = []
-    for idx, op in enumerate(ops):
+    cross_drops: list = []
+    cross_creates: list = []
+    for op in ops:
         key = (getattr(op, "name", None), getattr(op, "schema", None))
         if key not in cross_keys:
             continue
-        buffered.setdefault(key, []).append(op)
-        if key not in first_position:
-            first_position[key] = idx
-            cross_order.append(key)
+        if _is_drop_family(op):
+            cross_drops.append(op)
+        elif _is_create_family(op):
+            cross_creates.append(op)
 
     result: list = []
-    inserted: set = set()
-    for idx, op in enumerate(ops):
-        for key in cross_order:
-            if key in inserted:
-                continue
-            if first_position[key] != idx:
-                continue
-            drops = [o for o in buffered[key] if _is_drop_family(o)]
-            creates = [o for o in buffered[key] if _is_create_family(o)]
-            result.extend(drops)
-            result.extend(creates)
-            inserted.add(key)
+    inserted = False
+    for op in ops:
         key = (getattr(op, "name", None), getattr(op, "schema", None))
         if key in cross_keys:
+            if not inserted:
+                result.extend(cross_drops)
+                result.extend(cross_creates)
+                inserted = True
             continue
         result.append(op)
     return result

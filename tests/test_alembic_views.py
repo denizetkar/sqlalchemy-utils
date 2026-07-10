@@ -3690,6 +3690,80 @@ class TestViewTypeChangeOrdering:
 
 
 # ===========================================================================
+# Cross-type reordering: reverse-dependency drop order for dependent views
+# ===========================================================================
+
+class TestCrossTypeReorderDependentViewsDropOrder:
+    """When two dependent views (A depends on B) both change type
+    simultaneously, drops must be emitted in reverse dependency order
+    (A before B), not in create-order (B before A).
+
+    Creates are ordered by ``resolve_create_order`` (dependencies first):
+    B's create comes before A's create. The old per-key reorder emitted
+    each drop at its create's position, producing B-before-A drops —
+    which fails with ``cascade=False`` because dropping B while A still
+    references it is refused by PG.
+
+    The fix emits ALL cross-type drops (in their existing drop-order from
+    ``resolve_drop_order``, which is dependents-first) before ANY
+    cross-type creates, so drops come out A-before-B (correct) and
+    creates come out B-before-A (unchanged).
+    """
+
+    def test_dependent_views_drops_in_reverse_dependency_order(self):
+        """Given two views A (depends on B) both changing regular→materialized,
+        DropViewOp(A) must appear before DropViewOp(B) in the ops list,
+        and CreateMaterializedViewOp(B) before CreateMaterializedViewOp(A)."""
+        # A depends on B (A references B in its definition).
+        # Creates in dep-order (B first, A second):
+        create_mv_b = CreateMaterializedViewOp("b", "SELECT 1 AS id")
+        create_mv_a = CreateMaterializedViewOp(
+            "a", "SELECT * FROM b"
+        )
+        # Drops in drop-order (A first, B second — dependents before deps):
+        drop_view_a = DropViewOp("a", definition="SELECT * FROM b")
+        drop_view_b = DropViewOp("b", definition="SELECT 1 AS id")
+
+        # Comparator layout: create_ops (dep-order) extended before drop_ops
+        # (drop-order).
+        ops = [create_mv_b, create_mv_a, drop_view_a, drop_view_b]
+
+        result = _reorder_cross_type_drops_before_creates(list(ops))
+
+        names_and_types = [(type(o).__name__, o.name) for o in result]
+
+        # Drops must be in reverse dependency order: A before B.
+        drop_a_idx = names_and_types.index(("DropViewOp", "a"))
+        drop_b_idx = names_and_types.index(("DropViewOp", "b"))
+        assert drop_a_idx < drop_b_idx, (
+            f"Drops must be in reverse dependency order (A before B) so "
+            f"dropping B does not fail while A still references it "
+            f"(cascade=False). Got drops at indices {drop_a_idx}, "
+            f"{drop_b_idx}; ops={names_and_types!r}"
+        )
+
+        # Creates must stay in dependency order: B before A.
+        create_b_idx = names_and_types.index(
+            ("CreateMaterializedViewOp", "b")
+        )
+        create_a_idx = names_and_types.index(
+            ("CreateMaterializedViewOp", "a")
+        )
+        assert create_b_idx < create_a_idx, (
+            f"Creates must stay in dependency order (B before A). "
+            f"Got creates at indices {create_b_idx}, {create_a_idx}; "
+            f"ops={names_and_types!r}"
+        )
+
+        # All drops must come before all creates.
+        assert drop_b_idx < create_b_idx, (
+            f"All drops must precede all creates so the old-type view "
+            f"does not exist when the new-type CREATE runs. "
+            f"ops={names_and_types!r}"
+        )
+
+
+# ===========================================================================
 # Cross-type reordering: deterministic order + dependency preservation
 # ===========================================================================
 
@@ -3705,7 +3779,7 @@ class TestCrossTypeReorderDeterministic:
     """
 
     def test_order_deterministic_across_runs(self):
-        """The order of cross-type pairs must be identical on every call.
+        """The order of cross-type ops must be identical on every call.
 
         Because the bug is non-deterministic set iteration under hash
         randomization, this test asserts the result matches the
@@ -3713,7 +3787,6 @@ class TestCrossTypeReorderDeterministic:
         iterated, the order would (probabilistically) vary; this test
         locks the contract that the function MUST walk `ops` in order.
         """
-        # Build a list of 5 views changing type, with creates before drops.
         names = [f"view_{i}" for i in range(5)]
         creates = [CreateMaterializedViewOp(n, "SELECT 1") for n in names]
         drops = [DropViewOp(n, definition="SELECT 1 AS id") for n in names]
@@ -3721,29 +3794,26 @@ class TestCrossTypeReorderDeterministic:
 
         result = _reorder_cross_type_drops_before_creates(list(ops))
 
-        # Build the expected drop+create pair order: for each name in
-        # the order it first appeared in `ops` (which is `names` order),
-        # emit drop then create.
         result_names_in_order = [
             o.name for o in result
             if isinstance(o, (CreateMaterializedViewOp, DropViewOp))
         ]
-        expected_pair_order = []
-        for n in names:
-            expected_pair_order.extend([n, n])
+        # All drops (in ops appearance order = names order) then all creates
+        # (in ops appearance order = names order).
+        expected_order = names + names
 
-        assert result_names_in_order == expected_pair_order, (
+        assert result_names_in_order == expected_order, (
             f"Cross-type reordering is non-deterministic or wrong order. "
             f"Got {result_names_in_order!r}, expected "
-            f"{expected_pair_order!r} (drop+create pairs in original "
-            f"`ops` order)."
+            f"{expected_order!r} (all drops in `ops` order, then all "
+            f"creates in `ops` order)."
         )
 
 
 class TestCrossTypeReorderPreservesDependencyOrder:
-    """Cross-type reorder must insert each drop+create pair AT THE POSITION
-    where the first cross-type op for that key originally appeared, instead
-    of buffering ALL cross-type ops to the end of the result list.
+    """Cross-type reorder must emit all cross-type drops before all
+    cross-type creates, at the position of the first cross-type op,
+    so non-cross-type ops keep their relative order.
 
     Buffering to the end breaks dependency order: if view W depends on view V
     and V changes type, W's create (a non-cross-type op positioned after V's
@@ -3798,9 +3868,7 @@ class TestCrossTypeReorderPreservesDependencyOrder:
 
     def test_non_cross_type_op_between_two_cross_type_pairs_preserves_order(self):
         """A non-cross-type op sitting between two cross-type pairs must
-        stay in its relative position (between the two inserted pairs)."""
-        # V changes type (cross-type), W is regular (non-cross-type),
-        # X changes type (cross-type).
+        stay in its relative position (after all cross-type ops)."""
         create_mv_v = CreateMaterializedViewOp("v", "SELECT 1 AS id")
         create_mv_x = CreateMaterializedViewOp("x", "SELECT 3 AS id")
         create_view_w = CreateViewOp("w", "SELECT 2 AS id")
@@ -3812,24 +3880,20 @@ class TestCrossTypeReorderPreservesDependencyOrder:
         result = _reorder_cross_type_drops_before_creates(list(ops))
 
         names_and_types = [(type(o).__name__, o.name) for o in result]
-        # V's pair at index 0 (V first appeared at index 0),
-        # X's pair at the position X first appeared (index 1, but after V's
-        # pair is inserted that becomes index 2),
-        # W's create stays where it was relative to the cross-type ops
-        # (it appeared after both creates and before both drops, so it
-        # should end up between V's pair and X's pair... actually W appeared
-        # after create_v and create_x in original order, so it stays between
-        # the two pairs).
+        # All cross-type drops (in ops appearance order) emitted at the first
+        # cross-type op's position, then all cross-type creates, then the
+        # non-cross-type op W (which appeared after the creates and before the
+        # drops in the original ops list).
         expected = [
             ("DropViewOp", "v"),
-            ("CreateMaterializedViewOp", "v"),
             ("DropViewOp", "x"),
+            ("CreateMaterializedViewOp", "v"),
             ("CreateMaterializedViewOp", "x"),
             ("CreateViewOp", "w"),
         ]
         assert names_and_types == expected, (
             f"Non-cross-type op W must stay in its original relative "
-            f"position between the cross-type pairs. Got "
+            f"position after all cross-type ops. Got "
             f"{names_and_types!r}, expected {expected!r}."
         )
 
