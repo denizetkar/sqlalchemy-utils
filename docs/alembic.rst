@@ -78,8 +78,10 @@ Autogenerate
 Alembic's autogenerate mode monitors database changes. SQLAlchemy-Utils provides a
 comparator for view DDL:
 
-* How it works: Each model view is temporarily created inside a savepoint,
-  its definition read from PostgreSQL, then the savepoint is rolled back.
+* How it works: All model views for a schema are temporarily created inside a
+  single outer savepoint (with nested per-view savepoints), their definitions
+  read back from ``pg_views``/``pg_matviews`` in one batch, then the outer
+  savepoint is rolled back.
 
 * **PostgreSQL only**: View autogenerate comparison queries
   ``pg_views``/``pg_matviews`` and uses savepoints.  On non-PostgreSQL

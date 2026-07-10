@@ -36,6 +36,7 @@ def _query_view_catalog(connection: sa.engine.Connection, table: str, name_col: 
         connection's current default schema is queried (via
         ``current_schema()``).
     :returns: Dictionary mapping view name to definition SQL.
+    :raises ValueError: if *table* or *name_col* is not in the allowed set.
     """
     if table not in _ALLOWED_CATALOG_TABLES:
         raise ValueError(
