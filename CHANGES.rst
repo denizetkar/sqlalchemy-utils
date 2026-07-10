@@ -54,8 +54,8 @@ Unreleased
   ``replace_materialized_view`` op, run ``op.refresh_materialized_view(...)``
   to populate the materialized view.
 - **Breaking:** ``schema`` is keyword-only on ``create_view``, ``create_materialized_view``,
-  ``create_table_from_selectable``, ``DropView``, and ``RefreshMaterializedView`` for
-  consistency with the Alembic op API.
+  ``create_table_from_selectable``, ``CreateView``, ``DropView``, and ``RefreshMaterializedView``
+  for consistency with the Alembic op API.
 
 0.42.1 (2025-12-12)
 ^^^^^^^^^^^^^^^^^^^
