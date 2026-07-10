@@ -47,7 +47,7 @@ class CreateView(DDLElement):
     def __init__(
         self,
         name: str,
-        selectable: str | ClauseElement,
+        selectable: ClauseElement,
         materialized: bool = False,
         replace: bool = False,
         *,
@@ -248,7 +248,7 @@ def _register_view_ddl(
 
 def create_materialized_view(
     name: str,
-    selectable: str | ClauseElement,
+    selectable: ClauseElement,
     metadata: sa.MetaData,
     indexes: list[sa.Index] | None = None,
     aliases: dict[str, str] | None = None,
@@ -302,6 +302,11 @@ def create_materialized_view(
         # Refresh later with refresh_materialized_view(session, "user_summary").
 
     """
+    if isinstance(selectable, str):
+        raise TypeError(
+            "selectable must be a SQLAlchemy ClauseElement (e.g. sa.select(...) "
+            "or sa.text(...)), not a string. Wrap your SQL in sa.text('...') first."
+        )
     if indexes is not None and not isinstance(indexes, list):
         raise TypeError(
             f"indexes must be a list or None, got {type(indexes).__name__}"
@@ -331,7 +336,7 @@ def create_materialized_view(
 
 def create_view(
     name: str,
-    selectable: str | ClauseElement,
+    selectable: ClauseElement,
     metadata: sa.MetaData,
     cascade_on_drop: bool = True,
     replace: bool = False,
@@ -385,6 +390,11 @@ def create_view(
         create_view("premium_users", premium_members, metadata)
         # Run metadata.create_all(engine) to emit the CREATE VIEW.
     """
+    if isinstance(selectable, str):
+        raise TypeError(
+            "selectable must be a SQLAlchemy ClauseElement (e.g. sa.select(...) "
+            "or sa.text(...)), not a string. Wrap your SQL in sa.text('...') first."
+        )
     table = create_table_from_selectable(
         name=name, selectable=selectable, metadata=None, schema=schema
     )
