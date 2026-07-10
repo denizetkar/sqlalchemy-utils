@@ -440,7 +440,6 @@ class TestCreateViewOp:
         assert op.name == "v1"
         assert op.definition == "SELECT 1"
         assert op.schema is None
-        assert op.replace is False
 
     def test_reverse_returns_drop_view(self):
         op = CreateViewOp("v1", "SELECT 1")
@@ -475,16 +474,6 @@ class TestCreateViewOp:
         op = CreateViewOp("v1", "SELECT 1", schema="public")
         sqls = _capture_sql(op)
         assert sqls == ["CREATE VIEW public.v1 AS SELECT 1"]
-
-    def test_create_view_accepts_replace_kwarg(self):
-        operations = MagicMock()
-        operations.invoke.return_value = None
-        with pytest.warns(DeprecationWarning, match="op.replace_view"):
-            CreateViewOp.create_view(operations, "test_view", "SELECT 1", replace=True)
-        operations.invoke.assert_called_once()
-        invoked_op = operations.invoke.call_args[0][0]
-        assert isinstance(invoked_op, CreateViewOp)
-        assert invoked_op.replace is True
 
     def test_replace_view_classmethod_invokes_replace_view_op(self):
         operations = MagicMock()
@@ -922,22 +911,6 @@ class TestRendererCreateView:
         op = CreateViewOp("my_view", "SELECT 1", schema="public")
         result = render_create_view(_make_autogen_context(), op)
         assert "schema='public'" in result
-
-    @pytest.mark.parametrize(
-        "replace,expected_in_output",
-        [(False, ""), (True, "replace=True")],
-    )
-    def test_renders_replace(self, replace, expected_in_output):
-        if replace:
-            with pytest.warns(DeprecationWarning):
-                op = CreateViewOp("v", "SELECT 1", replace=replace)
-        else:
-            op = CreateViewOp("v", "SELECT 1", replace=replace)
-        rendered = render_create_view(_make_autogen_context(), op)
-        if expected_in_output:
-            assert expected_in_output in rendered
-        else:
-            assert "replace=True" not in rendered
 
 
 class TestRendererDropView:
@@ -3981,7 +3954,7 @@ class TestCreateMaterializedViewOpCascade:
 
 class TestCreateViewOpCascadePassthrough:
     """op.create_view must expose and forward cascade_on_drop, and the
-    keyword-only ordering must place schema before replace (matching
+    keyword-only ordering must place schema before cascade_on_drop (matching
     the other op.* helpers).
     """
 
@@ -3996,8 +3969,8 @@ class TestCreateViewOpCascadePassthrough:
         assert isinstance(invoked_op, CreateViewOp)
         assert invoked_op.cascade_on_drop is False
 
-    def test_op_create_view_signature_schema_before_replace(self):
-        """The signature must be `*, schema=None, replace=False,
+    def test_op_create_view_signature_schema_before_cascade_on_drop(self):
+        """The signature must be `*, schema=None,
         cascade_on_drop=True` — schema first, matching other op.* helpers."""
         sig = inspect.signature(CreateViewOp.create_view)
         params = list(sig.parameters.values())
@@ -4005,9 +3978,9 @@ class TestCreateViewOpCascadePassthrough:
         # [operations, name, definition, <keyword-only...>]. The keyword-only
         # params start after `definition` (index 3).
         kw_names = [p.name for p in params[3:]]
-        assert kw_names == ["schema", "replace", "cascade_on_drop"], (
+        assert kw_names == ["schema", "cascade_on_drop"], (
             f"Expected keyword-only params "
-            f"['schema', 'replace', 'cascade_on_drop'], got {kw_names!r}"
+            f"['schema', 'cascade_on_drop'], got {kw_names!r}"
         )
 
 

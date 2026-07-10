@@ -65,10 +65,9 @@ def _old_def_part(op) -> str:
 @renderers.dispatch_for(CreateViewOp)
 def render_create_view(autogen_context: AutogenContext, op: CreateViewOp) -> str:
     """Render a CreateViewOp as op.create_view(...) code."""
-    replace_part = ", replace=True" if op.replace else ""
     return (
         f"op.create_view({op.name!r}, {op.definition!r}{_schema_part(op)}"
-        f"{replace_part}{_cascade_on_drop_part(op)})"
+        f"{_cascade_on_drop_part(op)})"
     )
 
 

@@ -38,9 +38,9 @@ Unreleased
 - Add ``get_database_views`` / ``get_database_materialized_views`` /
   ``get_dependent_views`` PostgreSQL catalog helpers in
   ``sqlalchemy_utils.alembic.pg_catalog``
-- Deprecate ``CreateViewOp(replace=True)`` in favor of ``op.replace_view()``
-  / ``ReplaceViewOp``; the ``reverse()`` of the deprecated form emits a
-  destructive ``DROP``.
+- Autogenerate reorders cross-type view operations (regular ↔ materialized)
+  so drops precede creates, preventing ``CREATE`` failures when a view
+  changes type.
 - ``ReplaceMaterializedViewOp`` accepts ``cascade=`` (defaults ``True``) to
   control ``CASCADE`` on the internal ``DROP MATERIALIZED VIEW``.
 - ``with_data`` diverges between runtime and autogenerate: the runtime
