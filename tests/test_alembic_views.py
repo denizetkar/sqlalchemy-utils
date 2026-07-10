@@ -460,10 +460,7 @@ class TestCreateViewOp:
         op = CreateViewOp("v1", "SELECT 1", **kwargs)
         rev = op.reverse()
         assert isinstance(rev, DropViewOp)
-        assert rev.cascade is expected_cascade, (
-            f"Expected cascade={expected_cascade} from reverse() when "
-            f"cascade_on_drop={cascade_on_drop}, got {rev.cascade!r}"
-        )
+        assert rev.cascade is expected_cascade, f"got {rev.cascade!r}"
 
     def test_sql_without_replace(self):
         op = CreateViewOp("v1", "SELECT 1")
@@ -572,10 +569,7 @@ class TestReplaceViewOp:
         )
         rev = op.reverse()
         assert isinstance(rev, ReplaceViewOp)
-        assert rev.cascade is expected, (
-            f"reversed ReplaceViewOp.cascade should be {expected}, "
-            f"got {rev.cascade!r}"
-        )
+        assert rev.cascade is expected, f"got {rev.cascade!r}"
 
 
 class TestCreateMaterializedViewOp:
@@ -715,11 +709,7 @@ class TestReplaceCascadeKwarg:
     ):
         kwargs = {"cascade": cascade_kwarg} if cascade_kwarg is not None else {}
         op = op_class(view_name, "SELECT 1", **kwargs)
-        assert op.cascade is expected_cascade_attr, (
-            f"{op_class.__name__}.cascade should be "
-            f"{expected_cascade_attr} when cascade_kwarg={cascade_kwarg!r}, "
-            f"got {op.cascade!r}"
-        )
+        assert op.cascade is expected_cascade_attr, f"got {op.cascade!r}"
 
         sqls = _capture_sql(op)
         assert len(sqls) == 2
@@ -728,19 +718,11 @@ class TestReplaceCascadeKwarg:
             expected_drop_sql = f"{drop_keyword} {view_name} CASCADE"
         else:
             expected_drop_sql = f"{drop_keyword} {view_name}"
-        assert sqls[0] == expected_drop_sql, (
-            f"DROP SQL mismatch; got {sqls[0]!r}"
-        )
+        assert sqls[0] == expected_drop_sql, f"got {sqls[0]!r}"
         if drop_contains_cascade:
-            assert "CASCADE" in sqls[0].upper(), (
-                f"DROP must contain CASCADE when op.cascade=True. "
-                f"DROP SQL: {sqls[0]!r}"
-            )
+            assert "CASCADE" in sqls[0].upper(), f"got {sqls[0]!r}"
         else:
-            assert "CASCADE" not in sqls[0].upper(), (
-                f"DROP must not contain CASCADE when op.cascade=False. "
-                f"DROP SQL: {sqls[0]!r}"
-            )
+            assert "CASCADE" not in sqls[0].upper(), f"got {sqls[0]!r}"
 
         if op_class is ReplaceViewOp:
             expected_create = f"CREATE VIEW {view_name} AS SELECT 1"
@@ -880,19 +862,13 @@ class TestRendererCascadeOnDrop:
         """
         op = op_class("v", "SELECT 1", cascade_on_drop=False)
         rendered = renderer(_make_autogen_context(), op)
-        assert "cascade_on_drop=False" in rendered, (
-            f"Expected cascade_on_drop=False in rendered output; "
-            f"got: {rendered!r}"
-        )
+        assert "cascade_on_drop=False" in rendered, f"got: {rendered!r}"
 
     def test_omits_cascade_on_drop_when_default_true(self, op_class, renderer):
         """``cascade_on_drop=True`` (the default) is NOT rendered."""
         op = op_class("v", "SELECT 1")
         rendered = renderer(_make_autogen_context(), op)
-        assert "cascade_on_drop=" not in rendered, (
-            f"cascade_on_drop=True (default) must not be rendered; "
-            f"got: {rendered!r}"
-        )
+        assert "cascade_on_drop=" not in rendered, f"got: {rendered!r}"
 
 
 class TestRendererCreateView:
@@ -1021,10 +997,7 @@ class TestRendererDropMaterializedView:
         """
         op = DropMaterializedViewOp("mv", definition="SELECT 1", with_data=True)
         rendered = render_drop_materialized_view(_make_autogen_context(), op)
-        assert "with_data=True" in rendered, (
-            f"with_data=True must be rendered for drop_materialized_view so "
-            f"the downgrade re-creates the MV WITH DATA; got: {rendered!r}"
-        )
+        assert "with_data=True" in rendered, f"got: {rendered!r}"
 
 
 class TestRendererReplaceMaterializedView:
@@ -1307,9 +1280,7 @@ class TestComparatorNoChanges:
             for op in upgrade_ops.ops
             if getattr(op, "name", None) == "cmp_test_view2"
         ]
-        assert len(matching_view_ops) == 0, (
-            f"Expected no ops for matching view, got: {matching_view_ops}"
-        )
+        assert len(matching_view_ops) == 0, f"got: {matching_view_ops}"
 
 
 class TestComparatorSavepointRollback:
@@ -1328,9 +1299,7 @@ class TestComparatorSavepointRollback:
         _run_comparator(connection, metadata)
 
         db_views = get_database_views(connection)
-        assert "cmp_test_view" not in db_views, (
-            "View should not persist after canonicalization savepoint rollback"
-        )
+        assert "cmp_test_view" not in db_views, f"got: {db_views}"
 
 
 class TestComparatorDDLError:
@@ -1355,9 +1324,7 @@ class TestComparatorDDLError:
             for op in upgrade_ops.ops
             if getattr(op, "name", None) == "cmp_test_view_bad"
         ]
-        assert len(bad_view_ops) == 0, (
-            f"Invalid view should be skipped, got ops: {bad_view_ops}"
-        )
+        assert len(bad_view_ops) == 0, f"got ops: {bad_view_ops}"
 
 
 # ===========================================================================
@@ -1437,15 +1404,8 @@ class TestCanonicalizeViewOnViewDeps:
             op for op in upgrade_ops.ops if isinstance(op, CreateViewOp)
         ]
         created_names = {op.name for op in create_ops}
-        assert "dep_chain_a" in created_names, (
-            f"Regression: dep_chain_a missing from create ops; "
-            f"got {sorted(created_names)}"
-        )
-        assert "dep_chain_b" in created_names, (
-            f"Regression: dep_chain_b missing from create ops "
-            f"(likely rolled back A before canonicalizing B); "
-            f"got {sorted(created_names)}"
-        )
+        assert "dep_chain_a" in created_names, f"got {sorted(created_names)}"
+        assert "dep_chain_b" in created_names, f"got {sorted(created_names)}"
 
 
 class TestCanonicalizeSkipDoesNotDrop:
@@ -1476,12 +1436,7 @@ class TestCanonicalizeSkipDoesNotDrop:
             op for op in upgrade_ops.ops if isinstance(op, DropViewOp)
         ]
         failed_canon_drops = [op for op in drop_ops if op.name == "failed_canon_view"]
-        assert failed_canon_drops == [], (
-            f"Regression: false DropViewOp emitted for "
-            f"failed_canon_view (canonicalization failed → should be SKIPPED, "
-            f"not dropped). Got drop ops: "
-            f"{[(op.name, op.schema) for op in drop_ops]}"
-        )
+        assert failed_canon_drops == [], f"got drop ops: {[(op.name, op.schema) for op in drop_ops]}"
 
 
 # ===========================================================================
@@ -1542,23 +1497,12 @@ class TestCanonicalizeFailureDoesNotSkipSubsequentViews:
             created_names = {op.name for op in create_ops}
 
             # savepoint_a failed to canonicalize → must NOT appear.
-            assert "savepoint_a" not in created_names, (
-                f"Regression: savepoint_a should have been skipped (its CREATE "
-                f"fails), but got {sorted(created_names)}"
-            )
+            assert "savepoint_a" not in created_names, f"got {sorted(created_names)}"
             # savepoint_b and savepoint_c come after the failure; they MUST still be
             # canonicalized. Before the fix the reused savepoint name caused
             # both to be silently dropped.
-            assert "savepoint_b" in created_names, (
-                f"Regression: savepoint_b missing from create ops "
-                f"(savepoint name reuse after ROLLBACK TO likely skipped "
-                f"it); got {sorted(created_names)}"
-            )
-            assert "savepoint_c" in created_names, (
-                f"Regression: savepoint_c missing from create ops "
-                f"(savepoint name reuse after ROLLBACK TO likely skipped "
-                f"it); got {sorted(created_names)}"
-            )
+            assert "savepoint_b" in created_names, f"got {sorted(created_names)}"
+            assert "savepoint_c" in created_names, f"got {sorted(created_names)}"
         finally:
             _drop_views(connection, _SAVEPOINT_TEST_VIEW_NAMES)
 
@@ -1633,39 +1577,22 @@ class TestAbortedTransactionBreaksEarly:
             if rec.levelno >= logging.WARNING
             and "aborted state" in rec.message
         ]
-        assert abort_warnings, (
-            f"Expected a warning about aborted state after the probe failed. "
-            f"Got log records: "
-            f"{[(rec.levelname, rec.message) for rec in caplog.records]}"
-        )
+        assert abort_warnings, f"got log records: {[(rec.levelname, rec.message) for rec in caplog.records]}"
 
         # 2. The loop broke early — view_b (abort_b) was never canonicalized.
         #    Because the loop broke before reaching it, abort_b is added to
         #    `skipped` so drop detection does not emit a false DropViewOp for
         #    a view that is still modeled but merely un-processed.
-        assert "abort_b" in skipped, (
-            f"abort_b should be in skipped (loop broke before reaching it; "
-            f"unreached views are added to skipped to avoid false drops); "
-            f"skipped={skipped}"
-        )
-        assert "abort_b" not in view_defs, (
-            f"abort_b should not be in view_defs (loop broke before "
-            f"canonicalizing it); view_defs={view_defs}"
-        )
+        assert "abort_b" in skipped, f"skipped={skipped}"
+        assert "abort_b" not in view_defs, f"view_defs={view_defs}"
         # abort_a WAS attempted and failed — it should be in skipped.
-        assert "abort_a" in skipped, (
-            f"abort_a failed to canonicalize and must be in skipped; "
-            f"skipped={skipped}"
-        )
+        assert "abort_a" in skipped, f"skipped={skipped}"
 
         # 3. No CREATE statement for abort_b was ever issued (loop broke).
         abort_b_creates = [
             sql for sql in call_log if "abort_b" in sql and "CREATE" in sql
         ]
-        assert not abort_b_creates, (
-            f"Loop should have broken before attempting abort_b, but "
-            f"executed: {abort_b_creates}"
-        )
+        assert not abort_b_creates, f"executed: {abort_b_creates}"
 
     def test_aborted_transaction_no_false_drop_in_compare_views(self):
         """Regression: an aborted transaction must NOT cause a false DropViewOp
@@ -1726,11 +1653,7 @@ class TestAbortedTransactionBreaksEarly:
         drop_names = {op.name for op in drop_ops}
 
         # The critical assertion: NO DropViewOp for view_b.
-        assert "view_b" not in drop_names, (
-            f"view_b must NOT be dropped — the loop broke before processing "
-            f"it, so it must be in `skipped` (not a false drop). "
-            f"Drop ops emitted: {drop_names}"
-        )
+        assert "view_b" not in drop_names, f"drop ops: {drop_names}"
 
 
 class TestComparatorNonPGDialect:
@@ -1828,11 +1751,7 @@ class TestComparatorNeverEmitsRefreshOp:
             op for op in upgrade_ops.ops
             if isinstance(op, RefreshMaterializedViewOp)
         ]
-        assert refresh_ops == [], (
-            f"compare_views must NEVER emit RefreshMaterializedViewOp "
-            f"(refresh is a runtime op, not a migration step). Found: "
-            f"{refresh_ops}"
-        )
+        assert refresh_ops == [], f"found: {refresh_ops}"
 
 
 # ===========================================================================
@@ -2128,18 +2047,12 @@ class TestSafeResolveHandlesCompileError:
             )
 
         # Must return the records (model order), not raise.
-        assert result == records, (
-            f"_safe_resolve must fall back to model order on CompileError; "
-            f"got {result}"
-        )
+        assert result == records, f"got {result}"
         # A warning must be logged (do not silently swallow).
         warnings = [
             rec for rec in caplog.records if rec.levelno >= logging.WARNING
         ]
-        assert warnings, (
-            f"Expected a warning when falling back to model order; got "
-            f"{[(rec.levelname, rec.message) for rec in caplog.records]}"
-        )
+        assert warnings, f"got {[(rec.levelname, rec.message) for rec in caplog.records]}"
 
 
 # ===========================================================================
@@ -3003,10 +2916,7 @@ class TestCascadeOnDropWarning:
             c for c in mock_log.warning.call_args_list
             if "base_view" in str(c) and "dependent" in str(c).lower()
         ]
-        assert len(warning_calls) > 0, (
-            f"Expected warning about dependents when dropping base_view, "
-            f"got warnings: {mock_log.warning.call_args_list}"
-        )
+        assert len(warning_calls) > 0, f"got {mock_log.warning.call_args_list}"
 
     def test_does_not_warn_when_dropping_view_without_dependents(
         self, cascade_mock_setup
@@ -3021,9 +2931,7 @@ class TestCascadeOnDropWarning:
             c for c in mock_log.warning.call_args_list
             if "dependent" in str(c).lower()
         ]
-        assert len(warning_calls) == 0, (
-            f"Should not warn about dependents for lonely_view, got: {warning_calls}"
-        )
+        assert len(warning_calls) == 0, f"got: {warning_calls}"
 
 
 # ===========================================================================
@@ -3080,10 +2988,7 @@ class TestCascadeOnDropPropagation:
         drop_ops = [op for op in upgrade_ops.ops if isinstance(op, DropViewOp)]
         assert len(drop_ops) == 1, f"expected one DropViewOp, got {drop_ops}"
         assert drop_ops[0].name == "v_no_cascade"
-        assert drop_ops[0].cascade is False, (
-            f"DropViewOp.cascade should be False when "
-            f"ViewRecord.cascade_on_drop=False, got {drop_ops[0].cascade!r}"
-        )
+        assert drop_ops[0].cascade is False, f"got {drop_ops[0].cascade!r}"
 
     def test_drop_view_defaults_to_true_when_no_record(self, run_compare):
         """DropViewOp.cascade defaults to True when no model ViewRecord exists."""
@@ -3109,14 +3014,9 @@ class TestCascadeOnDropPropagation:
             op for op in upgrade_ops.ops
             if isinstance(op, DropMaterializedViewOp)
         ]
-        assert len(drop_ops) == 1, (
-            f"expected one DropMaterializedViewOp, got {drop_ops}"
-        )
+        assert len(drop_ops) == 1, f"got {drop_ops}"
         assert drop_ops[0].name == "mv_no_cascade"
-        assert drop_ops[0].cascade is False, (
-            f"DropMaterializedViewOp.cascade should be False when "
-            f"ViewRecord.cascade_on_drop=False, got {drop_ops[0].cascade!r}"
-        )
+        assert drop_ops[0].cascade is False, f"got {drop_ops[0].cascade!r}"
 
     def test_create_view_propagates_cascade_false(self, run_compare):
         """CreateViewOp.cascade_on_drop=False when ViewRecord.cascade_on_drop
@@ -3136,15 +3036,9 @@ class TestCascadeOnDropPropagation:
         create_ops = [
             op for op in upgrade_ops.ops if isinstance(op, CreateViewOp)
         ]
-        assert len(create_ops) == 1, (
-            f"expected one CreateViewOp, got {create_ops}"
-        )
+        assert len(create_ops) == 1, f"got {create_ops}"
         assert create_ops[0].name == "v_new_nocascade"
-        assert create_ops[0].cascade_on_drop is False, (
-            f"CreateViewOp.cascade_on_drop should be False when "
-            f"ViewRecord.cascade_on_drop=False, got "
-            f"{create_ops[0].cascade_on_drop!r}"
-        )
+        assert create_ops[0].cascade_on_drop is False, f"got {create_ops[0].cascade_on_drop!r}"
 
     def test_replace_view_propagates_cascade_false(self, run_compare):
         """ReplaceViewOp.cascade=False when ViewRecord.cascade_on_drop=False
@@ -3166,15 +3060,9 @@ class TestCascadeOnDropPropagation:
         replace_ops = [
             op for op in upgrade_ops.ops if isinstance(op, ReplaceViewOp)
         ]
-        assert len(replace_ops) == 1, (
-            f"expected one ReplaceViewOp, got {replace_ops}"
-        )
+        assert len(replace_ops) == 1, f"got {replace_ops}"
         assert replace_ops[0].name == "v_replace_nocascade"
-        assert replace_ops[0].cascade is False, (
-            f"ReplaceViewOp.cascade should be False when "
-            f"ViewRecord.cascade_on_drop=False, got "
-            f"{replace_ops[0].cascade!r}"
-        )
+        assert replace_ops[0].cascade is False, f"got {replace_ops[0].cascade!r}"
 
     def test_replace_view_defaults_to_cascade_true(self, run_compare):
         """ReplaceViewOp.cascade defaults to True when ViewRecord has
@@ -3260,18 +3148,11 @@ class TestCrossSchemaSameNameBothOps:
             op for op in upgrade_ops.ops if isinstance(op, CreateViewOp)
         ]
         # Both ops must survive — one per schema
-        assert len(create_ops) == 2, (
-            f"Expected 2 CreateViewOps (one per schema), got {len(create_ops)}: "
-            f"{[(op.name, op.schema) for op in create_ops]}"
-        )
+        assert len(create_ops) == 2, f"got {len(create_ops)}: {[(op.name, op.schema) for op in create_ops]}"
 
         schemas_seen = {(op.name, op.schema) for op in create_ops}
-        assert ("foo", "public") in schemas_seen, (
-            f"Missing CreateViewOp for (foo, public); got {schemas_seen}"
-        )
-        assert ("foo", "analytics") in schemas_seen, (
-            f"Missing CreateViewOp for (foo, analytics); got {schemas_seen}"
-        )
+        assert ("foo", "public") in schemas_seen, f"got {schemas_seen}"
+        assert ("foo", "analytics") in schemas_seen, f"got {schemas_seen}"
 
 
 # ===========================================================================
@@ -3340,11 +3221,7 @@ class TestSchemaNoneNoFalseDrop:
         analytics_drops = [
             op for op in drop_ops if op.name == "analytics_view"
         ]
-        assert analytics_drops == [], (
-            f"Regression: false DropViewOp emitted for "
-            f"analytics_view (schema=analytics) when schemas=[None]. "
-            f"Got drop ops: {[(op.name, op.schema) for op in drop_ops]}"
-        )
+        assert analytics_drops == [], f"got drop ops: {[(op.name, op.schema) for op in drop_ops]}"
 
 
 # ===========================================================================
@@ -3408,33 +3285,16 @@ class TestMvCanonicalizationCascade:
             )
             stmts = _build_create_sql(connection, vr)
 
-        assert isinstance(stmts, list), (
-            f"_build_create_sql must return a list; got {type(stmts)}"
-        )
-        assert len(stmts) == 2, (
-            f"View must produce two statements (DROP + CREATE); got {stmts!r}"
-        )
+        assert isinstance(stmts, list), f"got {type(stmts)}"
+        assert len(stmts) == 2, f"got {stmts!r}"
         drop_sql = stmts[0].upper()
         create_sql = stmts[1].upper()
-        assert drop_clause.upper() in drop_sql, (
-            f"Expected {drop_clause!r} in SQL: {stmts[0]!r}"
-        )
-        assert "CASCADE" in drop_sql, (
-            f"Regression: _build_create_sql must emit CASCADE for "
-            f"canonicalization DROP so dependent views do not block it. "
-            f"SQL: {stmts[0]!r}"
-        )
-        assert create_clause.upper() in create_sql, (
-            f"Second statement must be {create_clause!r}; got {stmts[1]!r}"
-        )
+        assert drop_clause.upper() in drop_sql, f"got {stmts[0]!r}"
+        assert "CASCADE" in drop_sql, f"got {stmts[0]!r}"
+        assert create_clause.upper() in create_sql, f"got {stmts[1]!r}"
         if create_extra:
-            assert create_extra.upper() in create_sql, (
-                f"CREATE must include {create_extra!r}; got {stmts[1]!r}"
-            )
-        assert "OR REPLACE" not in create_sql, (
-            f"CREATE must NOT be CREATE OR REPLACE (that fails on column "
-            f"structure changes); got {stmts[1]!r}"
-        )
+            assert create_extra.upper() in create_sql, f"got {stmts[1]!r}"
+        assert "OR REPLACE" not in create_sql, f"got {stmts[1]!r}"
 
     @pytest.mark.infrastructure
     @pytest.mark.usefixtures("postgresql_dsn")
@@ -3490,13 +3350,7 @@ class TestMvCanonicalizationCascade:
             if isinstance(op, ReplaceMaterializedViewOp)
             and op.name == "mv_cascade_test_mv"
         ]
-        assert len(replace_ops) == 1, (
-            f"Regression: MV 'mv_cascade_test_mv' with a dependent view "
-            f"was silently skipped during canonicalization (DROP without "
-            f"CASCADE fails when a dependent view exists). Expected a "
-            f"ReplaceMaterializedViewOp; got {replace_ops}. "
-            f"All ops: {[(type(o).__name__, o.name) for o in upgrade_ops.ops]}"
-        )
+        assert len(replace_ops) == 1, f"got {replace_ops}; all ops: {[(type(o).__name__, o.name) for o in upgrade_ops.ops]}"
 
     @pytest.mark.infrastructure
     @pytest.mark.usefixtures("postgresql_dsn")
@@ -3542,15 +3396,8 @@ class TestMvCanonicalizationCascade:
             connection, view_records, db_views_for_deps
         )
 
-        assert "mv_cascade_test_mv" not in skipped, (
-            f"Regression: MV was skipped during canonicalization because "
-            f"the DROP failed without CASCADE (dependent view blocks it). "
-            f"skipped={skipped}"
-        )
-        assert "mv_cascade_test_mv" in mv_defs, (
-            f"Regression: MV definition missing from mv_defs. "
-            f"mv_defs={mv_defs}, skipped={skipped}"
-        )
+        assert "mv_cascade_test_mv" not in skipped, f"skipped={skipped}"
+        assert "mv_cascade_test_mv" in mv_defs, f"mv_defs={mv_defs}, skipped={skipped}"
 
 
 # ===========================================================================
@@ -3618,10 +3465,7 @@ class TestDedupPreservesNonViewOps:
         for expected_type in expected_op_types:
             assert actual_types.count(expected_type) >= expected_op_types.count(
                 expected_type
-            ), (
-                f"Expected at least {expected_op_types.count(expected_type)} "
-                f"{expected_type} to survive dedup, got {actual_types}"
-            )
+            ), f"got {actual_types}"
 
 
 # ===========================================================================
@@ -3679,20 +3523,9 @@ class TestViewTypeChangeOrdering:
              if isinstance(op, CreateMaterializedViewOp) and op.name == "v"),
             None,
         )
-        assert drop_idx is not None, (
-            f"Missing DropViewOp for 'v'; ops="
-            f"{[(type(o).__name__, o.name) for o in upgrade_ops.ops]}"
-        )
-        assert create_idx is not None, (
-            f"Missing CreateMaterializedViewOp for 'v'; ops="
-            f"{[(type(o).__name__, o.name) for o in upgrade_ops.ops]}"
-        )
-        assert drop_idx < create_idx, (
-            f"DropViewOp must come before CreateMaterializedViewOp when the "
-            f"view type changes (regular -> materialized); got drop_idx="
-            f"{drop_idx}, create_idx={create_idx}; ops="
-            f"{[(type(o).__name__, o.name) for o in upgrade_ops.ops]}"
-        )
+        assert drop_idx is not None, f"ops={[(type(o).__name__, o.name) for o in upgrade_ops.ops]}"
+        assert create_idx is not None, f"ops={[(type(o).__name__, o.name) for o in upgrade_ops.ops]}"
+        assert drop_idx < create_idx, f"got drop_idx={drop_idx}, create_idx={create_idx}; ops={[(type(o).__name__, o.name) for o in upgrade_ops.ops]}"
 
 
 # ===========================================================================
@@ -3741,12 +3574,7 @@ class TestCrossTypeReorderDependentViewsDropOrder:
         # Drops must be in reverse dependency order: A before B.
         drop_a_idx = names_and_types.index(("DropViewOp", "a"))
         drop_b_idx = names_and_types.index(("DropViewOp", "b"))
-        assert drop_a_idx < drop_b_idx, (
-            f"Drops must be in reverse dependency order (A before B) so "
-            f"dropping B does not fail while A still references it "
-            f"(cascade=False). Got drops at indices {drop_a_idx}, "
-            f"{drop_b_idx}; ops={names_and_types!r}"
-        )
+        assert drop_a_idx < drop_b_idx, f"got indices {drop_a_idx}, {drop_b_idx}; ops={names_and_types!r}"
 
         # Creates must stay in dependency order: B before A.
         create_b_idx = names_and_types.index(
@@ -3755,18 +3583,10 @@ class TestCrossTypeReorderDependentViewsDropOrder:
         create_a_idx = names_and_types.index(
             ("CreateMaterializedViewOp", "a")
         )
-        assert create_b_idx < create_a_idx, (
-            f"Creates must stay in dependency order (B before A). "
-            f"Got creates at indices {create_b_idx}, {create_a_idx}; "
-            f"ops={names_and_types!r}"
-        )
+        assert create_b_idx < create_a_idx, f"got indices {create_b_idx}, {create_a_idx}; ops={names_and_types!r}"
 
         # All drops must come before all creates.
-        assert drop_b_idx < create_b_idx, (
-            f"All drops must precede all creates so the old-type view "
-            f"does not exist when the new-type CREATE runs. "
-            f"ops={names_and_types!r}"
-        )
+        assert drop_b_idx < create_b_idx, f"ops={names_and_types!r}"
 
 
 # ===========================================================================
@@ -3808,12 +3628,7 @@ class TestCrossTypeReorderDeterministic:
         # (in ops appearance order = names order).
         expected_order = names + names
 
-        assert result_names_in_order == expected_order, (
-            f"Cross-type reordering is non-deterministic or wrong order. "
-            f"Got {result_names_in_order!r}, expected "
-            f"{expected_order!r} (all drops in `ops` order, then all "
-            f"creates in `ops` order)."
-        )
+        assert result_names_in_order == expected_order, f"got {result_names_in_order!r}, expected {expected_order!r}"
 
 
 class TestCrossTypeReorderPreservesDependencyOrder:
@@ -3866,11 +3681,7 @@ class TestCrossTypeReorderPreservesDependencyOrder:
             ("CreateMaterializedViewOp", "v"),
             ("CreateViewOp", "w"),
         ]
-        assert names_and_types == expected, (
-            f"Cross-type reorder must insert V's drop+create pair at V's "
-            f"original position (index 0) so W's create stays AFTER V's "
-            f"new type. Got {names_and_types!r}, expected {expected!r}."
-        )
+        assert names_and_types == expected, f"got {names_and_types!r}, expected {expected!r}"
 
     def test_non_cross_type_op_between_two_cross_type_pairs_preserves_order(self):
         """A non-cross-type op sitting between two cross-type pairs must
@@ -3897,11 +3708,7 @@ class TestCrossTypeReorderPreservesDependencyOrder:
             ("CreateMaterializedViewOp", "x"),
             ("CreateViewOp", "w"),
         ]
-        assert names_and_types == expected, (
-            f"Non-cross-type op W must stay in its original relative "
-            f"position after all cross-type ops. Got "
-            f"{names_and_types!r}, expected {expected!r}."
-        )
+        assert names_and_types == expected, f"got {names_and_types!r}, expected {expected!r}"
 
 
 # ===========================================================================
@@ -3929,10 +3736,7 @@ class TestCreateMaterializedViewOpCascade:
         )
         rev = op.reverse()
         assert isinstance(rev, DropMaterializedViewOp)
-        assert rev.cascade is False, (
-            f"Expected cascade=False from reverse() when "
-            f"cascade_on_drop=False, got {rev.cascade!r}"
-        )
+        assert rev.cascade is False, f"got {rev.cascade!r}"
 
     def test_op_create_materialized_view_passes_cascade_on_drop(self):
         """op.create_materialized_view(..., cascade_on_drop=False) must
@@ -3978,10 +3782,7 @@ class TestCreateViewOpCascadePassthrough:
         # [operations, name, definition, <keyword-only...>]. The keyword-only
         # params start after `definition` (index 3).
         kw_names = [p.name for p in params[3:]]
-        assert kw_names == ["schema", "cascade_on_drop"], (
-            f"Expected keyword-only params "
-            f"['schema', 'cascade_on_drop'], got {kw_names!r}"
-        )
+        assert kw_names == ["schema", "cascade_on_drop"], f"got {kw_names!r}"
 
 
 # ===========================================================================
@@ -4049,13 +3850,7 @@ class TestCanonicalizationColumnStructureChange:
             for op in upgrade_ops.ops
             if isinstance(op, ReplaceViewOp) and op.name == "col_change_view"
         ]
-        assert len(replace_ops) == 1, (
-            f"Regression: column-structure change for col_change_view "
-            f"was silently missed (CREATE OR REPLACE VIEW failed during "
-            f"canonicalization and the view was skipped). Expected a "
-            f"ReplaceViewOp; got {replace_ops}. "
-            f"All ops: {[(type(o).__name__, o.name) for o in upgrade_ops.ops]}"
-        )
+        assert len(replace_ops) == 1, f"got {replace_ops}; all ops: {[(type(o).__name__, o.name) for o in upgrade_ops.ops]}"
 
 
 _REPLACE_EXEC_VIEW_NAMES = ["replace_exec_view"]
@@ -4110,10 +3905,7 @@ class TestReplaceViewOpExecutionColumnStructureChange:
             )
         )
         columns = [row[0] for row in result]
-        assert columns == ["id"], (
-            f"After replace_view removing 'name' column, the view "
-            f"should have only the 'id' column; got {columns}"
-        )
+        assert columns == ["id"], f"got {columns}"
 
 
 # ===========================================================================
@@ -4196,10 +3988,7 @@ class TestOpSchemaNormalization:
     )
     def test_empty_string_schema_normalized_to_none(self, op_class, kwargs):
         op = op_class("v", schema="", **kwargs)
-        assert op.schema is None, (
-            f"{op_class.__name__}(schema='') must normalize schema to None; "
-            f"got {op.schema!r}"
-        )
+        assert op.schema is None, f"got {op.schema!r}"
 
 
 # ===========================================================================
@@ -4350,10 +4139,7 @@ class TestCrossSchemaCreateOrdering:
             create_ops = [
                 op for op in upgrade_ops.ops if isinstance(op, CreateViewOp)
             ]
-            assert len(create_ops) == 2, (
-                f"Expected 2 CreateViewOps, got {len(create_ops)}: "
-                f"{[(op.name, op.schema) for op in create_ops]}"
-            )
+            assert len(create_ops) == 2, f"got {len(create_ops)}: {[(op.name, op.schema) for op in create_ops]}"
 
             base_idx = next(
                 i for i, op in enumerate(create_ops)
@@ -4363,9 +4149,5 @@ class TestCrossSchemaCreateOrdering:
                 i for i, op in enumerate(create_ops)
                 if op.name == "dependent_view" and op.schema == "schema_a"
             )
-            assert base_idx < dep_idx, (
-                f"base_view (schema_b) must be created before "
-                f"dependent_view (schema_a) when schemas={schema_order}. "
-                f"Op order: {[(op.name, op.schema) for op in create_ops]}"
-            )
+            assert base_idx < dep_idx, f"schemas={schema_order}; ops: {[(op.name, op.schema) for op in create_ops]}"
 
