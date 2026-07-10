@@ -149,7 +149,7 @@ def get_dependent_views(connection: sa.engine.Connection, name: str, schema: str
         "{view_catalog_join} "
         "WHERE ref.relname = :view_name "
         "AND dep.refobjid != dep.objid "
-        "AND c.relname != :view_name "
+        "AND c.oid != ref.oid "
         "AND cn.nspname = v.schemaname"
         + schema_clause
     )

@@ -451,6 +451,83 @@ def _teardown_same_name_dependents(connection):
     )
 
 
+def _setup_cross_schema_same_name_dependent(connection):
+    """A cross-schema same-name dependent and a self-referencing view.
+
+    ``test_xs_dep_a.dep_test`` selects from a base table.
+    ``test_xs_dep_b.dep_test`` (same name, different schema) selects from
+    ``test_xs_dep_a.dep_test`` — a legitimate cross-schema dependent that
+    shares the referenced view's name.
+
+    With the old ``c.relname != :view_name`` filter, the cross-schema
+    dependent was excluded because its name matched the referenced view's
+    name, even though it is a different view (different OID). The
+    OID-based filter ``c.oid != ref.oid`` correctly includes it while
+    still excluding true self-references.
+    """
+    for schema in ("test_xs_dep_a", "test_xs_dep_b"):
+        connection.execute(sa.text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
+    connection.execute(sa.text("CREATE SCHEMA test_xs_dep_a"))
+    connection.execute(sa.text("CREATE SCHEMA test_xs_dep_b"))
+
+    connection.execute(
+        sa.text(
+            "CREATE TABLE test_xs_dep_a.base_t (id SERIAL PRIMARY KEY)"
+        )
+    )
+    connection.execute(
+        sa.text(
+            "CREATE VIEW test_xs_dep_a.dep_test AS "
+            "SELECT id FROM test_xs_dep_a.base_t"
+        )
+    )
+    connection.execute(
+        sa.text(
+            "CREATE VIEW test_xs_dep_b.dep_test AS "
+            "SELECT id FROM test_xs_dep_a.dep_test"
+        )
+    )
+    connection.commit()
+
+
+def _teardown_cross_schema_same_name_dependent(connection):
+    _safe_drop(
+        connection,
+        "DROP SCHEMA IF EXISTS test_xs_dep_a CASCADE",
+        "DROP SCHEMA IF EXISTS test_xs_dep_b CASCADE",
+    )
+
+
+@pytest.mark.infrastructure
+def test_get_dependent_views_cross_schema_same_name_dependent(connection):
+    """Cross-schema same-name dependent must not be over-suppressed.
+
+    When a view named ``dep_test`` in schema B selects from a view named
+    ``dep_test`` in schema A, the name-based filter
+    ``c.relname != :view_name`` incorrectly excludes the B view (its
+    name matches the referenced view's name). The OID-based filter
+    ``c.oid != ref.oid`` correctly includes it (different OIDs) while
+    excluding true self-references (same OID).
+    """
+    _setup_cross_schema_same_name_dependent(connection)
+    try:
+        dependents = get_dependent_views(connection, "dep_test")
+
+        xs_key = ("dep_test", "test_xs_dep_b")
+        assert xs_key in dependents, (
+            "expected cross-schema same-name dependent "
+            f"{xs_key!r} in result; got: {sorted(dependents.keys())}"
+        )
+
+        self_key = ("dep_test", "test_xs_dep_a")
+        assert self_key not in dependents, (
+            "referenced view must not appear as its own dependent; "
+            f"got: {sorted(dependents.keys())}"
+        )
+    finally:
+        _teardown_cross_schema_same_name_dependent(connection)
+
+
 @pytest.mark.infrastructure
 def test_get_dependent_views_same_name_across_schemas(connection):
     """Two dependents with the same name in different schemas must coexist.
