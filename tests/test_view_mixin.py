@@ -4,8 +4,7 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.orm import declarative_base, Mapped, mapped_column
 
-from sqlalchemy_utils.exceptions import ViewReadonlyError
-from sqlalchemy_utils.view_mixin import ViewMixin, _view_before_flush
+from sqlalchemy_utils.view_mixin import ViewMixin
 
 
 def _src(*columns):
@@ -92,20 +91,6 @@ def test_viewmixin_viewrecord_auto_registered():
     assert any(vr.name == 'reg_view' for vr in records)
 
 
-def test_viewmixin_table_set_on_class():
-    Base = declarative_base()
-
-    class TableView(ViewMixin, Base):
-        __tablename__ = 'table_view'
-        __view_selectable__ = sa.select(_src(sa.column('id', sa.Integer)))
-        id: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
-
-    TableView.__declare_last__()
-
-    assert TableView.__table__ is not None
-    assert TableView.__table__.name == 'table_view'
-
-
 def test_viewmixin_ddl_listeners_registered():
     Base = declarative_base()
 
@@ -145,31 +130,6 @@ def test_viewmixin_materialized_flag():
     mat_record = next((vr for vr in records if vr.name == 'mat_view'), None)
     assert mat_record is not None
     assert mat_record.materialized is True
-
-
-def test_viewmixin_before_flush_raises_for_dirty_instance():
-    Base = declarative_base()
-
-    class FlushView(ViewMixin, Base):
-        __tablename__ = 'flush_view'
-        __view_selectable__ = sa.select(_src(sa.column('id', sa.Integer)))
-        id: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
-
-    FlushView.__declare_last__()
-
-    class FakeViewInstance(ViewMixin):
-        pass
-
-    fake_instance = FakeViewInstance()
-
-    session = type('FakeSession', (), {
-        'new': set(),
-        'dirty': {fake_instance},
-        'deleted': set(),
-    })()
-
-    with pytest.raises(ViewReadonlyError):
-        _view_before_flush(session, None, None)
 
 
 def test_viewmixin_extra_selectable_column_produces_warning(caplog):

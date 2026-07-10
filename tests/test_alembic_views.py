@@ -183,25 +183,14 @@ def _find_view_listener(metadata: sa.MetaData, materialized: bool | None = None)
     listeners = list(metadata.dispatch.after_create)
 
     def _listener_materialized(listener) -> bool | None:
-        cv = getattr(listener, "__self__", None)
-        if isinstance(cv, CreateView):
-            return cv.materialized
+        if isinstance(listener, CreateView):
+            return listener.materialized
         return getattr(listener, "materialized", None)
 
     found = [
         listener
         for listener in listeners
-        if isinstance(getattr(listener, "__self__", None), CreateView)
-        and (materialized is None or _listener_materialized(listener) is materialized)
-    ]
-    if found:
-        return found[0]
-    found = [
-        listener
-        for listener in listeners
-        if hasattr(listener, "name")
-        and hasattr(listener, "replace")
-        and hasattr(listener, "selectable")
+        if isinstance(listener, CreateView)
         and (materialized is None or _listener_materialized(listener) is materialized)
     ]
     return found[0] if found else None
@@ -579,26 +568,25 @@ class TestReplaceViewOp:
         assert sqls[0] == "DROP VIEW IF EXISTS v1 CASCADE"
         assert sqls[1] == "CREATE VIEW v1 AS SELECT 2"
 
-    def test_replace_view_cascade_propagates_to_reverse(self):
-        """ReplaceViewOp.reverse() must propagate cascade=False."""
+    @pytest.mark.parametrize(
+        "cascade_value, expected",
+        [
+            pytest.param(False, False, id="cascade_false"),
+            pytest.param(None, True, id="cascade_default"),
+        ],
+    )
+    def test_replace_view_cascade_propagates_to_reverse(self, cascade_value, expected):
+        """ReplaceViewOp.reverse() must propagate cascade to the reversed op."""
+        kwargs = {"cascade": cascade_value} if cascade_value is not None else {}
         op = ReplaceViewOp(
-            "v", "SELECT 2", cascade=False, old_definition="SELECT 1"
+            "v", "SELECT 2", old_definition="SELECT 1", **kwargs
         )
         rev = op.reverse()
         assert isinstance(rev, ReplaceViewOp)
-        assert rev.cascade is False, (
-            f"reversed ReplaceViewOp.cascade should be False when original "
-            f"had cascade=False, got {rev.cascade!r}"
+        assert rev.cascade is expected, (
+            f"reversed ReplaceViewOp.cascade should be {expected}, "
+            f"got {rev.cascade!r}"
         )
-
-    def test_replace_view_cascade_default_propagates_to_reverse(self):
-        """ReplaceViewOp.reverse() must propagate the default cascade=True."""
-        op = ReplaceViewOp(
-            "v", "SELECT 2", old_definition="SELECT 1"
-        )
-        rev = op.reverse()
-        assert isinstance(rev, ReplaceViewOp)
-        assert rev.cascade is True
 
 
 class TestCreateMaterializedViewOp:
@@ -2635,39 +2623,32 @@ class TestDDLFormatting:
         sql = _compile_ddl(drop)
         assert sql.rstrip() == sql
 
-    def test_refresh_materialized_view_with_schema(self):
-        """refresh_materialized_view forwards schema to the DDL element."""
+    @pytest.mark.parametrize(
+        "schema, concurrently, expected_substring",
+        [
+            pytest.param("analytics", False, "analytics", id="with_schema"),
+            pytest.param(None, True, "CONCURRENTLY", id="concurrently"),
+        ],
+    )
+    def test_refresh_materialized_view(
+        self, schema, concurrently, expected_substring
+    ):
+        """refresh_materialized_view forwards schema/concurrently to the DDL element."""
         session = mock.MagicMock()
         refresh_materialized_view(
-            session, "my_mv", concurrently=False, schema="analytics"
+            session, "my_mv", concurrently=concurrently, schema=schema
         )
 
         assert session.execute.call_count == 1
         executed = session.execute.call_args[0][0]
         assert isinstance(executed, RefreshMaterializedView)
         assert executed.name == "my_mv"
-        assert executed.schema == "analytics"
-        assert executed.concurrently is False
+        assert executed.schema == schema
+        assert executed.concurrently is concurrently
 
         engine = sa.create_engine("sqlite:///:memory:")
         compiled = str(executed.compile(dialect=engine.dialect))
-        assert "analytics" in compiled
-
-    def test_refresh_materialized_view_concurrently(self):
-        """refresh_materialized_view with concurrently=True emits CONCURRENTLY."""
-        session = mock.MagicMock()
-        refresh_materialized_view(
-            session, "my_mv", concurrently=True, schema=None
-        )
-
-        assert session.execute.call_count == 1
-        executed = session.execute.call_args[0][0]
-        assert isinstance(executed, RefreshMaterializedView)
-        assert executed.concurrently is True
-
-        engine = sa.create_engine("sqlite:///:memory:")
-        compiled = str(executed.compile(dialect=engine.dialect))
-        assert "CONCURRENTLY" in compiled
+        assert expected_substring in compiled
 
 
 # ===========================================================================
@@ -4321,4 +4302,20 @@ class TestRuntimePositionalParams:
         sel = sa.select(sa.text("1"))
         table = create_materialized_view("mv", sel, md, cascade_on_drop=False)
         assert isinstance(table, sa.Table)
+
+
+class TestStringSelectableGuard:
+    """create_view / create_materialized_view reject string selectables with
+    a helpful TypeError directing the caller to wrap in sa.text().
+    """
+
+    def test_create_view_rejects_string_selectable(self):
+        md = sa.MetaData()
+        with pytest.raises(TypeError, match="sa.text"):
+            create_view("v", "SELECT 1", md)
+
+    def test_create_materialized_view_rejects_string_selectable(self):
+        md = sa.MetaData()
+        with pytest.raises(TypeError, match="sa.text"):
+            create_materialized_view("mv", "SELECT 1", md)
 
