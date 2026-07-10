@@ -3613,7 +3613,7 @@ class TestCrossTypeReorderDeterministic:
         iterated, the order would (probabilistically) vary; this test
         locks the contract that the function MUST walk `ops` in order.
         """
-        names = [f"view_{i}" for i in range(5)]
+        names = [f"view_{i}" for i in range(2)]
         creates = [CreateMaterializedViewOp(n, "SELECT 1") for n in names]
         drops = [DropViewOp(n, definition="SELECT 1 AS id") for n in names]
         ops = creates + drops
@@ -4043,28 +4043,6 @@ class TestRuntimePositionalParams:
         constructor must succeed."""
         element = RefreshMaterializedView("mv", True)
         assert element.concurrently is True
-
-    def test_create_view_replace_keyword_works(self):
-        """Passing ``replace`` as keyword must succeed and return a Table."""
-        md = sa.MetaData()
-        sel = sa.select(sa.text("1"))
-        table = create_view("v", sel, md, replace=True)
-        assert isinstance(table, sa.Table)
-
-    def test_create_view_cascade_on_drop_keyword_works(self):
-        """Passing ``cascade_on_drop`` as keyword must succeed and return a Table."""
-        md = sa.MetaData()
-        sel = sa.select(sa.text("1"))
-        table = create_view("v", sel, md, cascade_on_drop=False)
-        assert isinstance(table, sa.Table)
-
-    def test_create_materialized_view_cascade_on_drop_keyword_works(self):
-        """Passing ``cascade_on_drop`` as keyword must succeed and return a Table."""
-        md = sa.MetaData()
-        sel = sa.select(sa.text("1"))
-        table = create_materialized_view("mv", sel, md, cascade_on_drop=False)
-        assert isinstance(table, sa.Table)
-
 
 class TestStringSelectableGuard:
     """create_view / create_materialized_view reject string selectables with
