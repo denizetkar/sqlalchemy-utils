@@ -6,7 +6,9 @@ View Migrations
    If upgrading from a previous version, ``__view_cascade_on_drop__`` has
    been renamed to ``__view_cascade__``. The old name is no longer honored.
    ``CreateViewOp(replace=True)`` is deprecated; use ``op.replace_view()``
-   instead.
+   instead. Only the Alembic op ``CreateViewOp(replace=True)`` is deprecated;
+   the runtime :func:`~sqlalchemy_utils.view.create_view` ``replace=True`` DDL
+   helper remains supported.
 
 Quick start
 -----------
@@ -31,8 +33,12 @@ Operations reference
 
 .. note::
 
-   All operation classes and :class:`~sqlalchemy_utils.view_record.ViewRecord`
-   are also importable directly from ``sqlalchemy_utils.alembic``.
+   All operation classes, :class:`~sqlalchemy_utils.view_record.ViewRecord`,
+   :func:`~sqlalchemy_utils.alembic.comparator.register_view_comparator`, and
+   the advanced helpers (``resolve_create_order``, ``resolve_drop_order``,
+   ``get_database_views``, ``get_database_materialized_views``,
+   ``get_dependent_views``) are all importable directly from
+   ``sqlalchemy_utils.alembic``.
 
 .. autoclass:: sqlalchemy_utils.alembic.operations.CreateViewOp
    :members: create_view, reverse

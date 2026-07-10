@@ -22,7 +22,9 @@ Unreleased
   ``context.configure()``; see the View Migrations guide.
 - Add ``ViewMixin`` declarative mixin (with ``refresh()`` for materialized views)
   for typed ORM view classes
-- Add ``ViewReadonlyError`` exception (subclasses ``sa.exc.InvalidRequestError``)
+- **Breaking:** Add ``ViewReadonlyError`` exception (subclasses ``sa.exc.InvalidRequestError``);
+  raised via a ``before_flush`` listener on ``ViewMixin`` — previously writes to view-backed
+  tables were undefined, now they raise.
 - Add ``__view_schema__`` class attribute for multi-schema support
 - Add ``__view_aliases__`` class attribute for materialized views — a
   ``{source_column: target_key}`` mapping mirroring the ``aliases``
