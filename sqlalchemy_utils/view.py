@@ -331,8 +331,8 @@ def create_view(
     name: str,
     selectable: str | ClauseElement,
     metadata: sa.MetaData,
-    cascade_on_drop: bool = True,
     *,
+    cascade_on_drop: bool = True,
     replace: bool = False,
     schema: str | None = None,
 ) -> sa.Table:

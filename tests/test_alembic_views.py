@@ -4228,6 +4228,13 @@ class TestRuntimeKeywordOnlyParams:
         with pytest.raises(TypeError):
             create_view("v", sel, md, True, True)
 
+    def test_create_view_cascade_on_drop_is_keyword_only(self):
+        """Passing ``cascade_on_drop`` positionally must raise TypeError."""
+        md = sa.MetaData()
+        sel = sa.select(sa.text("1"))
+        with pytest.raises(TypeError):
+            create_view("v", sel, md, False)
+
     def test_create_materialized_view_cascade_on_drop_is_keyword_only(self):
         """Passing ``cascade_on_drop`` positionally must raise TypeError."""
         md = sa.MetaData()
@@ -4240,6 +4247,13 @@ class TestRuntimeKeywordOnlyParams:
         md = sa.MetaData()
         sel = sa.select(sa.text("1"))
         table = create_view("v", sel, md, replace=True)
+        assert isinstance(table, sa.Table)
+
+    def test_create_view_cascade_on_drop_keyword_works(self):
+        """Passing ``cascade_on_drop`` as keyword must succeed and return a Table."""
+        md = sa.MetaData()
+        sel = sa.select(sa.text("1"))
+        table = create_view("v", sel, md, cascade_on_drop=False)
         assert isinstance(table, sa.Table)
 
     def test_create_materialized_view_cascade_on_drop_keyword_works(self):
