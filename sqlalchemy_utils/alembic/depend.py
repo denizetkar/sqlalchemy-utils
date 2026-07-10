@@ -30,49 +30,75 @@ def _build_dependency_graph(
     db_views: dict[str, str] | None,
     *,
     dialect: sa.engine.Dialect | None = None,
-) -> dict[str, set[str]]:
-    """Build ``{name: {dep_name, ...}}`` by word-boundary matching each view's
-    definition against other view names (model + DB).  *db_views* names are
-    potential dependencies but excluded from sort output.  *dialect* is
-    forwarded to ``compiled_definition`` so scanning matches emitted SQL."""
-    # All known view names (model + DB) for matching
+) -> dict[tuple[str, str | None], set[tuple[str, str | None]]]:
+    """Build ``{(name, schema): {(dep_name, dep_schema), ...}}`` by
+    word-boundary matching each view's definition against other view names
+    (model + DB).  *db_views* names are potential dependencies but excluded
+    from sort output.  *dialect* is forwarded to ``compiled_definition`` so
+    scanning matches emitted SQL.
+
+    Graph keys are ``(name, schema)`` tuples so that cross-schema same-name
+    views remain distinct nodes.  Regex matching stays bare-name based (a
+    known limitation); when a matched bare name maps to multiple model views
+    in different schemas, ALL of them are added as dependency targets.
+    """
     model_names: set[str] = {vr.name for vr in view_records}
     db_names: set[str] = set(db_views.keys()) - model_names  # only DB-only
     all_known = model_names | db_names
 
-    graph: dict[str, set[str]] = {}
+    # Map bare name -> set of (name, schema) keys for model views.
+    # DB-only views have no schema, so they stay as bare-name targets that
+    # are filtered out of the result by _toposort.
+    name_to_keys: dict[str, set[tuple[str, str | None]]] = {}
+    for vr in view_records:
+        name_to_keys.setdefault(vr.name, set()).add((vr.name, vr.schema))
+
+    graph: dict[tuple[str, str | None], set[tuple[str, str | None]]] = {}
 
     for vr in view_records:
         definition = vr.compiled_definition(dialect=dialect)
-        deps: set[str] = set()
+        deps: set[tuple[str, str | None]] = set()
         for other_name in all_known:
             if other_name == vr.name:
                 continue  # skip self-reference
             if re.search(rf"\b{re.escape(other_name)}\b", definition):
-                deps.add(other_name)
-        graph.setdefault(vr.name, set()).update(deps)
+                # Resolve the matched bare name to graph keys. For model
+                # views, add all (name, schema) variants. For DB-only views,
+                # other_name is not in name_to_keys, so we add the bare name
+                # as a placeholder edge target (filtered out of the result
+                # by _toposort since it has no matching ViewRecord).
+                matched_keys = name_to_keys.get(other_name)
+                if matched_keys is not None:
+                    deps.update(matched_keys)
+                else:
+                    deps.add((other_name, None))
+        graph.setdefault((vr.name, vr.schema), set()).update(deps)
 
     return graph
 
 
-def _records_by_name(
+def _records_by_key(
     view_records: list[ViewRecord],
-) -> dict[str, list[ViewRecord]]:
-    """Return ``{name: [ViewRecord, ...]}`` preserving all records."""
-    result: dict[str, list[ViewRecord]] = {}
+) -> dict[tuple[str, str | None], list[ViewRecord]]:
+    """Return ``{(name, schema): [ViewRecord, ...]}`` preserving all records."""
+    result: dict[tuple[str, str | None], list[ViewRecord]] = {}
     for vr in view_records:
-        result.setdefault(vr.name, []).append(vr)
+        result.setdefault((vr.name, vr.schema), []).append(vr)
     return result
 
 
-def _reverse_edges(graph: dict[str, set[str]]) -> dict[str, set[str]]:
+def _reverse_edges(
+    graph: dict[tuple[str, str | None], set[tuple[str, str | None]]],
+) -> dict[tuple[str, str | None], set[tuple[str, str | None]]]:
     """Return a new graph with every edge reversed.
 
     *graph* maps ``{node: {predecessor, ...}}`` (node depends on its
     predecessors).  The returned graph swaps the direction of each edge so
     that ``TopologicalSorter`` on it yields dependents before dependencies.
     """
-    reversed_graph: dict[str, set[str]] = {node: set() for node in graph}
+    reversed_graph: dict[tuple[str, str | None], set[tuple[str, str | None]]] = {
+        node: set() for node in graph
+    }
     for node, predecessors in graph.items():
         for predecessor in predecessors:
             reversed_graph.setdefault(predecessor, set()).add(node)
@@ -99,26 +125,29 @@ def _toposort(
     try:
         # ``static_order()`` returns an iterator; ``prepare()`` would also
         # catch cycles but ``static_order`` is the convenient public API.
-        sorted_names = list(sorter.static_order())
+        sorted_keys = list(sorter.static_order())
     except CycleError as exc:
         # exc.args is ``(message, cycle_nodes)`` where ``cycle_nodes`` is a
-        # list like ``['view_a', 'view_b', 'view_a']``. Format it as a
-        # readable chain for a helpful error message.
+        # list like ``[('view_a', None), ('view_b', None), ('view_a', None)]``.
+        # Format it as a readable chain for a helpful error message.
         cycle_nodes = exc.args[1] if len(exc.args) > 1 else exc.args
         if cycle_nodes:
-            cycle_chain = " -> ".join(str(n) for n in cycle_nodes)
+            cycle_chain = " -> ".join(
+                f"{n[0]}.{n[1]}" if isinstance(n, tuple) and n[1] else str(n)
+                for n in cycle_nodes
+            )
             msg = f"Circular dependency detected among views: {cycle_chain}"
         else:
             msg = "Circular dependency detected among views"
         raise ValueError(msg) from exc
 
-    name_to_record = _records_by_name(view_records)
+    key_to_record = _records_by_key(view_records)
 
-    # Filter out any names that are only in db_views (not in model records)
+    # Filter out any keys that are only in db_views (not in model records)
     result: list[ViewRecord] = []
-    for name in sorted_names:
-        if name in name_to_record:
-            result.extend(name_to_record[name])
+    for key in sorted_keys:
+        if key in key_to_record:
+            result.extend(key_to_record[key])
     return result
 
 
