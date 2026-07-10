@@ -15,7 +15,9 @@ from sqlalchemy_utils.view_record import ViewRecord
 # sqlalchemy_utils.alembic.operations and used by alembic.comparator).
 # ---------------------------------------------------------------------------
 
-def _quote_qualified_name(dialect, name, schema=None):
+def _quote_qualified_name(
+    dialect: sa.engine.Dialect, name: str, schema: str | None = None
+) -> str:
     """Return a schema-qualified, properly quoted identifier.
 
     When *schema* is given the result is ``"schema"."name"`` (both parts

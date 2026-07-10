@@ -24,6 +24,7 @@ Usage in ``env.py``::
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 import sqlalchemy as sa
 from alembic.autogenerate import comparators
@@ -339,7 +340,14 @@ def _warn_if_dependents(
         )
 
 
-def _safe_resolve(records, db, resolver_fn, action_label, *, dialect=None):
+def _safe_resolve(
+    records: list[ViewRecord],
+    db: dict[str, str],
+    resolver_fn: Callable[..., list[ViewRecord]],
+    action_label: str,
+    *,
+    dialect: sa.engine.Dialect | None = None,
+) -> list[ViewRecord]:
     """Resolve view ordering, falling back to model order on failure.
 
     Wraps *resolver_fn* (e.g. :func:`~sqlalchemy_utils.alembic.depend.resolve_create_order`) in a
