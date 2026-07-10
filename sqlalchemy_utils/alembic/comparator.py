@@ -251,7 +251,7 @@ def _diff_views(
     db_defs: dict[str, str],
     schema: str | None,
     is_materialized: bool,
-    cascade_by_name: dict[tuple[str, str | None], bool] | None = None,
+    cascade_by_name: dict[tuple[str, str | None], bool],
 ) -> list:
     """Diff model view definitions against DB state, returning create/replace ops.
 
@@ -262,8 +262,6 @@ def _diff_views(
     ``cascade_by_name`` propagates each model's ``cascade_on_drop`` preference
     to the emitted Create/Replace ops (default ``True``, behavior-preserving).
     """
-    if cascade_by_name is None:
-        cascade_by_name = {}
     ops: list = []
     for name, definition in model_defs.items():
         if name not in db_defs:
@@ -319,7 +317,7 @@ def _warn_if_dependents(
     """
     try:
         dependents = get_dependent_views(connection, name, schema=schema)
-    except Exception as exc:
+    except sa.exc.SQLAlchemyError as exc:
         log.warning(
             "Failed to query dependent views for %r: %s", name, exc
         )
@@ -699,14 +697,6 @@ def register_view_comparator() -> None:
     global _registered
     if _registered:
         return
-    from . import comparator, operations  # noqa: F401
+    from . import renderer  # noqa: F401
     comparators.dispatch_for("schema")(compare_views)
-    try:
-        from . import renderer  # noqa: F401
-    except ImportError as exc:
-        log.warning(
-            "Failed to import renderer module; autogenerate will detect but "
-            "not render view operations: %s",
-            exc,
-        )
     _registered = True
