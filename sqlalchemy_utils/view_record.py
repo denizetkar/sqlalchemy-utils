@@ -27,7 +27,7 @@ class ViewRecord:
     autogenerate comparator reads during ``alembic revision --autogenerate``.
 
     :param name: Name of the view.
-    :param selectable: SQLAlchemy selectable or string SQL defining the view body.
+    :param selectable: SQLAlchemy selectable (e.g. ``select()``) defining the view body.
     :param schema: Optional schema name; ``None`` means the default schema.
     :param materialized: When ``True``, this record describes a materialized view.
     :param replace: When ``True``, runtime DDL emits ``CREATE OR REPLACE VIEW``.
@@ -52,7 +52,7 @@ class ViewRecord:
         # `record.compiled_definition()` returns the compiled SQL string.
     """
     name: str
-    selectable: str | sa.sql.ClauseElement
+    selectable: sa.sql.ClauseElement
     schema: str | None = None
     materialized: bool = False
     replace: bool = False

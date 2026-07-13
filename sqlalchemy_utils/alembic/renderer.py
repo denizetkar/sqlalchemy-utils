@@ -74,9 +74,6 @@ def render_create_view(autogen_context: AutogenContext, op: CreateViewOp) -> str
 @renderers.dispatch_for(DropViewOp)
 def render_drop_view(autogen_context: AutogenContext, op: DropViewOp) -> str:
     """Render a DropViewOp as op.drop_view(...) code."""
-    # materialized flag intentionally not rendered: DropViewOp is for
-    # regular views only; MV drops use DropMaterializedViewOp, and
-    # op.drop_view rejects materialized=True.
     return (
         f"op.drop_view({op.name!r}{_schema_part(op)}"
         f"{_cascade_part(op)}{_definition_part(op)})"
