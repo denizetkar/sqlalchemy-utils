@@ -1336,30 +1336,25 @@ class TestComparatorSavepointRollback:
 class TestComparatorDDLError:
 
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_invalid_view_skipped_with_warning(self, connection):
-        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
-        _drop_base_table(connection)
-        try:
+    def test_invalid_view_skipped_with_warning(self, cmp_test_base):
+        connection = cmp_test_base
 
-            metadata = sa.MetaData()
-            metadata.info["sqlalchemy_utils_views"] = [
-                ViewRecord(
-                    name="cmp_test_view_bad",
-                    selectable="SELECT id FROM nonexistent_table_xyz",
-                )
-            ]
+        metadata = sa.MetaData()
+        metadata.info["sqlalchemy_utils_views"] = [
+            ViewRecord(
+                name="cmp_test_view_bad",
+                selectable="SELECT id FROM nonexistent_table_xyz",
+            )
+        ]
 
-            upgrade_ops = _run_comparator(connection, metadata)
+        upgrade_ops = _run_comparator(connection, metadata)
 
-            bad_view_ops = [
-                op
-                for op in upgrade_ops.ops
-                if getattr(op, "name", None) == "cmp_test_view_bad"
-            ]
-            assert len(bad_view_ops) == 0, f"got ops: {bad_view_ops}"
-        finally:
-            _drop_views(connection, _CMP_TEST_VIEW_NAMES)
-            _drop_base_table(connection)
+        bad_view_ops = [
+            op
+            for op in upgrade_ops.ops
+            if getattr(op, "name", None) == "cmp_test_view_bad"
+        ]
+        assert len(bad_view_ops) == 0, f"got ops: {bad_view_ops}"
 
 
 # ===========================================================================
@@ -1381,24 +1376,21 @@ class TestProgrammingErrorPropagates:
     swallowed by the broad except in ``_canonicalize_all_views``."""
 
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_programming_error_propagates(self, connection):
-        _drop_views(connection, _CMP_TEST_VIEW_NAMES)
-        _drop_base_table(connection)
-        try:
-            metadata = sa.MetaData()
-            metadata.info["sqlalchemy_utils_views"] = [
-                ViewRecord(
-                    name="broken_view_for_dialect_test",
-                    selectable=_BreakingSelectable(exc_type=TypeError),
-                    schema=None,
-                ),
-            ]
+    def test_programming_error_propagates(self, view_cleanup_factory):
+        connection = view_cleanup_factory(
+            ["broken_view_for_dialect_test"], create_base=True
+        )
+        metadata = sa.MetaData()
+        metadata.info["sqlalchemy_utils_views"] = [
+            ViewRecord(
+                name="broken_view_for_dialect_test",
+                selectable=_BreakingSelectable(exc_type=TypeError),
+                schema=None,
+            ),
+        ]
 
-            with pytest.raises(TypeError):
-                _run_comparator(connection, metadata, schemas=[None])
-        finally:
-            _drop_views(connection, _CMP_TEST_VIEW_NAMES)
-            _drop_base_table(connection)
+        with pytest.raises(TypeError):
+            _run_comparator(connection, metadata, schemas=[None])
 
 
 # ===========================================================================
@@ -4419,24 +4411,19 @@ class TestGetDatabaseViewsWithExplicitSchema:
     views in the given schema, keyed by view name."""
 
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_get_database_views_with_explicit_schema(self, connection):
-        _drop_views(connection, ["schema_filter_view"])
-        _create_base_table(connection)
-        try:
-            connection.execute(
-                sa.text(
-                    "CREATE VIEW schema_filter_view AS "
-                    "SELECT id FROM _cmp_test_base"
-                )
+    def test_get_database_views_with_explicit_schema(self, view_cleanup_factory):
+        connection = view_cleanup_factory(["schema_filter_view"], create_base=True)
+        connection.execute(
+            sa.text(
+                "CREATE VIEW schema_filter_view AS "
+                "SELECT id FROM _cmp_test_base"
             )
-            connection.commit()
+        )
+        connection.commit()
 
-            views = get_database_views(connection, schema="public")
-            assert "schema_filter_view" in views
-            assert "SELECT" in views["schema_filter_view"].upper()
-        finally:
-            _drop_views(connection, ["schema_filter_view"])
-            _drop_base_table(connection)
+        views = get_database_views(connection, schema="public")
+        assert "schema_filter_view" in views
+        assert "SELECT" in views["schema_filter_view"].upper()
 
 
 # ===========================================================================
@@ -4488,4 +4475,174 @@ class TestCreateMaterializedViewWithIndexes:
         indexes = sa.inspect(engine).get_indexes("mv_name")
         index_names = [idx["name"] for idx in indexes]
         assert "idx_col" in index_names, f"got {index_names!r}"
+
+
+# ===========================================================================
+# _safe_resolve: circular dependency fallback
+# ===========================================================================
+
+class TestSafeResolveHandlesCircularDependency:
+    """``_safe_resolve`` must fall back to model order when
+    ``resolve_create_order`` raises ``ValueError`` (``CycleError``) due to a
+    circular view-on-view dependency, logging a warning instead of
+    propagating the error and aborting autogenerate.
+    """
+
+    def test_circular_dependency_falls_back_to_model_order(self, caplog):
+        records = [
+            ViewRecord(
+                name="a",
+                selectable="SELECT * FROM b",
+                schema=None,
+            ),
+            ViewRecord(
+                name="b",
+                selectable="SELECT * FROM a",
+                schema=None,
+            ),
+        ]
+
+        with caplog.at_level(
+            logging.WARNING, logger="sqlalchemy_utils.alembic.comparator"
+        ):
+            result = _safe_resolve(
+                records,
+                {},
+                resolve_create_order,
+                "creating",
+                dialect=sa.dialects.postgresql.dialect(),
+            )
+
+        assert result == records, f"got {result}"
+        warnings = [
+            rec for rec in caplog.records if rec.levelno >= logging.WARNING
+        ]
+        assert warnings, f"got {[(rec.levelname, rec.message) for rec in caplog.records]}"
+        assert any(
+            "ircular" in rec.message for rec in warnings
+        ), f"got {[(rec.levelname, rec.message) for rec in warnings]}"
+
+
+# ===========================================================================
+# pg_catalog: get_database_materialized_views with explicit schema
+# ===========================================================================
+
+class TestGetDatabaseMaterializedViewsWithExplicitSchema:
+    """get_database_materialized_views(connection, schema="public") must
+    return only the materialized views in the given schema, keyed by name."""
+
+    @pytest.mark.usefixtures("postgresql_dsn")
+    def test_get_database_materialized_views_with_explicit_schema(
+        self, view_cleanup_factory
+    ):
+        connection = view_cleanup_factory(["schema_filter_mv"], create_base=True)
+        connection.execute(
+            sa.text(
+                "CREATE MATERIALIZED VIEW schema_filter_mv AS "
+                "SELECT id FROM _cmp_test_base"
+            )
+        )
+        connection.commit()
+
+        mvs = get_database_materialized_views(connection, schema="public")
+        assert "schema_filter_mv" in mvs
+        assert "SELECT" in mvs["schema_filter_mv"].upper()
+
+
+# ===========================================================================
+# create_materialized_view: aliases propagate to column keys and ViewRecord
+# ===========================================================================
+
+class TestCreateMaterializedViewWithAliases:
+    """``create_materialized_view`` must apply *aliases* to the backing
+    table's column keys AND store them on the registered ViewRecord so the
+    comparator and renderer can round-trip the alias mapping."""
+
+    def test_create_materialized_view_with_aliases(self):
+        metadata = sa.MetaData()
+        source = sa.Table(
+            "mv_alias_src", metadata,
+            sa.Column("old_col", sa.Integer, primary_key=True),
+        )
+        mv_table = create_materialized_view(
+            "test_mv",
+            sa.select(source.c.old_col),
+            metadata,
+            aliases={"old_col": "new_col"},
+        )
+
+        assert "new_col" in mv_table.columns
+        assert mv_table.columns["new_col"].key == "new_col"
+
+        records = metadata.info["sqlalchemy_utils_views"]
+        mv_record = next(r for r in records if r.name == "test_mv")
+        assert mv_record.aliases == {"old_col": "new_col"}
+
+
+# ===========================================================================
+# compare_views: dedup removes duplicate view ops
+# ===========================================================================
+
+class TestDedupRemovesDuplicateViewOps:
+    """The dedup loop at the end of ``compare_views`` must collapse
+    duplicate view ops (same family + name + schema) into a single op,
+    while preserving non-view ops interleaved with them."""
+
+    def test_dedup_removes_duplicate_view_ops(self):
+        existing_ops = [
+            DropViewOp("dup_view", definition="SELECT 1"),
+            DropViewOp("dup_view", definition="SELECT 1"),
+            DropViewOp("dup_view", definition="SELECT 1"),
+        ]
+        autogen_context, upgrade_ops = _make_mock_autogen_context(
+            existing_ops=existing_ops
+        )
+
+        with _patch_comparator(db_views={"dup_view": "SELECT 1"}):
+            compare_views(autogen_context, upgrade_ops, [None])
+
+        dup_drops = [
+            op for op in upgrade_ops.ops
+            if isinstance(op, DropViewOp) and op.name == "dup_view"
+        ]
+        assert len(dup_drops) == 1, (
+            f"expected 1 DropViewOp('dup_view') after dedup, "
+            f"got {len(dup_drops)}: {[(type(o).__name__, getattr(o, 'name', None)) for o in upgrade_ops.ops]}"
+        )
+
+
+# ===========================================================================
+# compare_views: whitespace-only definition difference does not replace
+# ===========================================================================
+
+class TestWhitespaceOnlyDifferenceNoReplace:
+    """When the DB and model definitions differ only in surrounding
+    whitespace, ``_diff_views`` compares ``.strip()``-ed strings, so no
+    ``ReplaceViewOp`` must be emitted."""
+
+    def test_whitespace_only_difference_no_replace(self):
+        autogen_context, upgrade_ops = _make_mock_autogen_context(
+            model_views=[
+                ViewRecord(
+                    name="ws_view",
+                    selectable="SELECT 1",
+                    schema=None,
+                ),
+            ]
+        )
+
+        db_views = {"ws_view": "  SELECT 1  "}
+        canonical_return = ({"ws_view": "SELECT 1"}, {}, set())
+        with _patch_comparator(
+            db_views=db_views, canonical_return=canonical_return
+        ):
+            compare_views(autogen_context, upgrade_ops, [None])
+
+        replace_ops = [
+            op for op in upgrade_ops.ops if isinstance(op, ReplaceViewOp)
+        ]
+        assert replace_ops == [], (
+            f"expected no ReplaceViewOp for whitespace-only diff, "
+            f"got {[(op.name, op.definition) for op in replace_ops]}"
+        )
 
