@@ -64,6 +64,11 @@ Unreleased
 - **Breaking:** ``schema`` is keyword-only on ``create_view``, ``create_materialized_view``,
   ``create_table_from_selectable``, ``CreateView``, ``DropView``, and ``RefreshMaterializedView``
   for consistency with the Alembic op API.
+- ``create_view`` accepts ``replace=`` (defaults ``False``); when ``True``,
+  emits ``CREATE OR REPLACE VIEW`` instead of ``CREATE VIEW``.
+- ``ViewMixin.__view_replace__`` controls whether runtime DDL emits
+  ``CREATE OR REPLACE VIEW``; autogenerate emits ``ReplaceViewOp``
+  regardless of this flag.
 
 0.42.1 (2025-12-12)
 ^^^^^^^^^^^^^^^^^^^

@@ -194,7 +194,7 @@ def _register_view_ddl(
     """Register CREATE/DROP DDL listeners and a ViewRecord on *metadata*.
 
     Shared by :func:`create_view`, :func:`create_materialized_view`, and
-    :class:`~sqlalchemy_utils.view_mixin.ViewMixin.__declare_last__` to avoid
+    :meth:`~sqlalchemy_utils.view_mixin.ViewMixin.__declare_last__` to avoid
     triplicated listener registration and ViewRecord construction.
 
     When *materialized* is ``True`` and *table* has indexes, a
