@@ -71,16 +71,7 @@ _OUTER_SAVEPOINT = "su_view_cmp"
 # Exception types treated as expected during view canonicalization.
 _CANON_ERRORS = (sa.exc.SQLAlchemyError, OSError)
 
-# Idempotency guard: register_view_comparator may be called multiple times
-# (e.g. across env.py reloads); only the first call registers the hook.
-#
-# The check-then-set pattern in register_view_comparator (read _registered,
-# then later set it True) is intentionally NOT thread-safe. Alembic runs in
-# a single-threaded context (one env.py per migration invocation), so a race
-# cannot occur in practice. Double-registration is harmless anyway because
-# comparators.dispatch_for() is idempotent — re-registering the same callable
-# for the same dispatch name is a no-op. A threading.Lock would add cost and
-# complexity for a race that cannot happen in the intended runtime.
+# Idempotency guard; Alembic runs single-threaded and dispatch_for is itself idempotent.
 _registered = False
 
 
@@ -181,6 +172,11 @@ def _canonicalize_all_views(
                 except _CANON_ERRORS:
                     pass
                 skipped.add(vr.name)
+                log.warning(
+                    "View %r in schema %r failed canonicalization and will be skipped — "
+                    "no migration op will be generated for it. Check the view definition for errors.",
+                    vr.name, schema,
+                )
 
                 # Probe the outer savepoint: a poisoned transaction would
                 # silently skip all remaining views, so break early instead.
@@ -197,6 +193,11 @@ def _canonicalize_all_views(
                     for remaining_vr in ordered:
                         if remaining_vr.name not in processed:
                             skipped.add(remaining_vr.name)
+                            log.warning(
+                                "View %r in schema %r failed canonicalization and will be skipped — "
+                                "no migration op will be generated for it. Check the view definition for errors.",
+                                remaining_vr.name, schema,
+                            )
                     break
             processed.add(vr.name)
 
@@ -399,11 +400,6 @@ def _reorder_cross_type_drops_before_creates(ops: list) -> list:
     are collected in their appearance order — create-order (dependencies
     before dependents) from
     :func:`~sqlalchemy_utils.alembic.depend.resolve_create_order`.
-
-    Emitting drops per-key at each create's position (the old approach)
-    produced drops in create-order (dependencies first), which fails with
-    ``cascade=False``: dropping a dependency while a dependent still
-    references it is refused by PG.
     """
     create_keys = {
         (getattr(op, "name", None), getattr(op, "schema", None))
@@ -484,8 +480,10 @@ def compare_views(
     called automatically during ``alembic revision --autogenerate``.
 
     It reads view definitions from ``metadata.info['sqlalchemy_utils_views']``
-    (populated by `create_view()`, `create_materialized_view()`, and
-    `ViewMixin.__declare_last__`), canonicalizes each model view via
+    (populated by :func:`~sqlalchemy_utils.view.create_view`,
+    :func:`~sqlalchemy_utils.view.create_materialized_view`, and
+    :meth:`~sqlalchemy_utils.view_mixin.ViewMixin.__declare_last__`),
+    canonicalizes each model view via
     savepoint simulation, and diffs against the live database.
 
     :param autogen_context:
