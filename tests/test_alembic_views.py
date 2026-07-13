@@ -340,6 +340,13 @@ class TestViewRecordCreation:
         with pytest.raises((TypeError, ValueError), match="(?i)selectable"):
             ViewRecord(name="v", selectable=None)
 
+    def test_rejects_empty_or_none_name(self):
+        """ViewRecord rejects empty-string and None names at construction time."""
+        with pytest.raises(TypeError, match="(?i)name"):
+            ViewRecord(name="", selectable=sa.select(sa.column("id")))
+        with pytest.raises(TypeError, match="(?i)name"):
+            ViewRecord(name=None, selectable=sa.select(sa.column("id")))
+
 
 class TestViewRecordEquality:
 

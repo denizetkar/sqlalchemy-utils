@@ -62,6 +62,8 @@ class ViewRecord:
     def __post_init__(self):
         if self.selectable is None:
             raise TypeError("selectable must not be None")
+        if not isinstance(self.name, str) or not self.name:
+            raise TypeError("name must be a non-empty string")
         # Normalize falsy schema (e.g. "") to None: "" would create the
         # view in current_schema() but fail the schema-match check
         # ("" != None), yielding a false DropViewOp.
