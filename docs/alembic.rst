@@ -288,8 +288,7 @@ classes are registered this way).  Finally,
 ``renderers.dispatch_for(<OpClass>)`` teaches Alembic how to render each
 custom operation as Python migration code (e.g., ``op.create_view(...)``),
 while ``@Operations.implementation_for`` emits the actual DDL when the
-migration is applied.  ``@Operations.implementation_for(<OpClass>)`` emits
-the DDL when the migration is applied.  To add a new view-related
+migration is applied.  To add a new view-related
 operation, subclass ``MigrateOperation``, register it with
 ``Operations.register_operation``, implement ``reverse()`` for downgrade
 generation, and add a renderer via ``renderers.dispatch_for``.

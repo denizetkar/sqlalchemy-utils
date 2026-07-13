@@ -33,8 +33,8 @@ class CreateView(DDLElement):
     """DDL element for CREATE VIEW (or CREATE OR REPLACE VIEW).
 
     :param name: Name of the view to create.
-    :param selectable: An SQLAlchemy selectable (e.g. ``select()``) or
-        string SQL expression defining the view body.
+    :param selectable: An SQLAlchemy selectable (e.g. ``select()``)
+        defining the view body.
     :param materialized: When ``True``, emits ``CREATE MATERIALIZED VIEW``
         (default ``False``).
     :param replace: When ``True``, emits ``CREATE OR REPLACE VIEW``.
@@ -65,7 +65,6 @@ class CreateView(DDLElement):
 @compiler.compiles(CreateView)
 def compile_create_view(element, compiler, **kw):
     """Compile ``CreateView`` to ``CREATE [OR REPLACE] [MATERIALIZED] VIEW``."""
-    ip = compiler.dialect.identifier_preparer
     qualified = _quote_qualified_name(compiler.dialect, element.name, element.schema)
     return 'CREATE {}{}VIEW {} AS {}'.format(
         'OR REPLACE ' if element.replace else '',
@@ -422,6 +421,9 @@ class RefreshMaterializedView(Executable, ClauseElement):
         requires a unique index on the MV). Default ``False``.
     :param schema: Keyword-only. Optional schema name; when given, the
         view name is schema-qualified in the emitted DDL.
+
+    ``cache_ok = True`` enables SQLAlchemy statement caching for this
+    construct.
     """
 
     cache_ok = True
@@ -463,9 +465,9 @@ def refresh_materialized_view(
         Optional flag that causes the ``CONCURRENTLY`` parameter
         to be specified when the materialized view is refreshed.
     :param schema:
-        An optional string specifying the schema (database) in which the
-        materialized view resides. When supplied, the view name is qualified
-        with the schema in the emitted ``REFRESH MATERIALIZED VIEW`` DDL.
+        Keyword-only. An optional string specifying the schema (database) in
+        which the materialized view resides. When supplied, the view name is
+        qualified with the schema in the emitted ``REFRESH MATERIALIZED VIEW`` DDL.
 
     Example::
 
