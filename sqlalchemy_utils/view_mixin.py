@@ -149,22 +149,15 @@ class ViewMixin:
         # Aliases are only meaningful for materialized views (regular views
         # do not support column aliases via create_table_from_selectable).
         aliases = getattr(cls, '__view_aliases__', None)
-        if is_materialized:
-            pass  # aliases already set
-        else:
-            # Warn if __view_aliases__ is set on a non-materialized
-            # view — it will be silently ignored, which is a common source of
-            # confusion. Aliases are only honored for materialized views (see
-            # create_materialized_view / create_table_from_selectable).
-            if aliases is not None:
-                logger.warning(
-                    "%s.__view_aliases__ is set but the view is not "
-                    "materialized (__view_materialized__=False); aliases are "
-                    "ignored for regular views. Define column aliases directly "
-                    "in the view's SELECT statement, or set "
-                    "__view_materialized__=True.",
-                    cls.__name__,
-                )
+        if not is_materialized and aliases is not None:
+            logger.warning(
+                "%s.__view_aliases__ is set but the view is not "
+                "materialized (__view_materialized__=False); aliases are "
+                "ignored for regular views. Define column aliases directly "
+                "in the view's SELECT statement, or set "
+                "__view_materialized__=True.",
+                cls.__name__,
+            )
 
         declared_col_names = set()
         declared_col_types = {}
