@@ -3962,36 +3962,32 @@ class TestDropOpValidatesDefinition:
     """
 
     @pytest.mark.parametrize(
-        "op_class",
-        [DropViewOp, DropMaterializedViewOp],
-        ids=["drop_view", "drop_mv"],
+        "op_class,bad_definition",
+        [
+            (DropViewOp, ""),
+            (DropViewOp, 123),
+            (DropMaterializedViewOp, ""),
+            (DropMaterializedViewOp, 123),
+        ],
+        ids=["drop_view_empty", "drop_view_non_string", "drop_mv_empty", "drop_mv_non_string"],
     )
-    def test_drop_op_rejects_empty_definition(self, op_class):
+    def test_drop_op_rejects_invalid_definition(self, op_class, bad_definition):
         with pytest.raises(TypeError, match="(?i)definition"):
-            op_class("v", definition="")
+            op_class("v", definition=bad_definition)
 
     @pytest.mark.parametrize(
-        "op_class",
-        [DropViewOp, DropMaterializedViewOp],
-        ids=["drop_view", "drop_mv"],
+        "op_class,definition,expected",
+        [
+            (DropViewOp, None, None),
+            (DropMaterializedViewOp, None, None),
+            (DropViewOp, "SELECT 1", "SELECT 1"),
+        ],
+        ids=["drop_view_none", "drop_mv_none", "drop_view_valid"],
     )
-    def test_drop_op_rejects_non_string_definition(self, op_class):
-        with pytest.raises(TypeError, match="(?i)definition"):
-            op_class("v", definition=123)
-
-    @pytest.mark.parametrize(
-        "op_class",
-        [DropViewOp, DropMaterializedViewOp],
-        ids=["drop_view", "drop_mv"],
-    )
-    def test_drop_op_accepts_none_definition(self, op_class):
+    def test_drop_op_accepts_valid_definition(self, op_class, definition, expected):
         """``definition=None`` (the default) is valid — means no reverse."""
-        op = op_class("v")
-        assert op.definition is None
-
-    def test_drop_view_op_accepts_valid_definition(self):
-        op = DropViewOp("v", definition="SELECT 1")
-        assert op.definition == "SELECT 1"
+        op = op_class("v", definition=definition)
+        assert op.definition == expected
 
 
 # ===========================================================================
