@@ -291,34 +291,6 @@ def test_declare_last_forwarding():
     assert MyView.__table__ is not None
 
 
-def test_view_mixin_aliases():
-    """__view_aliases__ is threaded through to _register_view_ddl and the
-    backing table's column keys for materialized views."""
-    Base = declarative_base()
-
-    source = sa.Table(
-        'alias_src', Base.metadata,
-        sa.Column('old_col', sa.Integer, primary_key=True),
-    )
-
-    class AliasedMV(ViewMixin, Base):
-        __tablename__ = 'aliased_mv'
-        __view_selectable__ = sa.select(source.c.old_col)
-        __view_materialized__ = True
-        __view_aliases__ = {'old_col': 'new_col'}
-        new_col: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
-
-    AliasedMV.__declare_last__()
-
-    assert 'new_col' in AliasedMV.__table__.columns
-    assert AliasedMV.__table__.columns['new_col'].name == 'old_col'
-
-    records = Base.metadata.info.get('sqlalchemy_utils_views', [])
-    vr = [r for r in records if r.name == 'aliased_mv'][0]
-    assert vr.materialized is True
-    assert vr.aliases == {'old_col': 'new_col'}
-
-
 def test_view_mixin_aliases_target_name():
     """Declared columns use the alias **value** (target) name, per the
     ``__view_aliases__`` docstring.

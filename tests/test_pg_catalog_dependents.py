@@ -276,7 +276,6 @@ def _teardown_cross_schema(connection, schema_a: str, schema_b: str):
     )
 
 
-@pytest.mark.infrastructure
 @pytest.mark.parametrize(
     "schema_a,schema_b",
     [("_cross_schema_a", "_cross_schema_b"),
@@ -369,7 +368,6 @@ def _teardown_union_all(connection):
     )
 
 
-@pytest.mark.infrastructure
 def test_get_dependent_views_union_all_keeps_both_regular_and_mv(connection):
     """UNION ALL must not dedupe regular + MV dependents.
 
@@ -497,7 +495,6 @@ def _teardown_cross_schema_same_name_dependent(connection):
     )
 
 
-@pytest.mark.infrastructure
 def test_get_dependent_views_cross_schema_same_name_dependent(connection):
     """Cross-schema same-name dependent must not be over-suppressed.
 
@@ -527,7 +524,6 @@ def test_get_dependent_views_cross_schema_same_name_dependent(connection):
         _teardown_cross_schema_same_name_dependent(connection)
 
 
-@pytest.mark.infrastructure
 def test_get_dependent_views_same_name_across_schemas(connection):
     """Two dependents with the same name in different schemas must coexist.
 
