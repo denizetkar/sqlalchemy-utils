@@ -171,8 +171,8 @@ class ViewMixin:
         declared_col_types = {}
         if hasattr(cls, '__table__') and cls.__table__ is not None:
             for col in cls.__table__.columns:
-                declared_col_names.add(col.name)
-                declared_col_types[col.name] = col.type
+                declared_col_names.add(col.key)
+                declared_col_types[col.key] = col.type
             metadata.remove(cls.__table__)
 
         # metadata=None so DDL is not emitted by metadata.create_all();
@@ -187,8 +187,8 @@ class ViewMixin:
         )
         cls.__table__ = table
 
-        selectable_col_names = {c.name for c in table.columns}
-        selectable_col_types = {c.name: c.type for c in table.columns}
+        selectable_col_names = {c.key for c in table.columns}
+        selectable_col_types = {c.key: c.type for c in table.columns}
 
         missing_in_selectable = declared_col_names - selectable_col_names
         if missing_in_selectable:
