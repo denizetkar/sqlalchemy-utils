@@ -293,8 +293,8 @@ The following helpers are used internally by
 :func:`register_view_comparator`; it is internal and not part of the
 public API.  The remaining helpers (``resolve_create_order``,
 ``resolve_drop_order``, ``get_database_views``,
-``get_database_materialized_views``, ``get_dependent_views``) are exposed
-are importable from ``sqlalchemy_utils.alembic`` but are not part of the
+``get_database_materialized_views``, ``get_dependent_views``) are
+importable from ``sqlalchemy_utils.alembic`` but are not part of the
 package's public exports; they are safe for advanced callers to use
 directly.
 

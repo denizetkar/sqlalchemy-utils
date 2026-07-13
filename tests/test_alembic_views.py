@@ -4299,24 +4299,13 @@ class TestCreateMaterializedViewRejectsNonListIndexes:
 
 class TestReversePreservesWithData:
 
-    def test_reverse_create_mv_preserves_with_data(self):
-        op = CreateMaterializedViewOp("mv", "SELECT 1", with_data=True)
-        rev = op.reverse()
-        assert rev.with_data is True
-
-    def test_reverse_drop_mv_preserves_with_data(self):
-        op = DropMaterializedViewOp(
-            "mv", definition="SELECT 1", with_data=True
-        )
-        rev = op.reverse()
-        assert rev.with_data is True
-
-    def test_reverse_replace_mv_preserves_with_data(self):
-        op = ReplaceMaterializedViewOp(
-            "mv", "SELECT 2", old_definition="SELECT 1", with_data=True
-        )
-        rev = op.reverse()
-        assert rev.with_data is True
+    @pytest.mark.parametrize("op", [
+        pytest.param(CreateMaterializedViewOp("mv", "SELECT 1", with_data=True), id="create"),
+        pytest.param(DropMaterializedViewOp("mv", definition="SELECT 1", with_data=True), id="drop"),
+        pytest.param(ReplaceMaterializedViewOp("mv", "SELECT 2", old_definition="SELECT 1", with_data=True), id="replace"),
+    ])
+    def test_reverse_preserves_with_data(self, op):
+        assert op.reverse().with_data is True
 
 
 # ===========================================================================
