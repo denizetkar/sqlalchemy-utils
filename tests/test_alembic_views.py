@@ -2024,32 +2024,58 @@ class TestDependWordBoundary:
         assert names.index("user") < names.index("summary")
 
 
-class TestSafeResolveHandlesCompileError:
-    """``_safe_resolve`` must fall back to model order when a ClauseElement
-    raises ``sa.exc.CompileError`` during ``compiled_definition(dialect=...)``.
+class TestSafeResolveHandlesFallback:
+    """``_safe_resolve`` must fall back to model order (logging a warning)
+    when ``resolve_create_order`` cannot resolve the records, regardless of
+    whether the trigger is an un-compilable ``ClauseElement`` or a circular
+    view-on-view dependency.
 
-    ``_safe_resolve`` previously caught only ``ValueError`` (for
-    ``CycleError``). A ``ClauseElement`` that fails compilation raises
-    ``sa.exc.CompileError`` (a subclass of ``sa.exc.SQLAlchemyError``),
-    which propagated uncaught and aborted the entire autogenerate run.
-    The except clause must be widened so a single un-compilable view does
-    not crash autogenerate — the resolver falls back to model order.
+    Both paths previously risked aborting autogenerate: ``sa.exc.CompileError``
+    was uncaught (only ``ValueError``/``CycleError`` was handled), and a
+    circular dependency raises ``ValueError``. The except clause must cover
+    both so a single failing view does not crash autogenerate.
     """
 
-    def test_compile_error_falls_back_to_model_order(self, caplog):
-        records = [
-            ViewRecord(
-                name="broken_view",
-                selectable=_BreakingSelectable(exc_type=sa.exc.CompileError),
-                schema=None,
+    @pytest.mark.parametrize(
+        ("records", "message_substring"),
+        [
+            pytest.param(
+                [
+                    ViewRecord(
+                        name="broken_view",
+                        selectable=_BreakingSelectable(
+                            exc_type=sa.exc.CompileError
+                        ),
+                        schema=None,
+                    ),
+                    ViewRecord(
+                        name="other_view",
+                        selectable="SELECT 2 AS id",
+                        schema=None,
+                    ),
+                ],
+                "",
+                id="compile_error",
             ),
-            ViewRecord(
-                name="other_view",
-                selectable="SELECT 2 AS id",
-                schema=None,
+            pytest.param(
+                [
+                    ViewRecord(
+                        name="a",
+                        selectable="SELECT * FROM b",
+                        schema=None,
+                    ),
+                    ViewRecord(
+                        name="b",
+                        selectable="SELECT * FROM a",
+                        schema=None,
+                    ),
+                ],
+                "ircular",
+                id="circular_dependency",
             ),
-        ]
-
+        ],
+    )
+    def test_falls_back_to_model_order(self, caplog, records, message_substring):
         with caplog.at_level(
             logging.WARNING, logger="sqlalchemy_utils.alembic.comparator"
         ):
@@ -2068,6 +2094,10 @@ class TestSafeResolveHandlesCompileError:
             rec for rec in caplog.records if rec.levelno >= logging.WARNING
         ]
         assert warnings, f"got {[(rec.levelname, rec.message) for rec in caplog.records]}"
+        if message_substring:
+            assert any(
+                message_substring in rec.message for rec in warnings
+            ), f"got {[(rec.levelname, rec.message) for rec in warnings]}"
 
 
 # ===========================================================================
@@ -4466,52 +4496,6 @@ class TestCreateMaterializedViewWithIndexes:
         indexes = sa.inspect(engine).get_indexes("mv_name")
         index_names = [idx["name"] for idx in indexes]
         assert "idx_col" in index_names, f"got {index_names!r}"
-
-
-# ===========================================================================
-# _safe_resolve: circular dependency fallback
-# ===========================================================================
-
-class TestSafeResolveHandlesCircularDependency:
-    """``_safe_resolve`` must fall back to model order when
-    ``resolve_create_order`` raises ``ValueError`` (``CycleError``) due to a
-    circular view-on-view dependency, logging a warning instead of
-    propagating the error and aborting autogenerate.
-    """
-
-    def test_circular_dependency_falls_back_to_model_order(self, caplog):
-        records = [
-            ViewRecord(
-                name="a",
-                selectable="SELECT * FROM b",
-                schema=None,
-            ),
-            ViewRecord(
-                name="b",
-                selectable="SELECT * FROM a",
-                schema=None,
-            ),
-        ]
-
-        with caplog.at_level(
-            logging.WARNING, logger="sqlalchemy_utils.alembic.comparator"
-        ):
-            result = _safe_resolve(
-                records,
-                {},
-                resolve_create_order,
-                "creating",
-                dialect=sa.dialects.postgresql.dialect(),
-            )
-
-        assert result == records, f"got {result}"
-        warnings = [
-            rec for rec in caplog.records if rec.levelno >= logging.WARNING
-        ]
-        assert warnings, f"got {[(rec.levelname, rec.message) for rec in caplog.records]}"
-        assert any(
-            "ircular" in rec.message for rec in warnings
-        ), f"got {[(rec.levelname, rec.message) for rec in warnings]}"
 
 
 # ===========================================================================
