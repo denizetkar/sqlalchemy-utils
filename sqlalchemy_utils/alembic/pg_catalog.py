@@ -28,7 +28,7 @@ def _query_view_catalog(connection: sa.engine.Connection, table: str, name_col: 
     :param connection: SQLAlchemy Connection object.
     :param table: Catalog table name (e.g. ``"pg_views"``, ``"pg_matviews"``).
     :param name_col: Column name holding the view name (e.g. ``"viewname"``).
-    :param schema: Optional schema name filter. If None, only the
+    :param schema: Optional schema name filter. If *None* or empty, only the
         connection's current default schema is queried (via
         ``current_schema()``).
     :returns: Dictionary mapping view name to definition SQL.

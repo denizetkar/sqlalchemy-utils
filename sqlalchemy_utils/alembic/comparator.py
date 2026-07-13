@@ -172,11 +172,6 @@ def _canonicalize_all_views(
                 except _CANON_ERRORS:
                     pass
                 skipped.add(vr.name)
-                log.warning(
-                    "View %r in schema %r failed canonicalization and will be skipped — "
-                    "no migration op will be generated for it. Check the view definition for errors.",
-                    vr.name, schema,
-                )
 
                 # Probe the outer savepoint: a poisoned transaction would
                 # silently skip all remaining views, so break early instead.
@@ -194,8 +189,8 @@ def _canonicalize_all_views(
                         if remaining_vr.name not in processed:
                             skipped.add(remaining_vr.name)
                             log.warning(
-                                "View %r in schema %r failed canonicalization and will be skipped — "
-                                "no migration op will be generated for it. Check the view definition for errors.",
+                                "View %r in schema %r skipped (canonicalization aborted due to prior failure) — "
+                                "no migration op will be generated for it.",
                                 remaining_vr.name, schema,
                             )
                     break
@@ -426,13 +421,7 @@ def _reorder_cross_type_drops_before_creates(ops: list) -> list:
     inserted = False
     for op in ops:
         key = (getattr(op, "name", None), getattr(op, "schema", None))
-        if _is_drop_family(op):
-            if not inserted:
-                result.extend(all_drops)
-                result.extend(cross_creates)
-                inserted = True
-            continue
-        if key in cross_keys:
+        if _is_drop_family(op) or key in cross_keys:
             if not inserted:
                 result.extend(all_drops)
                 result.extend(cross_creates)
