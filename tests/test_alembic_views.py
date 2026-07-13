@@ -1340,15 +1340,13 @@ class TestComparatorDDLError:
 # Regression: programming errors must propagate, not be swallowed
 # ===========================================================================
 
-class _SelectableBreakingOnDialectCompile:
-    """Compiles for dependency resolution but raises TypeError when
-    ``compile(dialect=...)`` is called inside ``_canonicalize_all_views``."""
-
+class _BreakingSelectable:
+    """Raises *exc_type* when compiled against a dialect."""
+    def __init__(self, exc_type=sa.exc.CompileError):
+        self._exc_type = exc_type
     def compile(self, **kw):
         if "dialect" in kw:
-            raise TypeError(
-                "programming error: selectable cannot be compiled against a dialect"
-            )
+            raise self._exc_type("Cannot compile clause element for this dialect")
         return "SELECT 1 AS id"
 
 
@@ -1365,7 +1363,7 @@ class TestProgrammingErrorPropagates:
             metadata.info["sqlalchemy_utils_views"] = [
                 ViewRecord(
                     name="broken_view_for_dialect_test",
-                    selectable=_SelectableBreakingOnDialectCompile(),
+                    selectable=_BreakingSelectable(exc_type=TypeError),
                     schema=None,
                 ),
             ]
@@ -1673,23 +1671,24 @@ class TestComparatorNonPGDialect:
         metadata.info["sqlalchemy_utils_views"] = []
 
         autogen_context = MagicMock()
-        autogen_context.connection = engine.connect()
-        autogen_context.metadata = metadata
+        with engine.connect() as conn:
+            autogen_context.connection = conn
+            autogen_context.metadata = metadata
 
-        upgrade_ops = MagicMock()
-        upgrade_ops.ops = []
-        schemas = [None]
+            upgrade_ops = MagicMock()
+            upgrade_ops.ops = []
+            schemas = [None]
 
-        with caplog.at_level(
-            logging.WARNING, logger="sqlalchemy_utils.alembic.comparator"
-        ):
-            raised_exc = None
-            try:
-                compare_views(autogen_context, upgrade_ops, schemas)
-            except Exception as exc:
-                raised_exc = exc
+            with caplog.at_level(
+                logging.WARNING, logger="sqlalchemy_utils.alembic.comparator"
+            ):
+                raised_exc = None
+                try:
+                    compare_views(autogen_context, upgrade_ops, schemas)
+                except Exception as exc:
+                    raised_exc = exc
 
-        warnings = [rec for rec in caplog.records if rec.levelno >= logging.WARNING]
+            warnings = [rec for rec in caplog.records if rec.levelno >= logging.WARNING]
 
         assert raised_exc is None
         assert warnings
@@ -2021,20 +2020,10 @@ class TestSafeResolveHandlesCompileError:
     """
 
     def test_compile_error_falls_back_to_model_order(self, caplog):
-        class _BrokenClauseElement:
-            """Raises CompileError when compiled against a dialect."""
-
-            def compile(self, **kw):
-                if "dialect" in kw:
-                    raise sa.exc.CompileError(
-                        "Cannot compile clause element for this dialect"
-                    )
-                return "SELECT 1 AS id"
-
         records = [
             ViewRecord(
                 name="broken_view",
-                selectable=_BrokenClauseElement(),
+                selectable=_BreakingSelectable(exc_type=sa.exc.CompileError),
                 schema=None,
             ),
             ViewRecord(
@@ -2785,7 +2774,14 @@ def test_op_drop_materialized_view_accepts_with_data():
 # ===========================================================================
 
 
-class TestCrossSchemaDedup:
+class TestCrossSchemaSameNameSeparation:
+    """Cross-schema same-name views must produce separate graph nodes.
+
+    Previously the graph was keyed by bare ``vr.name``, so two views named
+    ``summary`` in schemas ``reporting`` and ``analytics`` collapsed into a
+    single graph node — the second view's deps overwrote the first's,
+    yielding wrong dependency ordering.
+    """
 
     def test_resolve_create_order_preserves_same_name_diff_schema(self):
         """Two views with the same name in different schemas must both
@@ -2814,16 +2810,6 @@ class TestCrossSchemaDedup:
         # No bare-name keys should exist.
         assert "foo" not in graph
 
-
-class TestCrossSchemaSameNameGraphSeparation:
-    """Cross-schema same-name views must produce separate graph nodes.
-
-    Previously the graph was keyed by bare ``vr.name``, so two views named
-    ``summary`` in schemas ``reporting`` and ``analytics`` collapsed into a
-    single graph node — the second view's deps overwrote the first's,
-    yielding wrong dependency ordering.
-    """
-
     def test_graph_has_two_distinct_nodes(self):
         views = [
             ViewRecord(
@@ -2841,24 +2827,6 @@ class TestCrossSchemaSameNameGraphSeparation:
         assert len(graph) == 2
         assert ("summary", "reporting") in graph
         assert ("summary", "analytics") in graph
-
-    def test_resolve_create_order_returns_both_views(self):
-        views = [
-            ViewRecord(
-                name="summary",
-                schema="reporting",
-                selectable="SELECT 1 AS col",
-            ),
-            ViewRecord(
-                name="summary",
-                schema="analytics",
-                selectable="SELECT * FROM summary",
-            ),
-        ]
-        result = resolve_create_order(views, db_views={})
-        assert len(result) == 2
-        schemas = {vr.schema for vr in result}
-        assert schemas == {"reporting", "analytics"}
 
 
 # ===========================================================================
@@ -4230,4 +4198,115 @@ class TestRendererRefreshMaterializedView:
         op = RefreshMaterializedViewOp("mv", concurrently=True)
         result = render_refresh_materialized_view(_make_autogen_context(), op)
         assert "concurrently=True" in result
+
+
+# ===========================================================================
+# Comparator offline mode and dependent warning edge cases
+# ===========================================================================
+
+class TestCompareViewsOfflineMode:
+
+    def test_compare_views_offline_mode_skips(self, caplog):
+        """When ``autogen_context.connection`` is None (offline mode),
+        compare_views must skip view diffing and log a warning containing
+        'offline'."""
+        autogen_context = MagicMock(spec=AutogenContext)
+        autogen_context.connection = None
+        autogen_context.metadata = sa.MetaData()
+
+        upgrade_ops = MagicMock()
+        upgrade_ops.ops = []
+
+        with caplog.at_level(
+            logging.WARNING, logger="sqlalchemy_utils.alembic.comparator"
+        ):
+            compare_views(autogen_context, upgrade_ops)
+
+        assert upgrade_ops.ops == []
+        warnings = [
+            rec for rec in caplog.records if rec.levelno >= logging.WARNING
+        ]
+        assert warnings
+        assert any("offline" in rec.message.lower() for rec in warnings)
+
+
+class TestWarnIfDependentsHandlesFailure:
+
+    def test_warn_if_dependents_handles_failure(self, caplog):
+        """When ``get_dependent_views`` raises SQLAlchemyError, the failure
+        is logged and the drop proceeds without the dependent warning."""
+        connection = MagicMock()
+
+        with patch.object(
+            comparator_module, "get_dependent_views",
+            side_effect=sa.exc.SQLAlchemyError("test"),
+        ):
+            with caplog.at_level(
+                logging.WARNING, logger="sqlalchemy_utils.alembic.comparator"
+            ):
+                comparator_module._warn_if_dependents(
+                    connection, "my_view", None, "view"
+                )
+
+        messages = [rec.message for rec in caplog.records]
+        assert any("Failed to query dependent views" in m for m in messages)
+        assert not any("dependent view(s)" in m for m in messages)
+
+
+# ===========================================================================
+# DDL validation: materialized+replace, non-list indexes
+# ===========================================================================
+
+class TestCreateViewRejectsMaterializedAndReplace:
+
+    def test_create_view_rejects_materialized_and_replace(self):
+        with pytest.raises(ValueError):
+            CreateView("v", sa.select(1), materialized=True, replace=True)
+
+
+class TestCreateMaterializedViewRejectsNonListIndexes:
+
+    def test_create_materialized_view_rejects_non_list_indexes(self):
+        with pytest.raises(TypeError, match="list"):
+            create_materialized_view(
+                "mv", sa.select(1), sa.MetaData(), indexes=("idx",)
+            )
+
+
+# ===========================================================================
+# Materialized view op reverse() preserves with_data
+# ===========================================================================
+
+class TestReversePreservesWithData:
+
+    def test_reverse_create_mv_preserves_with_data(self):
+        op = CreateMaterializedViewOp("mv", "SELECT 1", with_data=True)
+        rev = op.reverse()
+        assert rev.with_data is True
+
+    def test_reverse_drop_mv_preserves_with_data(self):
+        op = DropMaterializedViewOp(
+            "mv", definition="SELECT 1", with_data=True
+        )
+        rev = op.reverse()
+        assert rev.with_data is True
+
+    def test_reverse_replace_mv_preserves_with_data(self):
+        op = ReplaceMaterializedViewOp(
+            "mv", "SELECT 2", old_definition="SELECT 1", with_data=True
+        )
+        rev = op.reverse()
+        assert rev.with_data is True
+
+
+# ===========================================================================
+# DropView DDL compilation
+# ===========================================================================
+
+class TestCompileDropViewMaterialized:
+
+    def test_compile_drop_view_materialized(self):
+        sql = _compile_ddl(DropView("mv", materialized=True))
+        assert "DROP MATERIALIZED VIEW" in sql
+        assert "CASCADE" in sql
 
