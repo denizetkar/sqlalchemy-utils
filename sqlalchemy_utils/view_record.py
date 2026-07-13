@@ -35,7 +35,7 @@ class ViewRecord:
         ``DROP VIEW``/``DROP MATERIALIZED VIEW``.
     :param aliases: Optional dict mapping column names to alternative keys.
 
-    :raises TypeError: if *selectable* is None.
+    :raises TypeError: if *selectable* is None or *name* is not a non-empty string.
 
     Example::
 
