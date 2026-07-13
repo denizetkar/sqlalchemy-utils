@@ -233,11 +233,21 @@ def _canonicalize_all_views(
             if vr.name in db_mvs:
                 mv_defs[vr.name] = db_mvs[vr.name]
             else:
+                log.warning(
+                    "View %r was processed but not found in catalog readback "
+                    "(may have been cascade-dropped); marking as skipped.",
+                    vr.name,
+                )
                 skipped.add(vr.name)
         else:
             if vr.name in db_views:
                 view_defs[vr.name] = db_views[vr.name]
             else:
+                log.warning(
+                    "View %r was processed but not found in catalog readback "
+                    "(may have been cascade-dropped); marking as skipped.",
+                    vr.name,
+                )
                 skipped.add(vr.name)
     return view_defs, mv_defs, skipped
 
