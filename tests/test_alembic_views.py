@@ -865,40 +865,62 @@ class TestRendererCascadeOnDrop:
         assert "cascade_on_drop=" not in rendered, f"got: {rendered!r}"
 
 
-class TestRendererCreateView:
+@pytest.mark.parametrize(
+    "renderer,op_factory",
+    [
+        (render_create_view, lambda: CreateViewOp("my_view", "SELECT 1")),
+        (render_drop_view, lambda: DropViewOp("my_view")),
+        (render_replace_view, lambda: ReplaceViewOp("my_view", "SELECT 2")),
+        (
+            render_create_materialized_view,
+            lambda: CreateMaterializedViewOp("mv_stats", "SELECT count(*) FROM events"),
+        ),
+        (render_drop_materialized_view, lambda: DropMaterializedViewOp("mv_stats")),
+        (
+            render_replace_materialized_view,
+            lambda: ReplaceMaterializedViewOp("mv_stats", "SELECT count(*) FROM events"),
+        ),
+    ],
+    ids=["create_view", "drop_view", "replace_view", "create_matview", "drop_matview", "replace_matview"],
+)
+def test_renderer_produces_valid_python(renderer, op_factory):
+    op = op_factory()
+    result = renderer(_make_autogen_context(), op)
+    compile(result, "<test>", "exec")
 
-    def test_produces_valid_python(self):
-        op = CreateViewOp("my_view", "SELECT 1")
-        result = render_create_view(_make_autogen_context(), op)
-        compile(result, "<test>", "exec")
 
-    def test_schema_omitted_when_none(self):
-        op = CreateViewOp("my_view", "SELECT 1", schema=None)
-        result = render_create_view(_make_autogen_context(), op)
-        assert "schema=" not in result
+@pytest.mark.parametrize(
+    "renderer,op_factory,schema",
+    [
+        (render_create_view, lambda s: CreateViewOp("my_view", "SELECT 1", schema=s), "public"),
+        (render_drop_view, lambda s: DropViewOp("my_view", schema=s), "analytics"),
+        (render_replace_view, lambda s: ReplaceViewOp("my_view", "SELECT 2", schema=s), "public"),
+        (render_create_materialized_view, lambda s: CreateMaterializedViewOp("mv_stats", "SELECT 1", schema=s), "analytics"),
+        (render_replace_materialized_view, lambda s: ReplaceMaterializedViewOp("mv_stats", "SELECT 2", schema=s), "analytics"),
+    ],
+    ids=["create_view", "drop_view", "replace_view", "create_matview", "replace_matview"],
+)
+def test_renderer_schema_included_when_provided(renderer, op_factory, schema):
+    op = op_factory(schema)
+    result = renderer(_make_autogen_context(), op)
+    assert f"schema='{schema}'" in result
 
-    def test_schema_included_when_provided(self):
-        op = CreateViewOp("my_view", "SELECT 1", schema="public")
-        result = render_create_view(_make_autogen_context(), op)
-        assert "schema='public'" in result
+
+@pytest.mark.parametrize(
+    "renderer,op_factory",
+    [
+        (render_create_view, lambda: CreateViewOp("my_view", "SELECT 1", schema=None)),
+        (render_drop_view, lambda: DropViewOp("my_view", schema=None)),
+    ],
+    ids=["create_view", "drop_view"],
+)
+def test_renderer_schema_omitted_when_none(renderer, op_factory):
+    op = op_factory()
+    result = renderer(_make_autogen_context(), op)
+    assert "schema=" not in result
 
 
 class TestRendererDropView:
-
-    def test_produces_valid_python(self):
-        op = DropViewOp("my_view")
-        result = render_drop_view(_make_autogen_context(), op)
-        compile(result, "<test>", "exec")
-
-    def test_schema_omitted_when_none(self):
-        op = DropViewOp("my_view", schema=None)
-        result = render_drop_view(_make_autogen_context(), op)
-        assert "schema=" not in result
-
-    def test_schema_included_when_provided(self):
-        op = DropViewOp("my_view", schema="analytics")
-        result = render_drop_view(_make_autogen_context(), op)
-        assert "schema='analytics'" in result
 
     def test_renders_definition(self):
         op = DropViewOp("v", schema="public", definition="SELECT 1")
@@ -916,16 +938,6 @@ class TestRendererDropView:
 
 
 class TestRendererReplaceView:
-
-    def test_produces_valid_python(self):
-        op = ReplaceViewOp("my_view", "SELECT 2")
-        result = render_replace_view(_make_autogen_context(), op)
-        compile(result, "<test>", "exec")
-
-    def test_schema_included_when_provided(self):
-        op = ReplaceViewOp("my_view", "SELECT 2", schema="public")
-        result = render_replace_view(_make_autogen_context(), op)
-        assert "schema='public'" in result
 
     def test_renders_old_definition(self):
         op = ReplaceViewOp("v_repl", "SELECT 2", schema="public", old_definition="SELECT 1")
@@ -945,25 +957,7 @@ class TestRendererReplaceView:
         assert "cascade=False" in result
 
 
-class TestRendererCreateMaterializedView:
-
-    def test_produces_valid_python(self):
-        op = CreateMaterializedViewOp("mv_stats", "SELECT count(*) FROM events")
-        result = render_create_materialized_view(_make_autogen_context(), op)
-        compile(result, "<test>", "exec")
-
-    def test_schema_included_when_provided(self):
-        op = CreateMaterializedViewOp("mv_stats", "SELECT 1", schema="analytics")
-        result = render_create_materialized_view(_make_autogen_context(), op)
-        assert "schema='analytics'" in result
-
-
 class TestRendererDropMaterializedView:
-
-    def test_produces_valid_python(self):
-        op = DropMaterializedViewOp("mv_stats")
-        result = render_drop_materialized_view(_make_autogen_context(), op)
-        compile(result, "<test>", "exec")
 
     def test_cascade_omitted_when_true(self):
         op = DropMaterializedViewOp("mv_stats")
@@ -995,16 +989,6 @@ class TestRendererDropMaterializedView:
 
 
 class TestRendererReplaceMaterializedView:
-
-    def test_produces_valid_python(self):
-        op = ReplaceMaterializedViewOp("mv_stats", "SELECT count(*) FROM events")
-        result = render_replace_materialized_view(_make_autogen_context(), op)
-        compile(result, "<test>", "exec")
-
-    def test_schema_included_when_provided(self):
-        op = ReplaceMaterializedViewOp("mv_stats", "SELECT 2", schema="analytics")
-        result = render_replace_materialized_view(_make_autogen_context(), op)
-        assert "schema='analytics'" in result
 
     def test_renders_old_definition(self):
         op = ReplaceMaterializedViewOp("mv_repl", "SELECT 2", old_definition="SELECT 1")
