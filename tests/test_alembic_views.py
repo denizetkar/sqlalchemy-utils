@@ -63,6 +63,7 @@ from sqlalchemy_utils.alembic.renderer import (
     render_create_view,
     render_drop_materialized_view,
     render_drop_view,
+    render_refresh_materialized_view,
     render_replace_materialized_view,
     render_replace_view,
 )
@@ -4182,4 +4183,43 @@ class TestCrossSchemaCreateOrdering:
                 if op.name == "dependent_view" and op.schema == "schema_a"
             )
             assert base_idx < dep_idx, f"schemas={schema_order}; ops: {[(op.name, op.schema) for op in create_ops]}"
+
+
+# ===========================================================================
+# RefreshMaterializedViewOp: SQL execution + renderer
+# ===========================================================================
+
+class TestRefreshMaterializedViewOpSql:
+
+    def test_sql_refresh(self):
+        op = RefreshMaterializedViewOp("mv")
+        sqls = _capture_sql(op)
+        assert len(sqls) == 1
+        assert "REFRESH MATERIALIZED VIEW" in sqls[0]
+        assert "mv" in sqls[0]
+        assert "CONCURRENTLY" not in sqls[0]
+
+    def test_sql_refresh_concurrently(self):
+        op = RefreshMaterializedViewOp("mv", concurrently=True)
+        sqls = _capture_sql(op)
+        assert len(sqls) == 1
+        assert "REFRESH MATERIALIZED VIEW CONCURRENTLY" in sqls[0]
+
+
+class TestRendererRefreshMaterializedView:
+
+    def test_renders_basic(self):
+        op = RefreshMaterializedViewOp("mv")
+        result = render_refresh_materialized_view(_make_autogen_context(), op)
+        assert result == "op.refresh_materialized_view('mv')"
+
+    def test_renders_with_schema(self):
+        op = RefreshMaterializedViewOp("mv", schema="public")
+        result = render_refresh_materialized_view(_make_autogen_context(), op)
+        assert "schema='public'" in result
+
+    def test_renders_concurrently(self):
+        op = RefreshMaterializedViewOp("mv", concurrently=True)
+        result = render_refresh_materialized_view(_make_autogen_context(), op)
+        assert "concurrently=True" in result
 
