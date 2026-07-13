@@ -77,6 +77,14 @@ from sqlalchemy_utils.view import (
 from sqlalchemy_utils.view_mixin import ViewMixin
 
 
+@pytest.fixture(autouse=True)
+def _reset_registered():
+    """Reset comparator _registered flag between tests."""
+    saved = comparator_module._registered
+    yield
+    comparator_module._registered = saved
+
+
 # ===========================================================================
 # Shared helpers
 # ===========================================================================
@@ -720,10 +728,6 @@ class TestReplaceCascadeKwarg:
         else:
             expected_drop_sql = f"{drop_keyword} {view_name}"
         assert sqls[0] == expected_drop_sql, f"got {sqls[0]!r}"
-        if drop_contains_cascade:
-            assert "CASCADE" in sqls[0].upper(), f"got {sqls[0]!r}"
-        else:
-            assert "CASCADE" not in sqls[0].upper(), f"got {sqls[0]!r}"
 
         if op_class is ReplaceViewOp:
             expected_create = f"CREATE VIEW {view_name} AS SELECT 1"
@@ -1309,23 +1313,27 @@ class TestComparatorDDLError:
     def test_invalid_view_skipped_with_warning(self, connection):
         _drop_views(connection, _CMP_TEST_VIEW_NAMES)
         _drop_base_table(connection)
+        try:
 
-        metadata = sa.MetaData()
-        metadata.info["sqlalchemy_utils_views"] = [
-            ViewRecord(
-                name="cmp_test_view_bad",
-                selectable="SELECT id FROM nonexistent_table_xyz",
-            )
-        ]
+            metadata = sa.MetaData()
+            metadata.info["sqlalchemy_utils_views"] = [
+                ViewRecord(
+                    name="cmp_test_view_bad",
+                    selectable="SELECT id FROM nonexistent_table_xyz",
+                )
+            ]
 
-        upgrade_ops = _run_comparator(connection, metadata)
+            upgrade_ops = _run_comparator(connection, metadata)
 
-        bad_view_ops = [
-            op
-            for op in upgrade_ops.ops
-            if getattr(op, "name", None) == "cmp_test_view_bad"
-        ]
-        assert len(bad_view_ops) == 0, f"got ops: {bad_view_ops}"
+            bad_view_ops = [
+                op
+                for op in upgrade_ops.ops
+                if getattr(op, "name", None) == "cmp_test_view_bad"
+            ]
+            assert len(bad_view_ops) == 0, f"got ops: {bad_view_ops}"
+        finally:
+            _drop_views(connection, _CMP_TEST_VIEW_NAMES)
+            _drop_base_table(connection)
 
 
 # ===========================================================================
@@ -1352,18 +1360,21 @@ class TestProgrammingErrorPropagates:
     def test_programming_error_propagates(self, connection):
         _drop_views(connection, _CMP_TEST_VIEW_NAMES)
         _drop_base_table(connection)
+        try:
+            metadata = sa.MetaData()
+            metadata.info["sqlalchemy_utils_views"] = [
+                ViewRecord(
+                    name="broken_view_for_dialect_test",
+                    selectable=_SelectableBreakingOnDialectCompile(),
+                    schema=None,
+                ),
+            ]
 
-        metadata = sa.MetaData()
-        metadata.info["sqlalchemy_utils_views"] = [
-            ViewRecord(
-                name="broken_view_for_dialect_test",
-                selectable=_SelectableBreakingOnDialectCompile(),
-                schema=None,
-            ),
-        ]
-
-        with pytest.raises(TypeError):
-            _run_comparator(connection, metadata, schemas=[None])
+            with pytest.raises(TypeError):
+                _run_comparator(connection, metadata, schemas=[None])
+        finally:
+            _drop_views(connection, _CMP_TEST_VIEW_NAMES)
+            _drop_base_table(connection)
 
 
 # ===========================================================================
@@ -1458,54 +1469,51 @@ class TestCanonicalizeFailureDoesNotSkipSubsequentViews:
     @pytest.mark.infrastructure
     @pytest.mark.usefixtures("postgresql_dsn")
     def test_failed_canonicalization_does_not_skip_subsequent_views(
-        self, connection
+        self, view_cleanup_factory
     ):
-        _drop_views(connection, _SAVEPOINT_TEST_VIEW_NAMES)
-        try:
+        connection = view_cleanup_factory(_SAVEPOINT_TEST_VIEW_NAMES)
 
-            # view_a references a nonexistent table → CREATE fails inside the
-            # canonicalization savepoint. view_b and view_c are trivially valid
-            # (no table dependency) so they MUST still be canonicalized.
-            metadata = sa.MetaData()
-            metadata.info["sqlalchemy_utils_views"] = [
-                ViewRecord(
-                    name="savepoint_a",
-                    selectable=sa.select(sa.text("* FROM nonexistent_table")),
-                    schema=None,
-                    materialized=False,
-                ),
-                ViewRecord(
-                    name="savepoint_b",
-                    selectable=sa.select(sa.text("1 AS col")),
-                    schema=None,
-                    materialized=False,
-                ),
-                ViewRecord(
-                    name="savepoint_c",
-                    selectable=sa.select(sa.text("2 AS col")),
-                    schema=None,
-                    materialized=False,
-                ),
-            ]
+        # view_a references a nonexistent table → CREATE fails inside the
+        # canonicalization savepoint. view_b and view_c are trivially valid
+        # (no table dependency) so they MUST still be canonicalized.
+        metadata = sa.MetaData()
+        metadata.info["sqlalchemy_utils_views"] = [
+            ViewRecord(
+                name="savepoint_a",
+                selectable=sa.select(sa.text("* FROM nonexistent_table")),
+                schema=None,
+                materialized=False,
+            ),
+            ViewRecord(
+                name="savepoint_b",
+                selectable=sa.select(sa.text("1 AS col")),
+                schema=None,
+                materialized=False,
+            ),
+            ViewRecord(
+                name="savepoint_c",
+                selectable=sa.select(sa.text("2 AS col")),
+                schema=None,
+                materialized=False,
+            ),
+        ]
 
-            upgrade_ops = _run_comparator(
-                connection, metadata, schemas=[None]
-            )
+        upgrade_ops = _run_comparator(
+            connection, metadata, schemas=[None]
+        )
 
-            create_ops = [
-                op for op in upgrade_ops.ops if isinstance(op, CreateViewOp)
-            ]
-            created_names = {op.name for op in create_ops}
+        create_ops = [
+            op for op in upgrade_ops.ops if isinstance(op, CreateViewOp)
+        ]
+        created_names = {op.name for op in create_ops}
 
-            # savepoint_a failed to canonicalize → must NOT appear.
-            assert "savepoint_a" not in created_names, f"got {sorted(created_names)}"
-            # savepoint_b and savepoint_c come after the failure; they MUST still be
-            # canonicalized. Before the fix the reused savepoint name caused
-            # both to be silently dropped.
-            assert "savepoint_b" in created_names, f"got {sorted(created_names)}"
-            assert "savepoint_c" in created_names, f"got {sorted(created_names)}"
-        finally:
-            _drop_views(connection, _SAVEPOINT_TEST_VIEW_NAMES)
+        # savepoint_a failed to canonicalize → must NOT appear.
+        assert "savepoint_a" not in created_names, f"got {sorted(created_names)}"
+        # savepoint_b and savepoint_c come after the failure; they MUST still be
+        # canonicalized. Before the fix the reused savepoint name caused
+        # both to be silently dropped.
+        assert "savepoint_b" in created_names, f"got {sorted(created_names)}"
+        assert "savepoint_c" in created_names, f"got {sorted(created_names)}"
 
 
 # ===========================================================================
