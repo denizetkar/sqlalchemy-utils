@@ -2646,39 +2646,60 @@ class TestViewMixinIntegration:
 
 class TestViewAutoRegistration:
 
-    def test_create_view_registers_view_record_in_metadata(self):
+    @pytest.mark.parametrize(
+        "factory, name, kwargs, expected_fields",
+        [
+            pytest.param(
+                create_view,
+                "test_view",
+                {},
+                {"name": "test_view", "materialized": False, "replace": False, "cascade_on_drop": True},
+                id="create_view_registers_view_record_in_metadata",
+            ),
+            pytest.param(
+                create_materialized_view,
+                "test_mv",
+                {"indexes": []},
+                {"name": "test_mv", "materialized": True, "replace": False, "cascade_on_drop": True},
+                id="create_materialized_view_registers_view_record_with_materialized_true",
+            ),
+            pytest.param(
+                create_view,
+                "replace_view",
+                {"replace": True},
+                {"replace": True},
+                id="create_view_with_replace_parameter",
+            ),
+            pytest.param(
+                create_view,
+                "no_cascade_view",
+                {"cascade_on_drop": False},
+                {"cascade_on_drop": False},
+                id="create_view_with_cascade_on_drop_parameter",
+            ),
+            pytest.param(
+                create_materialized_view,
+                "mv_default",
+                {"indexes": []},
+                {"cascade_on_drop": True},
+                id="default_cascade_on_drop_true",
+            ),
+        ],
+    )
+    def test_create_view_registers_view_record(self, factory, name, kwargs, expected_fields):
         metadata = sa.MetaData()
 
         selectable = select(Column("id", Integer), Column("name", sa.String))
-        create_view("test_view", selectable, metadata)
+        factory(name, selectable, metadata, **kwargs)
 
         assert "sqlalchemy_utils_views" in metadata.info
         assert len(metadata.info["sqlalchemy_utils_views"]) == 1
         record = metadata.info["sqlalchemy_utils_views"][0]
         assert isinstance(record, ViewRecord)
-        assert record.name == "test_view"
         assert record.selectable is selectable
         assert record.schema is None
-        assert record.materialized is False
-        assert record.replace is False
-        assert record.cascade_on_drop is True
-
-    def test_create_materialized_view_registers_view_record_with_materialized_true(self):
-        metadata = sa.MetaData()
-
-        selectable = select(Column("id", Integer), Column("name", sa.String))
-        create_materialized_view("test_mv", selectable, metadata, indexes=[])
-
-        assert "sqlalchemy_utils_views" in metadata.info
-        assert len(metadata.info["sqlalchemy_utils_views"]) == 1
-        record = metadata.info["sqlalchemy_utils_views"][0]
-        assert isinstance(record, ViewRecord)
-        assert record.name == "test_mv"
-        assert record.selectable is selectable
-        assert record.schema is None
-        assert record.materialized is True
-        assert record.replace is False
-        assert record.cascade_on_drop is True
+        for field, expected in expected_fields.items():
+            assert getattr(record, field) == expected
 
     def test_multiple_create_view_calls_append_multiple_records(self):
         metadata = sa.MetaData()
@@ -2713,36 +2734,6 @@ class TestViewAutoRegistration:
 
         assert regular_record.materialized is False
         assert mv_record.materialized is True
-
-    def test_create_view_with_replace_parameter(self):
-        metadata = sa.MetaData()
-
-        selectable = select(Column("id", Integer))
-        create_view("replace_view", selectable, metadata, replace=True)
-
-        assert len(metadata.info["sqlalchemy_utils_views"]) == 1
-        record = metadata.info["sqlalchemy_utils_views"][0]
-        assert record.replace is True
-
-    def test_create_view_with_cascade_on_drop_parameter(self):
-        metadata = sa.MetaData()
-
-        selectable = select(Column("id", Integer))
-        create_view("no_cascade_view", selectable, metadata, cascade_on_drop=False)
-
-        assert len(metadata.info["sqlalchemy_utils_views"]) == 1
-        record = metadata.info["sqlalchemy_utils_views"][0]
-        assert record.cascade_on_drop is False
-
-    def test_default_cascade_on_drop_true(self):
-        metadata = sa.MetaData()
-
-        selectable = select(Column("id", Integer))
-        create_materialized_view("mv_default", selectable, metadata, indexes=[])
-
-        assert len(metadata.info["sqlalchemy_utils_views"]) == 1
-        record = metadata.info["sqlalchemy_utils_views"][0]
-        assert record.cascade_on_drop is True
 
 
 # ===========================================================================
