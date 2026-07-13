@@ -24,17 +24,10 @@ from alembic.operations import MigrateOperation, Operations
 from sqlalchemy_utils.view import _quote_qualified_name
 
 
-def _validate_definition(definition: str) -> None:
-    if not isinstance(definition, str) or not definition:
+def _validate_non_empty_str(value: str, field_name: str) -> None:
+    if not isinstance(value, str) or not value:
         raise TypeError(
-            f"definition must be a non-empty string, got {type(definition).__name__}"
-        )
-
-
-def _validate_name(name: str) -> None:
-    if not isinstance(name, str) or not name:
-        raise TypeError(
-            f"name must be a non-empty string, got {type(name).__name__}"
+            f"{field_name} must be a non-empty string, got {type(value).__name__}"
         )
 
 
@@ -65,8 +58,8 @@ class CreateViewOp(MigrateOperation):
         schema: str | None = None,
         cascade_on_drop: bool = True,
     ) -> None:
-        _validate_name(name)
-        _validate_definition(definition)
+        _validate_non_empty_str(name, "name")
+        _validate_non_empty_str(definition, "definition")
         self.name = name
         self.definition = definition
         self.schema = schema or None
@@ -132,9 +125,9 @@ class DropViewOp(MigrateOperation):
         cascade: bool = True,
         definition: str | None = None,
     ) -> None:
-        _validate_name(name)
+        _validate_non_empty_str(name, "name")
         if definition is not None:
-            _validate_definition(definition)
+            _validate_non_empty_str(definition, "definition")
         self.name = name
         self.schema = schema or None
         self.cascade = cascade
@@ -210,8 +203,8 @@ class ReplaceViewOp(MigrateOperation):
         cascade: bool = True,
         old_definition: str | None = None,
     ) -> None:
-        _validate_name(name)
-        _validate_definition(definition)
+        _validate_non_empty_str(name, "name")
+        _validate_non_empty_str(definition, "definition")
         self.name = name
         self.definition = definition
         self.schema = schema or None
@@ -303,8 +296,8 @@ class CreateMaterializedViewOp(MigrateOperation):
         with_data: bool = False,
         cascade_on_drop: bool = True,
     ) -> None:
-        _validate_name(name)
-        _validate_definition(definition)
+        _validate_non_empty_str(name, "name")
+        _validate_non_empty_str(definition, "definition")
         self.name = name
         self.definition = definition
         self.schema = schema or None
@@ -382,9 +375,9 @@ class DropMaterializedViewOp(MigrateOperation):
         definition: str | None = None,
         with_data: bool = False,
     ) -> None:
-        _validate_name(name)
+        _validate_non_empty_str(name, "name")
         if definition is not None:
-            _validate_definition(definition)
+            _validate_non_empty_str(definition, "definition")
         self.name = name
         self.schema = schema or None
 
@@ -475,8 +468,8 @@ class ReplaceMaterializedViewOp(MigrateOperation):
         cascade: bool = True,
         old_definition: str | None = None,
     ) -> None:
-        _validate_name(name)
-        _validate_definition(definition)
+        _validate_non_empty_str(name, "name")
+        _validate_non_empty_str(definition, "definition")
         self.name = name
         self.definition = definition
         self.schema = schema or None
@@ -566,7 +559,7 @@ class RefreshMaterializedViewOp(MigrateOperation):
         schema: str | None = None,
         concurrently: bool = False,
     ) -> None:
-        _validate_name(name)
+        _validate_non_empty_str(name, "name")
         self.name = name
         self.schema = schema or None
         self.concurrently = concurrently
@@ -606,6 +599,14 @@ class RefreshMaterializedViewOp(MigrateOperation):
 # ===================================================================
 
 
+def _drop_impl(operations, op, view_type: str):
+    dialect = operations.get_bind().dialect
+    qualified = _quote_qualified_name(dialect, op.name, op.schema)
+    cascade_clause = " CASCADE" if op.cascade else ""
+    sql = f"DROP {view_type}VIEW IF EXISTS {qualified}{cascade_clause}"
+    operations.execute(sa.text(sql))
+
+
 @Operations.implementation_for(CreateViewOp)
 def _create_view_impl(operations: Operations, op: CreateViewOp) -> None:
     """Execute ``CREATE VIEW`` via the migration connection."""
@@ -618,11 +619,7 @@ def _create_view_impl(operations: Operations, op: CreateViewOp) -> None:
 @Operations.implementation_for(DropViewOp)
 def _drop_view_impl(operations: Operations, op: DropViewOp) -> None:
     """Execute ``DROP VIEW IF EXISTS`` via the migration connection."""
-    dialect = operations.get_bind().dialect
-    qualified = _quote_qualified_name(dialect, op.name, op.schema)
-    cascade_clause = " CASCADE" if op.cascade else ""
-    sql = f"DROP VIEW IF EXISTS {qualified}{cascade_clause}"
-    operations.execute(sa.text(sql))
+    _drop_impl(operations, op, "")
 
 
 @Operations.implementation_for(ReplaceViewOp)
@@ -668,11 +665,7 @@ def _drop_materialized_view_impl(
     operations: Operations, op: DropMaterializedViewOp
 ) -> None:
     """Execute ``DROP MATERIALIZED VIEW IF EXISTS`` via the migration connection."""
-    dialect = operations.get_bind().dialect
-    qualified = _quote_qualified_name(dialect, op.name, op.schema)
-    cascade_clause = " CASCADE" if op.cascade else ""
-    sql = f"DROP MATERIALIZED VIEW IF EXISTS {qualified}{cascade_clause}"
-    operations.execute(sa.text(sql))
+    _drop_impl(operations, op, "MATERIALIZED ")
 
 
 @Operations.implementation_for(ReplaceMaterializedViewOp)
