@@ -20,6 +20,11 @@ Unreleased
   ``pip install sqlalchemy-utils[alembic]``. Activate by calling
   ``register_view_comparator()`` in your Alembic ``env.py`` before
   ``context.configure()``; see the View Migrations guide.
+
+  - Public operation classes: ``CreateViewOp``, ``DropViewOp``,
+    ``ReplaceViewOp``, ``CreateMaterializedViewOp``,
+    ``DropMaterializedViewOp``, ``ReplaceMaterializedViewOp``,
+    ``RefreshMaterializedViewOp``.
 - Add ``ViewMixin`` declarative mixin (with ``refresh()`` for materialized views)
   for typed ORM view classes
 - **Breaking:** Add ``ViewReadonlyError`` exception (subclasses ``sa.exc.InvalidRequestError``);

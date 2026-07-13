@@ -5,10 +5,6 @@ View Migrations
 
    If upgrading from a previous version, ``__view_cascade_on_drop__`` has
    been renamed to ``__view_cascade__``. The old name is no longer honored.
-   ``CreateViewOp(replace=True)`` is deprecated; use ``op.replace_view()``
-   instead. Only the Alembic op ``CreateViewOp(replace=True)`` is deprecated;
-   the runtime :func:`~sqlalchemy_utils.view.create_view` ``replace=True`` DDL
-   helper remains supported.
 
 Quick start
 -----------
@@ -82,6 +78,10 @@ comparator for view DDL:
   single outer savepoint (with nested per-view savepoints), their definitions
   read back from ``pg_views``/``pg_matviews`` in one batch, then the outer
   savepoint is rolled back.
+
+  Views whose ``CREATE`` fails inside the savepoint are skipped (no migration
+  op generated for them) — check the migration output for warnings if a view
+  seems missing.
 
 * **PostgreSQL only**: View autogenerate comparison queries
   ``pg_views``/``pg_matviews`` and uses savepoints.  On non-PostgreSQL
@@ -232,11 +232,6 @@ database), adopting the autogenerate integration needs a little care.
    ``ViewMixin`` subclasses set ``__view_cascade_on_drop__``, rename it;
    the old name is no longer honored.
 
-6. **Replace ``CreateViewOp(replace=True)`` with ``op.replace_view()``**.
-   The ``replace=True`` keyword on ``CreateViewOp`` is deprecated; use
-   ``op.replace_view()`` (or ``ReplaceViewOp`` directly) for view-replacement
-   migrations.
-
 .. warning::
 
    The first autogenerate run against a legacy database will propose dropping
@@ -281,9 +276,10 @@ detection is registered this way by :func:`register_view_comparator`.
 ``Operations.register_operation`` exposes a new ``op.<name>(...)`` helper
 and its backing ``MigrateOperation`` subclass (the seven ``*ViewOp``
 classes are registered this way).  Finally,
-``renderers.dispatch_for(<OpClass>)`` teaches Alembic's offline SQL
-renderer how to emit ``CREATE``/``DROP``/``REFRESH`` DDL for each custom
-operation.  To add a new view-related operation, subclass
+``renderers.dispatch_for(<OpClass>)`` teaches Alembic how to render each
+custom operation as Python migration code (e.g., ``op.create_view(...)``),
+while ``@Operations.implementation_for`` emits the actual DDL when the
+migration is applied.  To add a new view-related operation, subclass
 ``MigrateOperation``, register it with ``Operations.register_operation``,
 implement ``reverse()`` for downgrade generation, and add a renderer via
 ``renderers.dispatch_for``.

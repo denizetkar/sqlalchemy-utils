@@ -377,7 +377,7 @@ class DropMaterializedViewOp(MigrateOperation):
         *,
         schema: str | None = None,
         # Named ``cascade`` for Alembic op convention; corresponds to
-        # ``cascade_on_drop`` in create_view() and ViewMixin.__view_cascade__.
+        # ``cascade_on_drop`` in create_materialized_view() and ViewMixin.__view_cascade__.
         cascade: bool = True,
         definition: str | None = None,
         with_data: bool = False,
@@ -387,6 +387,7 @@ class DropMaterializedViewOp(MigrateOperation):
             _validate_definition(definition)
         self.name = name
         self.schema = schema or None
+
         self.cascade = cascade
         self.definition = definition
         self.with_data = with_data
