@@ -1234,20 +1234,37 @@ class TestComparatorReplaceMV:
 class TestComparatorNoChanges:
 
     @pytest.mark.usefixtures("postgresql_dsn")
-    def test_no_changes_no_ops(self, cmp_test_base):
+    @pytest.mark.parametrize(
+        "create_sql, selectable, materialized, view_name",
+        [
+            pytest.param(
+                "CREATE VIEW cmp_test_view2 AS SELECT id, name FROM _cmp_test_base",
+                "SELECT id, name FROM _cmp_test_base",
+                False,
+                "cmp_test_view2",
+                id="regular_view",
+            ),
+            pytest.param(
+                "CREATE MATERIALIZED VIEW cmp_test_mv AS "
+                "SELECT id, name FROM _cmp_test_base WITH DATA",
+                "SELECT id, name FROM _cmp_test_base",
+                True,
+                "cmp_test_mv",
+                id="materialized_view",
+            ),
+        ],
+    )
+    def test_no_changes_no_ops(self, cmp_test_base, create_sql, selectable, materialized, view_name):
         connection = cmp_test_base
-        connection.execute(
-            sa.text(
-                "CREATE VIEW cmp_test_view2 AS SELECT id, name FROM _cmp_test_base"
-            )
-        )
+        connection.execute(sa.text(create_sql))
         connection.commit()
 
         metadata = sa.MetaData()
         metadata.info["sqlalchemy_utils_views"] = [
             ViewRecord(
-                name="cmp_test_view2",
-                selectable="SELECT id, name FROM _cmp_test_base",
+                name=view_name,
+                selectable=selectable,
+                materialized=materialized,
             )
         ]
 
@@ -1256,45 +1273,9 @@ class TestComparatorNoChanges:
         matching_view_ops = [
             op
             for op in upgrade_ops.ops
-            if getattr(op, "name", None) == "cmp_test_view2"
+            if getattr(op, "name", None) == view_name
         ]
         assert len(matching_view_ops) == 0, f"got: {matching_view_ops}"
-
-    @pytest.mark.usefixtures("postgresql_dsn")
-    def test_no_change_materialized_view(self, cmp_test_base):
-        connection = cmp_test_base
-        connection.execute(
-            sa.text(
-                "CREATE MATERIALIZED VIEW cmp_test_mv AS "
-                "SELECT id, name FROM _cmp_test_base WITH DATA"
-            )
-        )
-        connection.commit()
-
-        metadata = sa.MetaData()
-        metadata.info["sqlalchemy_utils_views"] = [
-            ViewRecord(
-                name="cmp_test_mv",
-                selectable="SELECT id, name FROM _cmp_test_base",
-                materialized=True,
-            )
-        ]
-
-        upgrade_ops = _run_comparator(connection, metadata)
-
-        mv_ops = [
-            op
-            for op in upgrade_ops.ops
-            if isinstance(
-                op,
-                (
-                    CreateMaterializedViewOp,
-                    ReplaceMaterializedViewOp,
-                    DropMaterializedViewOp,
-                ),
-            )
-        ]
-        assert len(mv_ops) == 0, f"got: {mv_ops}"
 
 
 class TestComparatorSavepointRollback:
