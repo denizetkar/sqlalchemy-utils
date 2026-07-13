@@ -148,16 +148,15 @@ class ViewMixin:
         cascade_on_drop = getattr(cls, '__view_cascade__', True)
         # Aliases are only meaningful for materialized views (regular views
         # do not support column aliases via create_table_from_selectable).
-        aliases = None
+        aliases = getattr(cls, '__view_aliases__', None)
         if is_materialized:
-            aliases = getattr(cls, '__view_aliases__', None)
+            pass  # aliases already set
         else:
             # Warn if __view_aliases__ is set on a non-materialized
             # view — it will be silently ignored, which is a common source of
             # confusion. Aliases are only honored for materialized views (see
             # create_materialized_view / create_table_from_selectable).
-            declared_aliases = getattr(cls, '__view_aliases__', None)
-            if declared_aliases is not None:
+            if aliases is not None:
                 logger.warning(
                     "%s.__view_aliases__ is set but the view is not "
                     "materialized (__view_materialized__=False); aliases are "

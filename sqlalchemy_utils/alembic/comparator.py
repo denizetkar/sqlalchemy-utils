@@ -49,16 +49,6 @@ from sqlalchemy_utils.alembic.operations import (
 )
 from sqlalchemy_utils.alembic.depend import resolve_create_order, resolve_drop_order
 
-_VIEW_OP_TYPES: tuple[type, ...] = (
-    CreateViewOp,
-    DropViewOp,
-    ReplaceViewOp,
-    CreateMaterializedViewOp,
-    DropMaterializedViewOp,
-    ReplaceMaterializedViewOp,
-    RefreshMaterializedViewOp,
-)
-
 log = logging.getLogger(__name__)
 
 
@@ -654,7 +644,7 @@ def compare_views(
         # getattr returns None for all of them — without this guard every
         # non-view op collides on ("create_or_replace"|"drop", None, None)
         # and all but the first are silently discarded.
-        if not isinstance(op, _VIEW_OP_TYPES):
+        if not (_is_create_family(op) or _is_drop_family(op) or isinstance(op, RefreshMaterializedViewOp)):
             deduped.append(op)
             continue
         # Normalize op type to a family prefix (create/replace/drop)
