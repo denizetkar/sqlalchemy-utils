@@ -274,6 +274,7 @@ def create_materialized_view(
         qualified with the schema in the emitted ``CREATE``/``DROP``
         DDL.
     :returns: The created :class:`~sqlalchemy.Table` instance.
+    :raises TypeError: if *selectable* is a string, or *indexes* is not a list or None.
 
     Same as for ``create_view`` except that a ``CREATE MATERIALIZED VIEW``
     statement is emitted instead of a ``CREATE VIEW``.
@@ -360,6 +361,7 @@ def create_view(
         which the view should be created. When supplied, the view name is
         qualified with the schema in the emitted ``CREATE``/``DROP`` DDL.
     :returns: The created :class:`~sqlalchemy.Table` instance.
+    :raises TypeError: if *selectable* is a string — wrap in ``sa.text(...)`` first.
 
     The process for creating a view is similar to the standard way that a
     table is constructed, except that a selectable is provided instead of a
