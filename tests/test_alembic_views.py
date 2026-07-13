@@ -4336,3 +4336,156 @@ class TestCompileDropViewMaterialized:
         assert "DROP MATERIALIZED VIEW" in sql
         assert "CASCADE" in sql
 
+
+# ===========================================================================
+# Cascade propagation for materialized view create/replace paths
+# ===========================================================================
+
+class TestMaterializedViewCascadePropagation:
+    """CreateMaterializedViewOp.cascade_on_drop and
+    ReplaceMaterializedViewOp.cascade must honor ViewRecord.cascade_on_drop
+    on the create and replace paths (mirroring the regular-view behavior
+    covered by TestCascadeOnDropPropagation).
+    """
+
+    def test_create_mv_propagates_cascade_false(self):
+        """CreateMaterializedViewOp.cascade_on_drop=False when
+        ViewRecord.cascade_on_drop is False and the MV is absent from the
+        DB (Create path, not Drop)."""
+        vr = ViewRecord(
+            name="mv_new_nocascade", selectable="SELECT 1 AS col",
+            schema=None, materialized=True, cascade_on_drop=False,
+        )
+        autogen_context, upgrade_ops = _make_mock_autogen_context(
+            model_views=[vr]
+        )
+        with _patch_comparator(
+            db_views={}, db_mvs={},
+            canonical_return=({}, {"mv_new_nocascade": "SELECT 1 AS col"}, set()),
+        ):
+            comparator_module.compare_views(
+                autogen_context, upgrade_ops, [None]
+            )
+
+        create_ops = [
+            op for op in upgrade_ops.ops
+            if isinstance(op, CreateMaterializedViewOp)
+        ]
+        assert len(create_ops) == 1, f"got {create_ops}"
+        assert create_ops[0].name == "mv_new_nocascade"
+        assert create_ops[0].cascade_on_drop is False, (
+            f"got {create_ops[0].cascade_on_drop!r}"
+        )
+
+    def test_replace_mv_propagates_cascade_false(self):
+        """ReplaceMaterializedViewOp.cascade=False when
+        ViewRecord.cascade_on_drop is False and the MV definition changed
+        (Replace path, not Create/Drop)."""
+        vr = ViewRecord(
+            name="mv_replace_nocascade",
+            selectable="SELECT 1 AS col",
+            schema=None,
+            materialized=True,
+            cascade_on_drop=False,
+        )
+        autogen_context, upgrade_ops = _make_mock_autogen_context(
+            model_views=[vr]
+        )
+        with _patch_comparator(
+            db_views={}, db_mvs={"mv_replace_nocascade": "SELECT 2 AS col"},
+            canonical_return=({}, {"mv_replace_nocascade": "SELECT 1 AS col"}, set()),
+        ):
+            comparator_module.compare_views(
+                autogen_context, upgrade_ops, [None]
+            )
+
+        replace_ops = [
+            op for op in upgrade_ops.ops
+            if isinstance(op, ReplaceMaterializedViewOp)
+        ]
+        assert len(replace_ops) == 1, f"got {replace_ops}"
+        assert replace_ops[0].name == "mv_replace_nocascade"
+        assert replace_ops[0].cascade is False, (
+            f"got {replace_ops[0].cascade!r}"
+        )
+
+
+# ===========================================================================
+# pg_catalog: explicit schema filter
+# ===========================================================================
+
+class TestGetDatabaseViewsWithExplicitSchema:
+    """get_database_views(connection, schema="public") must return only the
+    views in the given schema, keyed by view name."""
+
+    @pytest.mark.usefixtures("postgresql_dsn")
+    def test_get_database_views_with_explicit_schema(self, connection):
+        _drop_views(connection, ["schema_filter_view"])
+        _create_base_table(connection)
+        try:
+            connection.execute(
+                sa.text(
+                    "CREATE VIEW schema_filter_view AS "
+                    "SELECT id FROM _cmp_test_base"
+                )
+            )
+            connection.commit()
+
+            views = get_database_views(connection, schema="public")
+            assert "schema_filter_view" in views
+            assert "SELECT" in views["schema_filter_view"].upper()
+        finally:
+            _drop_views(connection, ["schema_filter_view"])
+            _drop_base_table(connection)
+
+
+# ===========================================================================
+# register_view_comparator idempotency
+# ===========================================================================
+
+class TestRegisterViewComparatorIdempotency:
+    """register_view_comparator() must be safe to call more than once."""
+
+    def test_register_view_comparator_is_idempotent(self):
+        # The autouse ``_reset_registered`` fixture clears the flag before
+        # this test runs, so the first call performs the registration.
+        assert comparator_module._registered is False
+        register_view_comparator()
+        assert comparator_module._registered is True
+        # Second call must be a no-op and must not raise.
+        register_view_comparator()
+        assert comparator_module._registered is True
+
+
+# ===========================================================================
+# create_materialized_view: index creation on SQLite
+# ===========================================================================
+
+class TestCreateMaterializedViewWithIndexes:
+    """create_materialized_view must create the backing table's indexes
+    when metadata.create_all() is invoked (SQLite runtime path)."""
+
+    def test_create_materialized_view_with_indexes(self):
+        metadata = sa.MetaData()
+        source = sa.Table(
+            "mv_src", metadata,
+            sa.Column("col", sa.Integer),
+        )
+        selectable = sa.select(source.c.col)
+        mv_table = create_materialized_view(
+            "mv_name",
+            selectable,
+            metadata,
+            indexes=[sa.Index("idx_col", sa.Column("col", sa.Integer))],
+        )
+
+        engine = sa.create_engine("sqlite:///:memory:")
+        # Create the source table and the MV backing table directly. SQLite
+        # does not support CREATE MATERIALIZED VIEW, so metadata.create_all
+        # would abort on the MV DDL listener before the backing table exists.
+        source.create(engine)
+        mv_table.create(engine)
+        indexes = sa.inspect(engine).get_indexes("mv_name")
+        index_names = [idx["name"] for idx in indexes]
+        assert "idx_col" in index_names, f"got {index_names!r}"
+
