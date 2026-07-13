@@ -173,7 +173,7 @@ def create_table_from_selectable(
     ] + indexes
     table = sa.Table(name, metadata, *args, schema=schema, **kwargs)
 
-    if not any([c.primary_key for c in cols]):
+    if not any(c.primary_key for c in cols):
         table.append_constraint(
             PrimaryKeyConstraint(*[c.name for c in cols])
         )

@@ -123,6 +123,13 @@ comparator for view DDL:
     ``select``, ``from``, ``user``) may produce false dependency edges;
     prefer distinctive view names.  Full SQL-AST parsing is not yet
     implemented.
+  - Cross-schema dependencies between **new** views are not detected during
+    canonicalization. If a new view in schema A depends on a new view in schema B,
+    the dependent view may be skipped (a warning is logged). Create the dependency
+    view in a separate migration first.
+  - The cascade-dependency warning (``_warn_if_dependents``) checks for dependents
+    within the same schema only. Cross-schema dependents are not warned before
+    ``CASCADE`` drops.
 
 .. warning::
 

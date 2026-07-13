@@ -412,17 +412,6 @@ class TestPgCatalogRejectsNonPostgresDialect:
     broken SQL against a dialect that lacks ``pg_catalog``.
     """
 
-    @staticmethod
-    def _make_sqlite_connection():
-        """Return a real SQLAlchemy Connection backed by SQLite.
-
-        Using a real connection (instead of a MagicMock) ensures the
-        dialect check happens before any SQL is sent to the wire, so
-        SQLite never sees the PostgreSQL-specific catalog query.
-        """
-        engine = sa.create_engine("sqlite:///:memory:")
-        return engine.connect()
-
     @pytest.mark.parametrize(
         "fn,fn_args,fn_kwargs",
         [
@@ -433,9 +422,10 @@ class TestPgCatalogRejectsNonPostgresDialect:
         ids=["get_database_views", "get_database_materialized_views", "get_dependent_views"],
     )
     def test_non_pg_dialect_raises_not_implemented(self, fn, fn_args, fn_kwargs):
-        connection = self._make_sqlite_connection()
-        with pytest.raises(NotImplementedError, match="PostgreSQL"):
-            fn(connection, *fn_args, **fn_kwargs)
+        engine = sa.create_engine("sqlite:///:memory:")
+        with engine.connect() as connection:
+            with pytest.raises(NotImplementedError, match="PostgreSQL"):
+                fn(connection, *fn_args, **fn_kwargs)
 
 
 # ===========================================================================
@@ -1286,6 +1276,42 @@ class TestComparatorNoChanges:
             if getattr(op, "name", None) == "cmp_test_view2"
         ]
         assert len(matching_view_ops) == 0, f"got: {matching_view_ops}"
+
+    @pytest.mark.usefixtures("postgresql_dsn")
+    def test_no_change_materialized_view(self, cmp_test_base):
+        connection = cmp_test_base
+        connection.execute(
+            sa.text(
+                "CREATE MATERIALIZED VIEW cmp_test_mv AS "
+                "SELECT id, name FROM _cmp_test_base WITH DATA"
+            )
+        )
+        connection.commit()
+
+        metadata = sa.MetaData()
+        metadata.info["sqlalchemy_utils_views"] = [
+            ViewRecord(
+                name="cmp_test_mv",
+                selectable="SELECT id, name FROM _cmp_test_base",
+                materialized=True,
+            )
+        ]
+
+        upgrade_ops = _run_comparator(connection, metadata)
+
+        mv_ops = [
+            op
+            for op in upgrade_ops.ops
+            if isinstance(
+                op,
+                (
+                    CreateMaterializedViewOp,
+                    ReplaceMaterializedViewOp,
+                    DropMaterializedViewOp,
+                ),
+            )
+        ]
+        assert len(mv_ops) == 0, f"got: {mv_ops}"
 
 
 class TestComparatorSavepointRollback:
