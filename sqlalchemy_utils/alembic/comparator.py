@@ -692,7 +692,7 @@ def register_view_comparator() -> None:
         register_view_comparator()
 
     This function is idempotent (safe to call more than once).  The
-    comparator is registered lazily — merely importing an Op class from
+    comparator is registered explicitly — merely importing an Op class from
     :mod:`sqlalchemy_utils.alembic` does **not** activate autogenerate.
     """
     global _registered

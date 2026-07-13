@@ -102,6 +102,8 @@ comparator for view DDL:
   - New views that need to be created
   - Existing views no longer defined in your models
   - Changed view definitions (detected via canonicalization)
+  - When a view changes type (regular ↔ materialized), the drop of the old
+    type is emitted before the create of the new type to avoid name collisions.
 
   ``__view_replace__`` (ViewMixin) controls whether runtime DDL emits
   ``CREATE OR REPLACE VIEW``; autogenerate emits ``ReplaceViewOp`` when

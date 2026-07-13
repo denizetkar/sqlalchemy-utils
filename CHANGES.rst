@@ -69,6 +69,10 @@ Unreleased
 - ``ViewMixin.__view_replace__`` controls whether runtime DDL emits
   ``CREATE OR REPLACE VIEW``; autogenerate emits ``ReplaceViewOp``
   regardless of this flag.
+- ``ViewMixin`` now validates column presence (raises on missing columns,
+  warns on type drift) and requires ``__tablename__`` at subclass creation.
+- Autogenerate canonicalizes views in a single outer savepoint; views whose
+  ``CREATE`` fails are skipped (logged) rather than dropped.
 
 0.42.1 (2025-12-12)
 ^^^^^^^^^^^^^^^^^^^
