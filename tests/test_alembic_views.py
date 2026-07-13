@@ -189,18 +189,10 @@ def _find_view_listener(metadata: sa.MetaData, materialized: bool | None = None)
     *materialized*=None returns any CreateView listener; True/False
     filters on the listener's ``materialized`` attribute.
     """
-    listeners = list(metadata.dispatch.after_create)
-
-    def _listener_materialized(listener) -> bool | None:
-        if isinstance(listener, CreateView):
-            return listener.materialized
-        return getattr(listener, "materialized", None)
-
     found = [
-        listener
-        for listener in listeners
-        if isinstance(listener, CreateView)
-        and (materialized is None or _listener_materialized(listener) is materialized)
+        l for l in metadata.dispatch.after_create
+        if isinstance(l, CreateView)
+        and (materialized is None or l.materialized is materialized)
     ]
     return found[0] if found else None
 
