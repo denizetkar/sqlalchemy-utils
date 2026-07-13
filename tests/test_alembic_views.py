@@ -4088,15 +4088,15 @@ class TestStringSelectableGuard:
     a helpful TypeError directing the caller to wrap in sa.text().
     """
 
-    def test_create_view_rejects_string_selectable(self):
+    @pytest.mark.parametrize(
+        "factory",
+        [create_view, create_materialized_view],
+        ids=["create_view", "create_materialized_view"],
+    )
+    def test_rejects_string_selectable(self, factory):
         md = sa.MetaData()
         with pytest.raises(TypeError, match="sa.text"):
-            create_view("v", "SELECT 1", md)
-
-    def test_create_materialized_view_rejects_string_selectable(self):
-        md = sa.MetaData()
-        with pytest.raises(TypeError, match="sa.text"):
-            create_materialized_view("mv", "SELECT 1", md)
+            factory("v", "SELECT 1", md)
 
 
 # ===========================================================================
