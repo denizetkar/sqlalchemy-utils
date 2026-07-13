@@ -277,9 +277,13 @@ class TestPositionalCompat:
         assert rmv.concurrently is False
         assert rmv.schema is None
 
-    def test_refresh_materialized_view_positional_concurrently(self):
-        rmv = RefreshMaterializedView("v", True)
+    def test_refresh_materialized_view_concurrently_keyword_only(self):
+        rmv = RefreshMaterializedView("v", concurrently=True)
         assert rmv.concurrently is True
+
+    def test_refresh_materialized_view_concurrently_positional_rejected(self):
+        with pytest.raises(TypeError):
+            RefreshMaterializedView("v", True)  # noqa: positional concurrently
 
     def test_refresh_materialized_view_schema_keyword_only(self):
         with pytest.raises(TypeError):

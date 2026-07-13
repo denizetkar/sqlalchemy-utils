@@ -4064,24 +4064,40 @@ class TestRuntimePositionalParams:
         table = create_materialized_view("mv", sel, md, None, None, True)
         assert isinstance(table, sa.Table)
 
-    def test_refresh_materialized_view_concurrently_positional_works(self):
-        """Passing ``concurrently`` positionally to refresh_materialized_view
+    def test_refresh_materialized_view_concurrently_keyword_only(self):
+        """Passing ``concurrently`` as keyword to refresh_materialized_view
         must succeed (does not touch DB; just constructs the DDL element)."""
         md = sa.MetaData()
         sel = sa.select(sa.text("1"))
         create_materialized_view("mv", sel, md)
         session = MagicMock()
-        refresh_materialized_view(session, "mv", True)
+        refresh_materialized_view(session, "mv", concurrently=True)
         session.execute.assert_called_once()
         executed = session.execute.call_args[0][0]
         assert isinstance(executed, RefreshMaterializedView)
         assert executed.concurrently is True
 
-    def test_refresh_materialized_view_ddl_concurrently_positional_works(self):
-        """Passing ``concurrently`` positionally to RefreshMaterializedView
+    def test_refresh_materialized_view_concurrently_positional_rejected(self):
+        """Passing ``concurrently`` positionally to refresh_materialized_view
+        must raise TypeError (keyword-only)."""
+        md = sa.MetaData()
+        sel = sa.select(sa.text("1"))
+        create_materialized_view("mv", sel, md)
+        session = MagicMock()
+        with pytest.raises(TypeError):
+            refresh_materialized_view(session, "mv", True)  # noqa: positional
+
+    def test_refresh_materialized_view_ddl_concurrently_keyword_only(self):
+        """Passing ``concurrently`` as keyword to RefreshMaterializedView
         constructor must succeed."""
-        element = RefreshMaterializedView("mv", True)
+        element = RefreshMaterializedView("mv", concurrently=True)
         assert element.concurrently is True
+
+    def test_refresh_materialized_view_ddl_concurrently_positional_rejected(self):
+        """Passing ``concurrently`` positionally to RefreshMaterializedView
+        constructor must raise TypeError (keyword-only)."""
+        with pytest.raises(TypeError):
+            RefreshMaterializedView("mv", True)  # noqa: positional
 
 class TestStringSelectableGuard:
     """create_view / create_materialized_view reject string selectables with

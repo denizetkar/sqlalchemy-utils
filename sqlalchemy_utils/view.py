@@ -431,8 +431,8 @@ class RefreshMaterializedView(Executable, ClauseElement):
     def __init__(
         self,
         name: str,
-        concurrently: bool = False,
         *,
+        concurrently: bool = False,
         schema: str | None = None,
     ) -> None:
         self.name = name
@@ -453,8 +453,8 @@ def compile_refresh_materialized_view(element, compiler, **kw):
 def refresh_materialized_view(
     session: sa.orm.Session,
     name: str,
-    concurrently: bool = False,
     *,
+    concurrently: bool = False,
     schema: str | None = None,
 ) -> None:
     """Refreshes an already existing materialized view
@@ -481,4 +481,4 @@ def refresh_materialized_view(
     # Since session.execute() bypasses autoflush, we must manually flush in
     # order to include newly-created/modified objects in the refresh.
     session.flush()
-    session.execute(RefreshMaterializedView(name, concurrently, schema=schema))
+    session.execute(RefreshMaterializedView(name, concurrently=concurrently, schema=schema))
