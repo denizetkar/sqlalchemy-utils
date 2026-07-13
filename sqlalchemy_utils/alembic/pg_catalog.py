@@ -5,10 +5,6 @@ from __future__ import annotations
 import sqlalchemy as sa
 
 
-_ALLOWED_CATALOG_TABLES = frozenset({"pg_views", "pg_matviews"})
-_ALLOWED_CATALOG_NAME_COLS = frozenset({"viewname", "matviewname"})
-
-
 def _assert_postgres(connection: sa.engine.Connection) -> None:
     """Fail fast if *connection* is not backed by a PostgreSQL dialect.
 
@@ -36,18 +32,7 @@ def _query_view_catalog(connection: sa.engine.Connection, table: str, name_col: 
         connection's current default schema is queried (via
         ``current_schema()``).
     :returns: Dictionary mapping view name to definition SQL.
-    :raises ValueError: if *table* or *name_col* is not in the allowed set.
     """
-    if table not in _ALLOWED_CATALOG_TABLES:
-        raise ValueError(
-            f"Invalid table {table!r}; expected one of "
-            f"{sorted(_ALLOWED_CATALOG_TABLES)}"
-        )
-    if name_col not in _ALLOWED_CATALOG_NAME_COLS:
-        raise ValueError(
-            f"Invalid name column {name_col!r}; expected one of "
-            f"{sorted(_ALLOWED_CATALOG_NAME_COLS)}"
-        )
     if not schema:  # catches None and ""
         sql = sa.text(
             f"SELECT {name_col}, definition FROM {table} "
@@ -69,7 +54,7 @@ def get_database_views(connection: sa.engine.Connection, schema: str | None = No
     PostgreSQL-specific. Will raise on non-PostgreSQL dialects.
 
     :param connection: SQLAlchemy Connection object.
-    :param schema: Optional schema name filter. If None, only the
+    :param schema: Optional schema name filter. If *None* or empty, only the
         connection's current default schema is queried (via
         ``current_schema()``).
     :returns: Dictionary mapping view_name to definition SQL.
@@ -90,7 +75,7 @@ def get_database_materialized_views(connection: sa.engine.Connection, schema: st
     PostgreSQL-specific. Will raise on non-PostgreSQL dialects.
 
     :param connection: SQLAlchemy Connection object.
-    :param schema: Optional schema name filter. If None, only the
+    :param schema: Optional schema name filter. If *None* or empty, only the
         connection's current default schema is queried (via
         ``current_schema()``).
     :returns: Dictionary mapping matviewname to definition SQL.

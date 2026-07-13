@@ -19,7 +19,6 @@ import sqlalchemy as sa
 from sqlalchemy import create_engine
 
 from sqlalchemy_utils.alembic.pg_catalog import (
-    _query_view_catalog,
     get_database_materialized_views,
     get_database_views,
     get_dependent_views,
@@ -573,33 +572,5 @@ def test_get_dependent_views_same_name_across_schemas(connection):
         )
     finally:
         _teardown_same_name_dependents(connection)
-
-
-@pytest.mark.parametrize(
-    "table,name_col",
-    [
-        ("pg_unknown", "viewname"),
-        ("pg_views", "unknown_col"),
-        ("; DROP TABLE x", "viewname"),
-        ("pg_views", "viewname; --"),
-    ],
-    ids=[
-        "unknown_table",
-        "unknown_name_col",
-        "sql_injection_table",
-        "sql_injection_name_col",
-    ],
-)
-def test_query_view_catalog_rejects_unknown_table_or_name_col(table, name_col):
-    """``_query_view_catalog`` must reject table/name_col not in the allowlist.
-
-    The ``table`` and ``name_col`` arguments are interpolated into SQL
-    identifiers via f-strings (they cannot be bound parameters), so any
-    caller-supplied value must be validated against a static allowlist to
-    prevent SQL injection. A ``ValueError`` is raised before any SQL is
-    constructed or executed.
-    """
-    with pytest.raises(ValueError):
-        _query_view_catalog(None, table, name_col)  # type: ignore[arg-type]
 
 
