@@ -1,11 +1,6 @@
 View Migrations
 ===============
 
-.. warning::
-
-   If upgrading from a previous version, ``__view_cascade_on_drop__`` has
-   been renamed to ``__view_cascade__``. The old name is no longer honored.
-
 Quick start
 -----------
 
@@ -236,11 +231,6 @@ database), adopting the autogenerate integration needs a little care.
    ``alembic upgrade --sql`` so you can inspect the generated SQL before it
    touches the database.
 
-5. **Rename ``__view_cascade_on_drop__`` to ``__view_cascade__``**.  This
-   attribute was renamed to align with SQL/Alembic naming.  If your
-   ``ViewMixin`` subclasses set ``__view_cascade_on_drop__``, rename it;
-   the old name is no longer honored.
-
 .. warning::
 
    The first autogenerate run against a legacy database will propose dropping
@@ -304,8 +294,9 @@ The following helpers are used internally by
 public API.  The remaining helpers (``resolve_create_order``,
 ``resolve_drop_order``, ``get_database_views``,
 ``get_database_materialized_views``, ``get_dependent_views``) are exposed
-in ``sqlalchemy_utils.alembic.__all__`` and are safe for advanced
-callers to use directly.
+are importable from ``sqlalchemy_utils.alembic`` but are not part of the
+package's public exports; they are safe for advanced callers to use
+directly.
 
 .. autofunction:: sqlalchemy_utils.alembic.depend.resolve_create_order
 .. autofunction:: sqlalchemy_utils.alembic.depend.resolve_drop_order

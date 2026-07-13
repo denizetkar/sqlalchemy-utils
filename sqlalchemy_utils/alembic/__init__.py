@@ -7,8 +7,8 @@ metadata and the database.
 To enable autogenerate for views, call :func:`register_view_comparator`
 in your Alembic ``env.py`` before ``context.configure()``.
 
-Dependency-resolution and PostgreSQL catalog helpers are also exported
-for advanced use; see the View Migrations guide.
+Dependency-resolution and PostgreSQL catalog helpers are also importable
+from their submodules for advanced use; see the View Migrations guide.
 """
 
 from .comparator import register_view_comparator
