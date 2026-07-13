@@ -219,26 +219,17 @@ def _canonicalize_all_views(
     for vr in ordered:
         if vr.name in skipped or vr.name not in processed:
             continue
-        if vr.materialized:
-            if vr.name in db_mvs:
-                mv_defs[vr.name] = db_mvs[vr.name]
-            else:
-                log.warning(
-                    "View %r was processed but not found in catalog readback "
-                    "(may have been cascade-dropped); marking as skipped.",
-                    vr.name,
-                )
-                skipped.add(vr.name)
+        source = db_mvs if vr.materialized else db_views
+        target = mv_defs if vr.materialized else view_defs
+        if vr.name in source:
+            target[vr.name] = source[vr.name]
         else:
-            if vr.name in db_views:
-                view_defs[vr.name] = db_views[vr.name]
-            else:
-                log.warning(
-                    "View %r was processed but not found in catalog readback "
-                    "(may have been cascade-dropped); marking as skipped.",
-                    vr.name,
-                )
-                skipped.add(vr.name)
+            log.warning(
+                "View %r was processed but not found in catalog readback "
+                "(may have been cascade-dropped); marking as skipped.",
+                vr.name,
+            )
+            skipped.add(vr.name)
     return view_defs, mv_defs, skipped
 
 
@@ -640,20 +631,15 @@ def compare_views(
     deduped: list = []
     for op in upgrade_ops.ops:
         # Only view ops participate in dedup. Non-view ops (Alembic
-        # built-ins like CreateTableOp) lack a ``name`` attribute, so
-        # getattr returns None for all of them — without this guard every
-        # non-view op collides on ("create_or_replace"|"drop", None, None)
-        # and all but the first are silently discarded.
-        if not (_is_create_family(op) or _is_drop_family(op) or isinstance(op, RefreshMaterializedViewOp)):
+        # built-ins like CreateTableOp) and RefreshMaterializedViewOp
+        # (which is neither create- nor drop-family) pass through here
+        # unchanged — refresh ops are idempotent side effects, not state
+        # transitions that conflict with create/drop.
+        if not (_is_create_family(op) or _is_drop_family(op)):
             deduped.append(op)
             continue
         # Normalize op type to a family prefix (create/replace/drop)
-        # so conflicting ops for the same view are deduped. Refresh ops
-        # are excluded from dedup entirely — they are idempotent side
-        # effects, not state transitions that conflict with create/drop.
-        if isinstance(op, RefreshMaterializedViewOp):
-            deduped.append(op)
-            continue
+        # so conflicting ops for the same view are deduped.
         if _is_create_family(op):
             op_family = "create_or_replace"
         else:
