@@ -447,6 +447,34 @@ def _order_ops(ops, records, db, resolver_fn, action_label, *, dialect=None):
     return result
 
 
+def _collect_drop_ops(
+    db_defs,
+    model_defs,
+    skipped,
+    schema,
+    cascade_by_name,
+    op_class,
+    kind_label,
+    connection,
+    drop_ops,
+):
+    # Only drop entries that are genuinely in the DB but NOT in the
+    # model. Entries in `skipped` failed canonicalization and must NOT be
+    # dropped — they are still modeled, just not canonicalizable right now.
+    for name in db_defs:
+        if name in model_defs or name in skipped:
+            continue
+        drop_ops.append(
+            op_class(
+                name,
+                schema=schema,
+                cascade=cascade_by_name.get((name, schema), True),
+                definition=db_defs[name],
+            )
+        )
+        _warn_if_dependents(connection, name, schema, kind_label)
+
+
 def compare_views(
     autogen_context: AutogenContext,
     upgrade_ops: UpgradeOps,
@@ -557,18 +585,10 @@ def compare_views(
         # Only drop views that are genuinely in the DB but NOT in the
         # model. Views in `skipped` failed canonicalization and must NOT be
         # dropped — they are still modeled, just not canonicalizable right now.
-        for name in db_views:
-            if name in model_view_defs or name in skipped:
-                continue
-            drop_ops.append(
-                DropViewOp(
-                    name,
-                    schema=schema,
-                    cascade=cascade_by_name.get((name, schema), True),
-                    definition=db_views[name],
-                )
-            )
-            _warn_if_dependents(connection, name, schema, "view")
+        _collect_drop_ops(
+            db_views, model_view_defs, skipped, schema, cascade_by_name,
+            DropViewOp, "view", connection, drop_ops,
+        )
 
         # Materialized views
         create_ops.extend(
@@ -577,18 +597,10 @@ def compare_views(
                 is_materialized=True, cascade_by_name=cascade_by_name,
             )
         )
-        for name in db_mvs:
-            if name in model_mv_defs or name in skipped:
-                continue
-            drop_ops.append(
-                DropMaterializedViewOp(
-                    name,
-                    schema=schema,
-                    cascade=cascade_by_name.get((name, schema), True),
-                    definition=db_mvs[name],
-                )
-            )
-            _warn_if_dependents(connection, name, schema, "materialized view")
+        _collect_drop_ops(
+            db_mvs, model_mv_defs, skipped, schema, cascade_by_name,
+            DropMaterializedViewOp, "materialized view", connection, drop_ops,
+        )
 
         all_create_ops.extend(create_ops)
         all_drop_ops.extend(drop_ops)
