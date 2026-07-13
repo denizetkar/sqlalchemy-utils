@@ -417,24 +417,28 @@ def _reorder_cross_type_drops_before_creates(ops: list) -> list:
     if not cross_keys:
         return ops
 
-    cross_drops: list = []
+    all_drops: list = []
     cross_creates: list = []
     for op in ops:
         key = (getattr(op, "name", None), getattr(op, "schema", None))
-        if key not in cross_keys:
-            continue
         if _is_drop_family(op):
-            cross_drops.append(op)
-        elif _is_create_family(op):
+            all_drops.append(op)
+        elif _is_create_family(op) and key in cross_keys:
             cross_creates.append(op)
 
     result: list = []
     inserted = False
     for op in ops:
         key = (getattr(op, "name", None), getattr(op, "schema", None))
+        if _is_drop_family(op):
+            if not inserted:
+                result.extend(all_drops)
+                result.extend(cross_creates)
+                inserted = True
+            continue
         if key in cross_keys:
             if not inserted:
-                result.extend(cross_drops)
+                result.extend(all_drops)
                 result.extend(cross_creates)
                 inserted = True
             continue

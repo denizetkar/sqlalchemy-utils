@@ -3711,6 +3711,60 @@ class TestCrossTypeReorderPreservesDependencyOrder:
         assert names_and_types == expected, f"got {names_and_types!r}, expected {expected!r}"
 
 
+class TestCrossTypeReorderPreservesNonCrossDropDependency:
+    """When a view changes type AND another (non-cross-type) view being
+    dropped depends on it, the non-cross-type drop must be emitted before
+    the cross-type creates.
+
+    The comparator emits creates before drops. ``_reorder_cross_type_drops_before_creates``
+    currently extracts ONLY cross-type drops (drops whose (name, schema) is
+    in ``cross_keys``) and moves them before the cross-type creates. A
+    non-cross-type drop (a view being dropped that is NOT changing type)
+    stays in its original position — after the cross-type creates. If that
+    view depends on a cross-type view, it ends up dropped AFTER the
+    cross-type view's new type is created, while the old type (which the
+    dependent references) is already gone.
+
+    The fix: when cross_keys is non-empty, extract ALL drops (not just
+    cross-type drops) and emit them before ALL cross-type creates. Non-cross
+    creates and other ops stay in their original positions.
+    """
+
+    def test_non_cross_drop_depends_on_cross_type_view_dropped_before_create(self):
+        """View A changes type (regular→materialized). View B is a regular
+        view being dropped that depends on A. B's DropViewOp must appear
+        before A's CreateMaterializedViewOp, and before A's DropViewOp
+        (B is a dependent, so it must be dropped first).
+        """
+        # A changes type regular→materialized (cross-type).
+        create_mv_a = CreateMaterializedViewOp("a", "SELECT 1")
+        drop_view_a = DropViewOp("a", definition="SELECT 1 AS id")
+        # B is a regular view being dropped (non-cross-type), depends on A.
+        drop_view_b = DropViewOp("b", definition="SELECT * FROM a")
+
+        # Comparator layout: create_ops extended before drop_ops.
+        ops = [create_mv_a, drop_view_b, drop_view_a]
+
+        result = _reorder_cross_type_drops_before_creates(list(ops))
+
+        names_and_types = [(type(o).__name__, o.name) for o in result]
+
+        # B depends on A, so B must be dropped before A.
+        drop_b_idx = names_and_types.index(("DropViewOp", "b"))
+        drop_a_idx = names_and_types.index(("DropViewOp", "a"))
+        assert drop_b_idx < drop_a_idx, (
+            f"B must be dropped before A; got indices {drop_b_idx}, {drop_a_idx}; "
+            f"ops={names_and_types!r}"
+        )
+
+        # All drops must come before all cross-type creates.
+        create_a_idx = names_and_types.index(("CreateMaterializedViewOp", "a"))
+        assert drop_a_idx < create_a_idx, (
+            f"all drops must precede creates; got drop_a={drop_a_idx}, "
+            f"create_a={create_a_idx}; ops={names_and_types!r}"
+        )
+
+
 # ===========================================================================
 # CreateMaterializedViewOp cascade_on_drop
 # ===========================================================================
