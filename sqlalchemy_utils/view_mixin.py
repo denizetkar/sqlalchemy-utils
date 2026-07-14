@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 def _view_before_flush(session, flush_context, instances):
+    """Before-flush listener that rejects writes to view-backed ORM instances."""
     for instance in session.new | session.dirty | session.deleted:
         if isinstance(instance, ViewMixin):
             raise ViewReadonlyError(

@@ -470,6 +470,7 @@ def refresh_materialized_view(
         Keyword-only. An optional string specifying the schema (database) in
         which the materialized view resides. When supplied, the view name is
         qualified with the schema in the emitted ``REFRESH MATERIALIZED VIEW`` DDL.
+    :returns: None
 
     Example::
 
