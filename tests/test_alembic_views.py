@@ -287,30 +287,49 @@ def _patch_comparator(
 
 class TestViewRecordCreation:
 
-    def test_create_with_minimum_fields(self):
-        record = ViewRecord(name="test_view", selectable="SELECT 1")
-        assert record.name == "test_view"
-        assert record.selectable == "SELECT 1"
-        assert record.schema is None
-        assert record.materialized is False
-        assert record.replace is False
-        assert record.cascade_on_drop is True
-
-    def test_create_with_all_fields(self):
-        record = ViewRecord(
-            name="test_view",
-            selectable="SELECT 1",
-            schema="public",
-            materialized=True,
-            replace=True,
-            cascade_on_drop=False,
-        )
-        assert record.name == "test_view"
-        assert record.selectable == "SELECT 1"
-        assert record.schema == "public"
-        assert record.materialized is True
-        assert record.replace is True
-        assert record.cascade_on_drop is False
+    @pytest.mark.parametrize(
+        "kwargs, expected",
+        [
+            (
+                {"name": "test_view", "selectable": "SELECT 1"},
+                {
+                    "name": "test_view",
+                    "selectable": "SELECT 1",
+                    "schema": None,
+                    "materialized": False,
+                    "replace": False,
+                    "cascade_on_drop": True,
+                },
+            ),
+            (
+                {
+                    "name": "test_view",
+                    "selectable": "SELECT 1",
+                    "schema": "public",
+                    "materialized": True,
+                    "replace": True,
+                    "cascade_on_drop": False,
+                },
+                {
+                    "name": "test_view",
+                    "selectable": "SELECT 1",
+                    "schema": "public",
+                    "materialized": True,
+                    "replace": True,
+                    "cascade_on_drop": False,
+                },
+            ),
+        ],
+        ids=["minimum", "all_fields"],
+    )
+    def test_create_with_fields(self, kwargs, expected):
+        record = ViewRecord(**kwargs)
+        assert record.name == expected["name"]
+        assert record.selectable == expected["selectable"]
+        assert record.schema == expected["schema"]
+        assert record.materialized is expected["materialized"]
+        assert record.replace is expected["replace"]
+        assert record.cascade_on_drop is expected["cascade_on_drop"]
 
     def test_create_with_empty_string_schema_normalizes_to_none(self):
         """Empty-string schema is falsy and must be normalized to None.
@@ -920,21 +939,36 @@ def test_renderer_schema_omitted_when_none(renderer, op_factory):
     assert "schema=" not in result
 
 
+@pytest.mark.parametrize(
+    "renderer,op_factory",
+    [
+        (render_drop_view, lambda **kw: DropViewOp("v", **kw)),
+        (render_replace_view, lambda **kw: ReplaceViewOp("v", "SELECT 2", **kw)),
+        (render_drop_materialized_view, lambda **kw: DropMaterializedViewOp("mv", **kw)),
+    ],
+    ids=["drop_view", "replace_view", "drop_materialized_view"],
+)
+class TestRendererCascadeOmission:
+
+    def test_cascade_omitted_when_true(self, renderer, op_factory):
+        """``cascade=True`` (the default) is NOT rendered."""
+        op = op_factory()
+        rendered = renderer(_make_autogen_context(), op)
+        assert "cascade=" not in rendered, f"got: {rendered!r}"
+
+    def test_cascade_included_when_false(self, renderer, op_factory):
+        """``cascade=False`` must be rendered."""
+        op = op_factory(cascade=False)
+        rendered = renderer(_make_autogen_context(), op)
+        assert "cascade=False" in rendered, f"got: {rendered!r}"
+
+
 class TestRendererDropView:
 
     def test_renders_definition(self):
         op = DropViewOp("v", schema="public", definition="SELECT 1")
         rendered = render_drop_view(_make_autogen_context(), op)
         assert "definition=" in rendered
-
-    def test_omits_default_cascade(self):
-        op = DropViewOp("v", cascade=True)
-        result = render_drop_view(_make_autogen_context(), op)
-        assert "cascade=" not in result
-
-        op_no_cascade = DropViewOp("v", cascade=False)
-        result_no = render_drop_view(_make_autogen_context(), op_no_cascade)
-        assert "cascade=False" in result_no
 
 
 class TestRendererReplaceView:
@@ -944,30 +978,8 @@ class TestRendererReplaceView:
         rendered = render_replace_view(_make_autogen_context(), op)
         assert "old_definition=" in rendered
 
-    def test_cascade_omitted_when_true(self):
-        """Renderer omits cascade when True (the default)."""
-        op = ReplaceViewOp("v", "SELECT 2")
-        result = render_replace_view(_make_autogen_context(), op)
-        assert "cascade=" not in result
-
-    def test_cascade_included_when_false(self):
-        """Renderer includes cascade=False when cascade is disabled."""
-        op = ReplaceViewOp("v", "SELECT 2", cascade=False)
-        result = render_replace_view(_make_autogen_context(), op)
-        assert "cascade=False" in result
-
 
 class TestRendererDropMaterializedView:
-
-    def test_cascade_omitted_when_true(self):
-        op = DropMaterializedViewOp("mv_stats")
-        result = render_drop_materialized_view(_make_autogen_context(), op)
-        assert "cascade=" not in result
-
-    def test_cascade_included_when_false(self):
-        op = DropMaterializedViewOp("mv_stats", cascade=False)
-        result = render_drop_materialized_view(_make_autogen_context(), op)
-        assert "cascade=False" in result
 
     def test_renders_definition(self):
         op = DropMaterializedViewOp("mv", definition="SELECT 1")
