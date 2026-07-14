@@ -458,9 +458,7 @@ def _collect_drop_ops(
     connection,
     drop_ops,
 ):
-    # Only drop entries that are genuinely in the DB but NOT in the
-    # model. Entries in `skipped` failed canonicalization and must NOT be
-    # dropped — they are still modeled, just not canonicalizable right now.
+    """Collect drop ops for DB views not in the model, warning about dependents."""
     for name in db_defs:
         if name in model_defs or name in skipped:
             continue
