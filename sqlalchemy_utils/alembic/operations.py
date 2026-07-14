@@ -622,6 +622,29 @@ def _drop_view_impl(operations: Operations, op: DropViewOp) -> None:
     _drop_impl(operations, op, "")
 
 
+def _replace_impl(
+    operations, op, view_type: str, data_clause: str = ""
+) -> None:
+    """Drop then re-create a view (regular or materialized).
+
+    Builds ``DROP {view_type}VIEW IF EXISTS ... [CASCADE]`` followed by
+    ``CREATE {view_type}VIEW ... AS ...{data_clause}`` and executes both
+    statements on the migration connection. ``view_type`` is ``""`` for a
+    regular view or ``"MATERIALIZED "`` for a materialized view;
+    ``data_clause`` is the trailing `` WITH DATA``/`` WITH NO DATA``
+    fragment for materialized views and ``""`` for regular views.
+    """
+    dialect = operations.get_bind().dialect
+    qualified = _quote_qualified_name(dialect, op.name, op.schema)
+    cascade_clause = " CASCADE" if op.cascade else ""
+    drop_sql = f"DROP {view_type}VIEW IF EXISTS {qualified}{cascade_clause}"
+    create_sql = (
+        f"CREATE {view_type}VIEW {qualified} AS {op.definition}{data_clause}"
+    )
+    operations.execute(sa.text(drop_sql))
+    operations.execute(sa.text(create_sql))
+
+
 @Operations.implementation_for(ReplaceViewOp)
 def _replace_view_impl(operations: Operations, op: ReplaceViewOp) -> None:
     """Drop then re-create a regular view via the migration connection.
@@ -636,13 +659,7 @@ def _replace_view_impl(operations: Operations, op: ReplaceViewOp) -> None:
     This mirrors ``_replace_materialized_view_impl`` and the
     comparator's ``_build_create_sql``.
     """
-    dialect = operations.get_bind().dialect
-    qualified = _quote_qualified_name(dialect, op.name, op.schema)
-    cascade_clause = " CASCADE" if op.cascade else ""
-    drop_sql = f"DROP VIEW IF EXISTS {qualified}{cascade_clause}"
-    create_sql = f"CREATE VIEW {qualified} AS {op.definition}"
-    operations.execute(sa.text(drop_sql))
-    operations.execute(sa.text(create_sql))
+    _replace_impl(operations, op, "")
 
 
 @Operations.implementation_for(CreateMaterializedViewOp)
@@ -673,18 +690,8 @@ def _replace_materialized_view_impl(
     operations: Operations, op: ReplaceMaterializedViewOp
 ) -> None:
     """Drop then re-create a materialized view (PG has no OR REPLACE for MVs)."""
-    dialect = operations.get_bind().dialect
-    qualified = _quote_qualified_name(dialect, op.name, op.schema)
-    data_clause = "WITH DATA" if op.with_data else "WITH NO DATA"
-
-    cascade_clause = " CASCADE" if op.cascade else ""
-    drop_sql = f"DROP MATERIALIZED VIEW IF EXISTS {qualified}{cascade_clause}"
-    create_sql = (
-        f"CREATE MATERIALIZED VIEW {qualified} AS {op.definition} "
-        f"{data_clause}"
-    )
-    operations.execute(sa.text(drop_sql))
-    operations.execute(sa.text(create_sql))
+    data_clause = " WITH DATA" if op.with_data else " WITH NO DATA"
+    _replace_impl(operations, op, "MATERIALIZED ", data_clause)
 
 
 @Operations.implementation_for(RefreshMaterializedViewOp)
