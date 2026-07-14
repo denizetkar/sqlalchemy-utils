@@ -179,6 +179,14 @@ def create_table_from_selectable(
     return table
 
 
+def _assert_clause_element(selectable) -> None:
+    if isinstance(selectable, str):
+        raise TypeError(
+            "selectable must be a SQLAlchemy ClauseElement (e.g. sa.select(...) "
+            "or sa.text(...)), not a string. Wrap your SQL in sa.text('...') first."
+        )
+
+
 def _register_view_ddl(
     metadata,
     name,
@@ -302,11 +310,7 @@ def create_materialized_view(
         # Refresh later with refresh_materialized_view(session, "user_summary").
 
     """
-    if isinstance(selectable, str):
-        raise TypeError(
-            "selectable must be a SQLAlchemy ClauseElement (e.g. sa.select(...) "
-            "or sa.text(...)), not a string. Wrap your SQL in sa.text('...') first."
-        )
+    _assert_clause_element(selectable)
     if indexes is not None and not isinstance(indexes, list):
         raise TypeError(
             f"indexes must be a list or None, got {type(indexes).__name__}"
@@ -391,11 +395,7 @@ def create_view(
         create_view("premium_users", premium_members, metadata)
         # Run metadata.create_all(engine) to emit the CREATE VIEW.
     """
-    if isinstance(selectable, str):
-        raise TypeError(
-            "selectable must be a SQLAlchemy ClauseElement (e.g. sa.select(...) "
-            "or sa.text(...)), not a string. Wrap your SQL in sa.text('...') first."
-        )
+    _assert_clause_element(selectable)
     table = create_table_from_selectable(
         name=name, selectable=selectable, metadata=None, schema=schema
     )
