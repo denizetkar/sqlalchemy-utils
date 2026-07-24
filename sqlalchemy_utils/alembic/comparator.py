@@ -12,6 +12,16 @@ Views whose ``CREATE`` fails are **skipped** (not dropped) — they are tracked
 in a ``skipped`` set so the drop-detection loop does not emit a false
 ``DropViewOp`` for an existing view that merely failed to canonicalize.
 
+**Iterative canonicalization** — when a view fails to create because it
+references a column or table being added in the same migration, the
+comparator applies the view-relevant DDL (``ADD COLUMN`` nullable, ``CREATE
+TABLE`` empty) inside the same outer savepoint and re-attempts
+canonicalization of the skipped views. This repeats to a fixpoint (no
+progress) or a 10-iteration safety cap, so views that depend on
+same-migration schema changes are detected instead of silently skipped.
+See ``_canonicalize_all_views`` for the full contract and limitations
+(notably the cross-schema table creation restriction).
+
 Differences are emitted as :class:`~sqlalchemy_utils.alembic.operations.CreateViewOp`,
 :class:`~sqlalchemy_utils.alembic.operations.DropViewOp`,
 :class:`~sqlalchemy_utils.alembic.operations.ReplaceViewOp` (and their materialized-view equivalents).
@@ -216,12 +226,28 @@ def _canonicalize_all_views(
     When *metadata* is provided and declares columns/tables that do not yet
     exist in the live DB (because they are being added in the same migration),
     pass 1 skips the views that reference them. After pass 1, an **iterative
-    fixpoint loop** applies the view-relevant DDL (ADD COLUMN / CREATE TABLE)
-    from *metadata* inside the same outer savepoint and re-canonicalizes only
-    the skipped views, repeating until no progress is made (fixpoint) or a
-    safety cap of 10 iterations is reached. This resolves false negatives
-    where a view references a column being added in the same migration. When
-    *metadata* is ``None`` (legacy direct callers), the iterative loop is
+    fixpoint loop** applies the view-relevant DDL inside the same outer
+    savepoint and re-canonicalizes only the skipped views:
+
+    - **DDL scope** — only ``ADD COLUMN`` (nullable, no default) and
+      ``CREATE TABLE`` (empty: no indexes, constraints, foreign keys, and no
+      ``ALTER COLUMN`` type changes) are applied. This is sufficient for view
+      creation, which only needs the column to exist; full table shape is
+      the migration's job.
+    - **Re-canonicalization** — only views in the ``skipped`` set are retried
+      after each DDL pass; successfully canonicalized views are not re-touched.
+    - **Fixpoint termination** — the loop stops as soon as a pass applies no
+      DDL and canonicalizes no new views (no progress), i.e. it terminates at
+      the fixpoint where remaining skips cannot be resolved by further DDL.
+    - **Safety cap** — at most 10 iterations are attempted; if the fixpoint
+      is not reached, a warning is logged and the still-skipped views remain
+      in ``skipped`` (no false ``DropViewOp`` is emitted for them).
+
+    Limitation: a view in schema A that references a newly added table in
+    schema B will not be rescued, because ``_apply_view_relevant_ddl`` filters
+    tables by *schema* and only creates tables in the view's own schema.
+
+    When *metadata* is ``None`` (legacy direct callers), the iterative loop is
     skipped and behavior is unchanged.
 
     Returns ``(view_defs, mv_defs, skipped)`` where ``view_defs`` /

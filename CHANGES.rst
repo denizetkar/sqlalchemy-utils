@@ -86,6 +86,10 @@ Unreleased
 - All 7 view operation classes implement ``to_diff_tuple()`` so they work
   with ``alembic.autogenerate.compare_metadata()`` and
   ``produce_migrations()`` (previously raised ``NotImplementedError``).
+- View autogenerate comparator now applies view-relevant DDL (``ADD COLUMN``,
+  ``CREATE TABLE``) inside its savepoint and re-attempts canonicalization of
+  skipped views, so views referencing new columns/tables in the same migration
+  are detected instead of silently skipped.
 
 0.42.1 (2025-12-12)
 ^^^^^^^^^^^^^^^^^^^
