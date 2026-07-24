@@ -59,7 +59,7 @@ class ViewRecord:
     cascade_on_drop: bool = True
     aliases: dict[str, str] | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.selectable is None:
             raise TypeError("selectable must not be None")
         if not isinstance(self.name, str) or not self.name:
