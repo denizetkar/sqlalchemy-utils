@@ -20,11 +20,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 import sqlalchemy as sa
 from alembic import command, config
+from alembic.autogenerate import compare_metadata, produce_migrations, render_python_code
 from alembic.autogenerate.api import AutogenContext
 from alembic.operations import Operations, ops as alembic_ops
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import Column, Integer, select
-from sqlalchemy.orm import Mapped, declarative_base, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, declarative_base, mapped_column
 
 from sqlalchemy_utils import (
     create_materialized_view,
@@ -4975,4 +4976,182 @@ class TestIterativeCanonicalization:
             f"got {view_ops}; all ops: "
             f"{[(type(o).__name__, getattr(o, 'name', None)) for o in upgrade_ops.ops]}"
         )
+
+
+# ===========================================================================
+# Alembic public API integration (compare_metadata -> produce_migrations ->
+# render_python_code) with ORM declarative models using create_view /
+# create_materialized_view. Ports coverage from the former repro-backend.
+# ===========================================================================
+
+
+class TestAlembicPublicAPIIntegration:
+    """End-to-end exercise of the Alembic autogenerate public API with ORM
+    declarative view models.
+
+    Unlike the ``_run_comparator``-based tests (which call ``compare_views``
+    directly with raw ``sa.MetaData`` + ``ViewRecord``), this test drives the
+    full public pipeline: ``compare_metadata`` -> ``produce_migrations`` ->
+    ``render_python_code``, exercising ``to_diff_tuple()`` on every op and the
+    rendering pipeline for ORM models declared via ``create_view`` /
+    ``create_materialized_view``.
+    """
+
+    @pytest.mark.infrastructure
+    @pytest.mark.usefixtures("postgresql_dsn")
+    def test_compare_metadata_and_produce_migrations_with_orm_models(
+        self, connection, request
+    ):
+        """Given a V1 DB schema (tables + view + materialized view), comparing
+        against V2 ORM models (added column, added index, changed view and
+        materialized-view definitions) yields view-aware ops in both the diff
+        tuples and the rendered python code.
+        """
+
+        def _cleanup():
+            connection.execute(
+                sa.text("DROP MATERIALIZED VIEW IF EXISTS account_invoice_summary")
+            )
+            connection.execute(sa.text("DROP VIEW IF EXISTS active_accounts"))
+            connection.execute(sa.text("DROP TABLE IF EXISTS invoice CASCADE"))
+            connection.execute(sa.text("DROP TABLE IF EXISTS account CASCADE"))
+            connection.commit()
+
+        _cleanup()
+
+        # --- V1 DB state ---------------------------------------------------
+        connection.execute(
+            sa.text(
+                "CREATE TABLE account ("
+                "id SERIAL PRIMARY KEY, "
+                "email VARCHAR(255) NOT NULL UNIQUE, "
+                "status VARCHAR(16) NOT NULL)"
+            )
+        )
+        connection.execute(
+            sa.text(
+                "CREATE TABLE invoice ("
+                "id SERIAL PRIMARY KEY, "
+                "account_id INTEGER NOT NULL REFERENCES account(id), "
+                "amount_cents INTEGER NOT NULL, "
+                "created_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+            )
+        )
+        connection.execute(
+            sa.text(
+                "CREATE VIEW active_accounts AS "
+                "SELECT id, email, status FROM account WHERE status = 'active'"
+            )
+        )
+        connection.execute(
+            sa.text(
+                "CREATE MATERIALIZED VIEW account_invoice_summary AS "
+                "SELECT account.id, account.email, "
+                "COALESCE(SUM(invoice.amount_cents), 0), "
+                "MAX(invoice.created_at) "
+                "FROM account LEFT JOIN invoice "
+                "ON invoice.account_id = account.id "
+                "GROUP BY account.id, account.email"
+            )
+        )
+        connection.commit()
+        request.addfinalizer(_cleanup)
+
+        # --- V2 ORM models --------------------------------------------------
+        class V2Base(DeclarativeBase):
+            pass
+
+        class V2Account(V2Base):
+            __tablename__ = "account"
+            __table_args__ = (
+                sa.CheckConstraint(
+                    "status IN ('active', 'inactive')", name="ck_account_status"
+                ),
+                sa.Index("ix_account_status", "status"),
+            )
+
+            id: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
+            email: Mapped[str] = mapped_column(sa.String(255), nullable=False, unique=True)
+            status: Mapped[str] = mapped_column(sa.String(16), nullable=False)
+            display_name: Mapped[str | None] = mapped_column(
+                sa.String(120), nullable=True
+            )
+
+        class V2Invoice(V2Base):
+            __tablename__ = "invoice"
+            __table_args__ = (
+                sa.CheckConstraint(
+                    "amount_cents > 0", name="ck_invoice_positive_amount_cents"
+                ),
+                sa.Index("ix_invoice_account_created_at", "account_id", "created_at"),
+            )
+
+            id: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
+            account_id: Mapped[int] = mapped_column(
+                sa.ForeignKey("account.id"), nullable=False
+            )
+            amount_cents: Mapped[int] = mapped_column(sa.Integer, nullable=False)
+            created_at: Mapped[object] = mapped_column(
+                sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+            )
+
+        v2_active_accounts_selectable = sa.select(
+            V2Account.id.label("id"),
+            V2Account.email.label("email"),
+            V2Account.status.label("status"),
+            V2Account.display_name.label("display_name"),
+        ).where(
+            V2Account.status == "active",
+            V2Account.email.like("%@example.test"),
+        )
+
+        class V2ActiveAccountView(V2Base):
+            __table__ = create_view(
+                "active_accounts",
+                v2_active_accounts_selectable,
+                V2Base.metadata,
+                cascade_on_drop=True,
+            )
+
+        v2_account_invoice_summary_selectable = (
+            sa.select(
+                V2Account.id.label("account_id"),
+                V2Account.email.label("email"),
+                sa.func.coalesce(sa.func.sum(V2Invoice.amount_cents), 0).label(
+                    "total_amount_cents"
+                ),
+                sa.func.count(V2Invoice.id).label("invoice_count"),
+                sa.func.max(V2Invoice.created_at).label("latest_invoice_created_at"),
+            )
+            .select_from(V2Account)
+            .join(V2Invoice, V2Invoice.account_id == V2Account.id, isouter=True)
+            .group_by(V2Account.id, V2Account.email)
+        )
+
+        class V2AccountInvoiceSummary(V2Base):
+            __table__ = create_materialized_view(
+                "account_invoice_summary",
+                v2_account_invoice_summary_selectable,
+                V2Base.metadata,
+                indexes=[
+                    sa.Index(
+                        "ix_account_invoice_summary_account_id", "account_id"
+                    )
+                ],
+            )
+
+        # --- Public API pipeline -------------------------------------------
+        register_view_comparator()
+        context = MigrationContext.configure(connection, opts={"compare_type": True})
+        diffs = compare_metadata(context, V2Base.metadata)
+        migration_script = produce_migrations(context, V2Base.metadata)
+        rendered = render_python_code(migration_script.upgrade_ops)
+
+        diff_repr = repr(diffs)
+
+        assert "replace_view" in rendered, rendered
+        assert "replace_materialized_view" in rendered, rendered
+        assert "add_column" in rendered, rendered
+        assert "active_accounts" in diff_repr, diff_repr
+        assert "account_invoice_summary" in diff_repr, diff_repr
 
