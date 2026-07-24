@@ -4605,9 +4605,28 @@ class TestWhitespaceOnlyDifferenceNoReplace:
 # column being added in the same migration (iterative canonicalization)
 # ===========================================================================
 
-# Distinct table/view names so this test does not collide with other fixtures.
-_ITER_CANON_BASE_TABLE = "_iter_canon_base"
-_ITER_CANON_VIEW_NAMES = ["iter_canon_view"]
+
+def _create_iter_canon_base(connection, request, table_name, column_defs_sql):
+    """Pre-create ``table_name`` with the given column defs and register a
+    finalizer that drops it. Used by the iterative-canonicalization tests to
+    stand up a base table whose columns lag the model metadata.
+    """
+    connection.execute(
+        sa.text(f"DROP TABLE IF EXISTS {table_name} CASCADE")
+    )
+    connection.commit()
+    connection.execute(
+        sa.text(f"CREATE TABLE IF NOT EXISTS {table_name} ({column_defs_sql})")
+    )
+    connection.commit()
+
+    def _drop():
+        connection.execute(
+            sa.text(f"DROP TABLE IF EXISTS {table_name} CASCADE")
+        )
+        connection.commit()
+
+    request.addfinalizer(_drop)
 
 
 class TestIterativeCanonicalization:
@@ -4620,13 +4639,12 @@ class TestIterativeCanonicalization:
     absent from the live DB, the CREATE fails and the view is added to the
     ``skipped`` set. Because skipped views are excluded from BOTH drop
     detection AND create/replace diffing, no op is generated for them — a
-    false negative. The planned fix applies the pending view-relevant DDL
-    (here: ``add_column``) inside the savepoint and re-canonicalizes the
-    skipped views until a fixpoint is reached.
+    false negative. The iterative canonicalization fix applies the pending
+    view-relevant DDL (here: ``add_column``) inside the savepoint and
+    re-canonicalizes the skipped views until a fixpoint is reached.
 
-    This test is the RED phase of TDD: it asserts that a CreateViewOp (or
-    ReplaceViewOp) IS generated, and currently FAILS because the view is
-    silently skipped.
+    These tests assert that a CreateViewOp (or ReplaceViewOp) IS generated
+    for the previously-skipped views.
     """
 
     @pytest.mark.infrastructure
@@ -4645,43 +4663,29 @@ class TestIterativeCanonicalization:
         When:
             - The comparator runs ``compare_views``.
 
-        Then (expected, post-fix):
+        Then:
             - A ``CreateViewOp`` or ``ReplaceViewOp`` for ``iter_canon_view``
               is generated.
 
-        Currently (RED):
-            - The view's ``CREATE VIEW`` fails inside the canonicalization
-              savepoint (``column "email" does not exist``), so the view is
-              added to ``skipped`` and no op is generated.
+        Before the fix:
+            - The view's ``CREATE VIEW`` failed inside the canonicalization
+              savepoint (``column "email" does not exist``), so the view was
+              added to ``skipped`` and no op was generated.
         """
-        connection = view_cleanup_factory(_ITER_CANON_VIEW_NAMES)
+        connection = view_cleanup_factory(["iter_canon_view"])
 
-        # Pre-create the base table WITHOUT the extra column. The `email`
-        # column is "being added in the same migration" — it is absent from
-        # the live DB but present in the model metadata.
-        def _create_iter_base():
-            connection.execute(
-                sa.text(
-                    f"CREATE TABLE IF NOT EXISTS {_ITER_CANON_BASE_TABLE} "
-                    f"(id SERIAL PRIMARY KEY, name VARCHAR(100))"
-                )
-            )
-            connection.commit()
-
-        def _drop_iter_base():
-            connection.execute(
-                sa.text(f"DROP TABLE IF EXISTS {_ITER_CANON_BASE_TABLE} CASCADE")
-            )
-            connection.commit()
-
-        _drop_iter_base()
-        _create_iter_base()
-        request.addfinalizer(_drop_iter_base)
+        base_table = "_iter_canon_base"
+        _create_iter_canon_base(
+            connection,
+            request,
+            base_table,
+            "id SERIAL PRIMARY KEY, name VARCHAR(100)",
+        )
 
         metadata = sa.MetaData()
         # Model declares the table WITH the extra `email` column.
         sa.Table(
-            _ITER_CANON_BASE_TABLE,
+            base_table,
             metadata,
             sa.Column("id", sa.Integer, primary_key=True),
             sa.Column("name", sa.String(100)),
@@ -4692,7 +4696,7 @@ class TestIterativeCanonicalization:
             ViewRecord(
                 name="iter_canon_view",
                 selectable=sa.select(
-                    sa.text(f"id, name, email FROM {_ITER_CANON_BASE_TABLE}")
+                    sa.text(f"id, name, email FROM {base_table}")
                 ),
                 schema=None,
             ),
@@ -4725,25 +4729,12 @@ class TestIterativeCanonicalization:
         connection = view_cleanup_factory(["view_a", "view_b"])
 
         base_table = "_iter_canon_chain_base"
-
-        def _create_chain_base():
-            connection.execute(
-                sa.text(
-                    f"CREATE TABLE IF NOT EXISTS {base_table} "
-                    f"(id SERIAL PRIMARY KEY, name VARCHAR(100))"
-                )
-            )
-            connection.commit()
-
-        def _drop_chain_base():
-            connection.execute(
-                sa.text(f"DROP TABLE IF EXISTS {base_table} CASCADE")
-            )
-            connection.commit()
-
-        _drop_chain_base()
-        _create_chain_base()
-        request.addfinalizer(_drop_chain_base)
+        _create_iter_canon_base(
+            connection,
+            request,
+            base_table,
+            "id SERIAL PRIMARY KEY, name VARCHAR(100)",
+        )
 
         metadata = sa.MetaData()
         sa.Table(
@@ -4794,25 +4785,12 @@ class TestIterativeCanonicalization:
         connection = view_cleanup_factory(["iter_canon_zo_view"])
 
         base_table = "_iter_canon_zo_base"
-
-        def _create_zo_base():
-            connection.execute(
-                sa.text(
-                    f"CREATE TABLE IF NOT EXISTS {base_table} "
-                    f"(id SERIAL PRIMARY KEY, name VARCHAR(100))"
-                )
-            )
-            connection.commit()
-
-        def _drop_zo_base():
-            connection.execute(
-                sa.text(f"DROP TABLE IF EXISTS {base_table} CASCADE")
-            )
-            connection.commit()
-
-        _drop_zo_base()
-        _create_zo_base()
-        request.addfinalizer(_drop_zo_base)
+        _create_iter_canon_base(
+            connection,
+            request,
+            base_table,
+            "id SERIAL PRIMARY KEY, name VARCHAR(100)",
+        )
 
         metadata = sa.MetaData()
         sa.Table(
@@ -4863,25 +4841,12 @@ class TestIterativeCanonicalization:
         connection = view_cleanup_factory(["iter_canon_np_view"])
 
         base_table = "_iter_canon_np_base"
-
-        def _create_np_base():
-            connection.execute(
-                sa.text(
-                    f"CREATE TABLE IF NOT EXISTS {base_table} "
-                    f"(id SERIAL PRIMARY KEY)"
-                )
-            )
-            connection.commit()
-
-        def _drop_np_base():
-            connection.execute(
-                sa.text(f"DROP TABLE IF EXISTS {base_table} CASCADE")
-            )
-            connection.commit()
-
-        _drop_np_base()
-        _create_np_base()
-        request.addfinalizer(_drop_np_base)
+        _create_iter_canon_base(
+            connection,
+            request,
+            base_table,
+            "id SERIAL PRIMARY KEY",
+        )
 
         metadata = sa.MetaData()
         sa.Table(
@@ -4921,25 +4886,12 @@ class TestIterativeCanonicalization:
         connection = view_cleanup_factory(["iter_canon_mv_view"])
 
         base_table = "_iter_canon_mv_base"
-
-        def _create_mv_base():
-            connection.execute(
-                sa.text(
-                    f"CREATE TABLE IF NOT EXISTS {base_table} "
-                    f"(id SERIAL PRIMARY KEY, name VARCHAR(100))"
-                )
-            )
-            connection.commit()
-
-        def _drop_mv_base():
-            connection.execute(
-                sa.text(f"DROP TABLE IF EXISTS {base_table} CASCADE")
-            )
-            connection.commit()
-
-        _drop_mv_base()
-        _create_mv_base()
-        request.addfinalizer(_drop_mv_base)
+        _create_iter_canon_base(
+            connection,
+            request,
+            base_table,
+            "id SERIAL PRIMARY KEY, name VARCHAR(100)",
+        )
 
         metadata = sa.MetaData()
         sa.Table(
