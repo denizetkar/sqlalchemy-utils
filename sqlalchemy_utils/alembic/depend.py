@@ -42,6 +42,8 @@ def _build_dependency_graph(
     known limitation); when a matched bare name maps to multiple model views
     in different schemas, ALL of them are added as dependency targets.
     """
+    if db_views is None:
+        db_views = {}
     model_names: set[str] = {vr.name for vr in view_records}
     db_names: set[str] = set(db_views.keys()) - model_names  # only DB-only
     all_known = model_names | db_names
