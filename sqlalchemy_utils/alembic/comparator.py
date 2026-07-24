@@ -35,11 +35,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
+from typing import Protocol
 
 import sqlalchemy as sa
 from alembic.autogenerate import comparators
 from alembic.autogenerate.api import AutogenContext
-from alembic.operations.ops import UpgradeOps
+from alembic.operations.ops import MigrateOperation, UpgradeOps
 
 from sqlalchemy_utils.view_record import ViewRecord
 from sqlalchemy_utils.view import _quote_qualified_name
@@ -60,6 +61,13 @@ from sqlalchemy_utils.alembic.operations import (
 from sqlalchemy_utils.alembic.depend import resolve_create_order, resolve_drop_order
 
 log = logging.getLogger(__name__)
+
+
+class _DropViewConstructor(Protocol):
+    def __call__(
+        self, name: str, *, schema: str | None = None,
+        cascade: bool = True, definition: str | None = None,
+    ) -> MigrateOperation: ...
 
 
 # Outer savepoint name shared across all views in one canonicalization batch.
@@ -444,7 +452,7 @@ def _diff_views(
     schema: str | None,
     is_materialized: bool,
     cascade_by_name: dict[tuple[str, str | None], bool],
-) -> list:
+) -> list[MigrateOperation]:
     """Diff model view definitions against DB state, returning create/replace ops.
 
     Absent views become Create ops; changed definitions become Replace ops.
@@ -454,7 +462,7 @@ def _diff_views(
     ``cascade_by_name`` propagates each model's ``cascade_on_drop`` preference
     to the emitted Create/Replace ops (default ``True``, behavior-preserving).
     """
-    ops: list = []
+    ops: list[MigrateOperation] = []
     for name, definition in model_defs.items():
         if name not in db_defs:
             if is_materialized:
@@ -563,18 +571,18 @@ def _safe_resolve(
         return records
 
 
-def _is_create_family(op) -> bool:
+def _is_create_family(op: MigrateOperation) -> bool:
     return isinstance(
         op,
         (CreateViewOp, CreateMaterializedViewOp, ReplaceViewOp, ReplaceMaterializedViewOp),
     )
 
 
-def _is_drop_family(op) -> bool:
+def _is_drop_family(op: MigrateOperation) -> bool:
     return isinstance(op, (DropViewOp, DropMaterializedViewOp))
 
 
-def _reorder_cross_type_drops_before_creates(ops: list) -> list:
+def _reorder_cross_type_drops_before_creates(ops: list[MigrateOperation]) -> list[MigrateOperation]:
     """Reorder so all cross-type drops precede all cross-type creates.
 
     When a view changes type (regular <-> materialized) the comparator emits
@@ -604,8 +612,8 @@ def _reorder_cross_type_drops_before_creates(ops: list) -> list:
     if not cross_keys:
         return ops
 
-    all_drops: list = []
-    cross_creates: list = []
+    all_drops: list[MigrateOperation] = []
+    cross_creates: list[MigrateOperation] = []
     for op in ops:
         key = (getattr(op, "name", None), getattr(op, "schema", None))
         if _is_drop_family(op):
@@ -613,7 +621,7 @@ def _reorder_cross_type_drops_before_creates(ops: list) -> list:
         elif _is_create_family(op) and key in cross_keys:
             cross_creates.append(op)
 
-    result: list = []
+    result: list[MigrateOperation] = []
     inserted = False
     for op in ops:
         key = (getattr(op, "name", None), getattr(op, "schema", None))
@@ -627,7 +635,7 @@ def _reorder_cross_type_drops_before_creates(ops: list) -> list:
     return result
 
 
-def _order_ops(ops, records, db, resolver_fn, action_label, *, dialect=None):
+def _order_ops(ops: list[MigrateOperation], records: list[ViewRecord], db: dict[str, str] | None, resolver_fn: Callable[..., list[ViewRecord]], action_label: str, *, dialect: sa.engine.Dialect | None = None) -> list[MigrateOperation]:
     """Order *ops* by dependency using *resolver_fn*.
 
     Builds a ``{(name, schema): op}`` mapping from *ops*, resolves the
@@ -638,11 +646,11 @@ def _order_ops(ops, records, db, resolver_fn, action_label, *, dialect=None):
     *dialect* is forwarded to ``resolver_fn`` for dialect-aware dependency
     detection.
     """
-    by_name = {(op.name, op.schema): op for op in ops}
+    by_name = {(getattr(op, "name", None), getattr(op, "schema", None)): op for op in ops}
     ordered_records = _safe_resolve(
         records, db, resolver_fn, action_label, dialect=dialect
     )
-    result = []
+    result: list[MigrateOperation] = []
     for vr in ordered_records:
         key = (vr.name, vr.schema)
         if key in by_name:
@@ -653,16 +661,16 @@ def _order_ops(ops, records, db, resolver_fn, action_label, *, dialect=None):
 
 
 def _collect_drop_ops(
-    db_defs,
-    model_defs,
-    skipped,
-    schema,
-    cascade_by_name,
-    op_class,
-    kind_label,
-    connection,
-    drop_ops,
-):
+    db_defs: dict[str, str],
+    model_defs: dict[str, str],
+    skipped: set[str],
+    schema: str | None,
+    cascade_by_name: dict[tuple[str, str | None], bool],
+    op_class: _DropViewConstructor,
+    kind_label: str,
+    connection: sa.engine.Connection,
+    drop_ops: list[MigrateOperation],
+) -> None:
     """Collect drop ops for DB views not in the model, warning about dependents."""
     for name in db_defs:
         if name in model_defs or name in skipped:
@@ -755,8 +763,8 @@ def compare_views(
         all_db.update(db_views)
         all_db.update(db_mvs)
 
-    all_create_ops: list = []
-    all_drop_ops: list = []
+    all_create_ops: list[MigrateOperation] = []
+    all_drop_ops: list[MigrateOperation] = []
 
     for schema in schemas:
         db_views = db_views_by_schema[schema]
@@ -773,8 +781,8 @@ def compare_views(
         )
 
         # Diff model vs DB
-        create_ops: list = []
-        drop_ops: list = []
+        create_ops: list[MigrateOperation] = []
+        drop_ops: list[MigrateOperation] = []
 
         # Propagate cascade_on_drop from each ViewRecord so both replace
         # and drop ops honor the model's cascade preference. Missing
@@ -847,8 +855,8 @@ def compare_views(
     # create-family op and a drop-family op, move the drop before the create.
     upgrade_ops.ops = _reorder_cross_type_drops_before_creates(upgrade_ops.ops)
 
-    seen: set = set()
-    deduped: list = []
+    seen: set[tuple[str, str | None, str | None]] = set()
+    deduped: list[MigrateOperation] = []
     for op in upgrade_ops.ops:
         # Only view ops participate in dedup. Non-view ops (Alembic
         # built-ins like CreateTableOp) and RefreshMaterializedViewOp
