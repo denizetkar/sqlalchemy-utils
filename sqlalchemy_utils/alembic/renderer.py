@@ -21,18 +21,33 @@ from sqlalchemy_utils.alembic.operations import (
     RefreshMaterializedViewOp,
 )
 
+_AllViewOp = (
+    CreateViewOp
+    | DropViewOp
+    | ReplaceViewOp
+    | CreateMaterializedViewOp
+    | DropMaterializedViewOp
+    | ReplaceMaterializedViewOp
+    | RefreshMaterializedViewOp
+)
+_CascadeOp = DropViewOp | ReplaceViewOp | DropMaterializedViewOp | ReplaceMaterializedViewOp
+_CascadeOnDropOp = CreateViewOp | CreateMaterializedViewOp
+_WithDataOp = CreateMaterializedViewOp | DropMaterializedViewOp | ReplaceMaterializedViewOp
+_DefinitionOp = DropViewOp | DropMaterializedViewOp
+_OldDefOp = ReplaceViewOp | ReplaceMaterializedViewOp
 
-def _schema_part(op) -> str:
+
+def _schema_part(op: _AllViewOp) -> str:
     """Render the ``schema=`` kwarg fragment when ``op.schema`` is set."""
     return f", schema={op.schema!r}" if op.schema is not None else ""
 
 
-def _cascade_part(op) -> str:
+def _cascade_part(op: _CascadeOp) -> str:
     """Render the ``cascade=False`` kwarg fragment when cascade is disabled."""
     return "" if op.cascade else ", cascade=False"
 
 
-def _cascade_on_drop_part(op) -> str:
+def _cascade_on_drop_part(op: _CascadeOnDropOp) -> str:
     """Render the ``cascade_on_drop=False`` kwarg fragment when disabled.
 
     Mirrors :func:`_cascade_part` for the ``cascade_on_drop`` field carried
@@ -43,17 +58,17 @@ def _cascade_on_drop_part(op) -> str:
     return "" if op.cascade_on_drop else ", cascade_on_drop=False"
 
 
-def _with_data_part(op) -> str:
+def _with_data_part(op: _WithDataOp) -> str:
     """Render the ``with_data=True`` kwarg fragment when with_data is enabled."""
     return "" if not op.with_data else ", with_data=True"
 
 
-def _definition_part(op) -> str:
+def _definition_part(op: _DefinitionOp) -> str:
     """Render the ``definition=`` kwarg fragment when ``op.definition`` is set."""
     return f", definition={op.definition!r}" if op.definition is not None else ""
 
 
-def _old_def_part(op) -> str:
+def _old_def_part(op: _OldDefOp) -> str:
     """Render the ``old_definition=`` kwarg fragment when ``op.old_definition`` is set."""
     return (
         f", old_definition={op.old_definition!r}"
