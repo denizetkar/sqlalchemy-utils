@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import ClassVar
 
 import sqlalchemy as sa
 
@@ -93,6 +94,7 @@ class ViewMixin:
     __view_cascade__ = True
     __view_replace__ = False
     __view_aliases__: dict[str, str] | None = None
+    __tablename__: ClassVar[str]
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
