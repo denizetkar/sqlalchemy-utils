@@ -15,7 +15,7 @@ from sqlalchemy_utils.view import (
 logger = logging.getLogger(__name__)
 
 
-def _view_before_flush(session, flush_context, instances):
+def _view_before_flush(session: sa.orm.Session, flush_context: sa.orm.UOWTransaction, instances: list[object] | None) -> None:
     """Before-flush listener that rejects writes to view-backed ORM instances."""
     for instance in session.new | session.dirty | session.deleted:
         if isinstance(instance, ViewMixin):
@@ -88,15 +88,17 @@ class ViewMixin:
             __view_materialized__ = True
             id: Mapped[int] = mapped_column(sa.Integer, primary_key=True)
     """
-    __view_selectable__ = None
-    __view_materialized__ = False
-    __view_schema__ = None
-    __view_cascade__ = True
-    __view_replace__ = False
+    __view_selectable__: ClassVar[sa.sql.elements.ClauseElement | None] = None
+    __view_materialized__: ClassVar[bool] = False
+    __view_schema__: ClassVar[str | None] = None
+    __view_cascade__: ClassVar[bool] = True
+    __view_replace__: ClassVar[bool] = False
     __view_aliases__: dict[str, str] | None = None
     __tablename__: ClassVar[str]
+    __table__: ClassVar[sa.Table | None]
+    metadata: ClassVar[sa.MetaData]
 
-    def __init_subclass__(cls, **kwargs):
+    def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
         has_columns = any(
             isinstance(v, sa.Column)
@@ -115,7 +117,7 @@ class ViewMixin:
                 )
 
     @classmethod
-    def __declare_last__(cls):
+    def __declare_last__(cls) -> None:
         selectable = cls.__view_selectable__
 
         if selectable is None:
@@ -228,7 +230,7 @@ class ViewMixin:
             sa.event.listen(sa.orm.Session, 'before_flush', _view_before_flush)
 
     @classmethod
-    def _resolve_schema(cls):
+    def _resolve_schema(cls) -> str | None:
         """Resolve the view's schema for DDL operations.
 
         Priority:
