@@ -34,7 +34,7 @@ Usage in ``env.py``::
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import sqlalchemy as sa
 from alembic.autogenerate import comparators
@@ -532,7 +532,7 @@ def _warn_if_dependents(
 
 def _safe_resolve(
     records: list[ViewRecord],
-    db: dict[str, str],
+    db: dict[str, str] | None,
     resolver_fn: Callable[..., list[ViewRecord]],
     action_label: str,
     *,
@@ -713,6 +713,11 @@ def compare_views(
     """
     connection = autogen_context.connection
     metadata = autogen_context.metadata
+
+    if isinstance(metadata, Sequence) and not isinstance(metadata, sa.MetaData):
+        metadata = list(metadata)[0] if metadata else None
+    if metadata is None:
+        return
 
     if connection is None:
         log.warning(
