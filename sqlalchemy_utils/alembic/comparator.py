@@ -97,10 +97,110 @@ def _build_create_sql(connection: sa.engine.Connection, view_record: ViewRecord)
     ]
 
 
+def _apply_view_relevant_ddl(
+    connection: sa.engine.Connection,
+    metadata: sa.MetaData,
+    schema: str | None,
+) -> int:
+    """Apply view-relevant DDL (ADD COLUMN nullable, CREATE TABLE empty).
+
+    Introspects model *metadata* against the current DB state and applies the
+    minimal DDL needed for view canonicalization to succeed: a missing table
+    is created with all model columns as nullable (no constraints, defaults,
+    or keys); a missing column on an existing table is added as nullable with
+    no default.
+
+    Each DDL statement runs inside its own inner savepoint so that a single
+    failure does not poison the outer transaction (PostgreSQL aborts the whole
+    transaction on any statement error; only ``ROLLBACK TO SAVEPOINT``
+    un-poisons it). Failures are logged and skipped; the count of
+    successfully applied statements is returned.
+
+    The inspector is built fresh on every call so it reflects DDL applied in
+    prior iterations (a cached inspector would not see newly created tables).
+    """
+    applied = 0
+    inner_sp = f"{_OUTER_SAVEPOINT}_ddl"
+    preparer = connection.dialect.identifier_preparer
+
+    for table in metadata.tables.values():
+        if table.schema != schema:
+            continue
+
+        inspector = sa.inspect(connection)
+
+        qualified = _quote_qualified_name(
+            connection.dialect, table.name, schema
+        )
+
+        if not inspector.has_table(table.name, schema=schema):
+            col_defs = ", ".join(
+                f"{preparer.quote(col.name)} "
+                f"{col.type.compile(dialect=connection.dialect)}"
+                for col in table.columns
+            )
+            stmt = f"CREATE TABLE {qualified} ({col_defs})"
+        else:
+            db_columns = {
+                col["name"]
+                for col in inspector.get_columns(table.name, schema=schema)
+            }
+            missing = [
+                col
+                for col in table.columns
+                if col.name not in db_columns
+            ]
+            if not missing:
+                continue
+            # One ALTER per column so a single failure does not block the rest.
+            for col in missing:
+                col_type = col.type.compile(dialect=connection.dialect)
+                stmt = (
+                    f"ALTER TABLE {qualified} ADD COLUMN "
+                    f"{preparer.quote(col.name)} {col_type}"
+                )
+                if _execute_ddl_in_savepoint(
+                    connection, inner_sp, stmt
+                ):
+                    applied += 1
+            continue
+
+        if _execute_ddl_in_savepoint(connection, inner_sp, stmt):
+            applied += 1
+
+    return applied
+
+
+def _execute_ddl_in_savepoint(
+    connection: sa.engine.Connection,
+    savepoint: str,
+    stmt: str,
+) -> bool:
+    """Execute a single DDL statement inside its own inner savepoint.
+
+    Returns ``True`` if the statement was applied, ``False`` if it raised
+    a ``_CANON_ERRORS`` (the savepoint is rolled back and the failure logged).
+    """
+    connection.execute(sa.text(f"SAVEPOINT {savepoint}"))
+    try:
+        connection.execute(sa.text(stmt))
+        connection.execute(sa.text(f"RELEASE SAVEPOINT {savepoint}"))
+        return True
+    except _CANON_ERRORS as exc:
+        log.warning("Failed to apply DDL %r: %s", stmt, exc)
+        try:
+            connection.execute(sa.text(f"ROLLBACK TO SAVEPOINT {savepoint}"))
+            connection.execute(sa.text(f"RELEASE SAVEPOINT {savepoint}"))
+        except _CANON_ERRORS:
+            pass
+        return False
+
+
 def _canonicalize_all_views(
     connection: sa.engine.Connection,
     view_records: list[ViewRecord],
     db_views_for_deps: dict[str, str] | None,
+    metadata: sa.MetaData | None = None,
 ) -> tuple[dict[str, str], dict[str, str], set[str]]:
     """Canonicalize all *view_records* for one schema in a single savepoint.
 
@@ -112,6 +212,17 @@ def _canonicalize_all_views(
     Views that fail to CREATE are **skipped** — their names are returned in
     the ``skipped`` set so the caller can exclude them from drop detection
     (a failed canonicalization must NOT produce a false DropViewOp).
+
+    When *metadata* is provided and declares columns/tables that do not yet
+    exist in the live DB (because they are being added in the same migration),
+    pass 1 skips the views that reference them. After pass 1, an **iterative
+    fixpoint loop** applies the view-relevant DDL (ADD COLUMN / CREATE TABLE)
+    from *metadata* inside the same outer savepoint and re-canonicalizes only
+    the skipped views, repeating until no progress is made (fixpoint) or a
+    safety cap of 10 iterations is reached. This resolves false negatives
+    where a view references a column being added in the same migration. When
+    *metadata* is ``None`` (legacy direct callers), the iterative loop is
+    skipped and behavior is unchanged.
 
     Returns ``(view_defs, mv_defs, skipped)`` where ``view_defs`` /
     ``mv_defs`` map view name → canonical definition for regular /
@@ -185,6 +296,77 @@ def _canonicalize_all_views(
                             )
                     break
             processed.add(vr.name)
+
+        # Iterative fixpoint: apply view-relevant DDL from *metadata* inside
+        # the same outer savepoint, re-canonicalize ONLY skipped views, repeat
+        # until no progress (fixpoint) or 10-iteration safety cap. Skipped if
+        # pass 1 poisoned the outer savepoint (probe above already marked
+        # unreached views as skipped). Necessary because PG aborts the whole
+        # transaction on any statement error, so a poisoned savepoint cannot
+        # be recovered without ROLLBACK TO SAVEPOINT.
+        if skipped and metadata is not None:
+            outer_poisoned = False
+            try:
+                connection.execute(sa.text("SELECT 1"))
+            except _CANON_ERRORS:
+                outer_poisoned = True
+
+            if not outer_poisoned:
+                max_iterations = 10
+                for _iteration in range(max_iterations):
+                    ddl_count = _apply_view_relevant_ddl(
+                        connection, metadata, schema
+                    )
+
+                    skipped_records = [
+                        vr for vr in ordered if vr.name in skipped
+                    ]
+                    newly_canonicalized = 0
+                    for vr in skipped_records:
+                        inner_sp = f"{_OUTER_SAVEPOINT}_v"
+                        connection.execute(
+                            sa.text(f"SAVEPOINT {inner_sp}")
+                        )
+                        try:
+                            for stmt in _build_create_sql(connection, vr):
+                                connection.execute(sa.text(stmt))
+                            connection.execute(
+                                sa.text(f"RELEASE SAVEPOINT {inner_sp}")
+                            )
+                        except _CANON_ERRORS as exc:
+                            log.warning(
+                                "Failed to re-canonicalize view '%s': %s",
+                                vr.name, exc,
+                            )
+                            try:
+                                connection.execute(
+                                    sa.text(
+                                        f"ROLLBACK TO SAVEPOINT {inner_sp}"
+                                    )
+                                )
+                                connection.execute(
+                                    sa.text(
+                                        f"RELEASE SAVEPOINT {inner_sp}"
+                                    )
+                                )
+                            except _CANON_ERRORS:
+                                pass
+                            continue
+
+                        skipped.discard(vr.name)
+                        processed.add(vr.name)
+                        newly_canonicalized += 1
+
+                    if newly_canonicalized == 0:
+                        break
+                    if ddl_count == 0 and newly_canonicalized == 0:
+                        break
+                else:
+                    log.warning(
+                        "Iterative canonicalization reached max iterations "
+                        "(%d) for schema %r",
+                        max_iterations, schema,
+                    )
 
         # Batch-read from pg_catalog inside the outer savepoint (before
         # rollback) so just-created views are visible.
@@ -559,7 +741,7 @@ def compare_views(
             vr for vr in model_records if vr.schema == schema
         ]
         model_view_defs, model_mv_defs, skipped = _canonicalize_all_views(
-            connection, schema_records, all_db
+            connection, schema_records, all_db, metadata
         )
 
         # Diff model vs DB

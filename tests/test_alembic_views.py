@@ -3119,7 +3119,7 @@ class TestCrossSchemaSameNameBothOps:
             ]
         )
 
-        def mock_canonicalize_all(connection, view_records, db_views):
+        def mock_canonicalize_all(connection, view_records, db_views, metadata=None):
             return next(canonical_returns)
 
         with patch.object(
@@ -4147,7 +4147,7 @@ class TestCrossSchemaCreateOrdering:
             "schema_b": ({"base_view": "SELECT 1 AS id"}, {}, set()),
         }
 
-        def mock_canonicalize_all(connection, view_records, db_views):
+        def mock_canonicalize_all(connection, view_records, db_views, metadata=None):
             schema = view_records[0].schema if view_records else None
             return canonical_by_schema[schema]
 
@@ -4596,5 +4596,119 @@ class TestWhitespaceOnlyDifferenceNoReplace:
         assert replace_ops == [], (
             f"expected no ReplaceViewOp for whitespace-only diff, "
             f"got {[(op.name, op.definition) for op in replace_ops]}"
+        )
+
+
+# ===========================================================================
+# Regression: canonicalization false negative when a view references a
+# column being added in the same migration (iterative canonicalization)
+# ===========================================================================
+
+# Distinct table/view names so this test does not collide with other fixtures.
+_ITER_CANON_BASE_TABLE = "_iter_canon_base"
+_ITER_CANON_VIEW_NAMES = ["iter_canon_view"]
+
+
+class TestIterativeCanonicalization:
+    """Regression: a view whose V2 definition references a column that does
+    not yet exist in the DB (because it is being added in the same migration)
+    must still produce a Create/Replace op.
+
+    The current canonicalization runs each model view inside a rolled-back
+    savepoint. When the view's ``CREATE VIEW`` references a column that is
+    absent from the live DB, the CREATE fails and the view is added to the
+    ``skipped`` set. Because skipped views are excluded from BOTH drop
+    detection AND create/replace diffing, no op is generated for them — a
+    false negative. The planned fix applies the pending view-relevant DDL
+    (here: ``add_column``) inside the savepoint and re-canonicalizes the
+    skipped views until a fixpoint is reached.
+
+    This test is the RED phase of TDD: it asserts that a CreateViewOp (or
+    ReplaceViewOp) IS generated, and currently FAILS because the view is
+    silently skipped.
+    """
+
+    @pytest.mark.infrastructure
+    @pytest.mark.usefixtures("postgresql_dsn")
+    def test_iterative_canon_column_addition(self, view_cleanup_factory, request):
+        """End-to-end: view references a column being added in the same migration.
+
+        Given:
+            - DB table ``_iter_canon_base`` exists with columns (id, name) —
+              the ``email`` column has NOT been added yet (it is part of the
+              same migration as the view).
+            - Model metadata declares the table with the extra ``email``
+              column AND a view ``iter_canon_view`` that selects
+              ``id, name, email`` from it.
+
+        When:
+            - The comparator runs ``compare_views``.
+
+        Then (expected, post-fix):
+            - A ``CreateViewOp`` or ``ReplaceViewOp`` for ``iter_canon_view``
+              is generated.
+
+        Currently (RED):
+            - The view's ``CREATE VIEW`` fails inside the canonicalization
+              savepoint (``column "email" does not exist``), so the view is
+              added to ``skipped`` and no op is generated.
+        """
+        connection = view_cleanup_factory(_ITER_CANON_VIEW_NAMES)
+
+        # Pre-create the base table WITHOUT the extra column. The `email`
+        # column is "being added in the same migration" — it is absent from
+        # the live DB but present in the model metadata.
+        def _create_iter_base():
+            connection.execute(
+                sa.text(
+                    f"CREATE TABLE IF NOT EXISTS {_ITER_CANON_BASE_TABLE} "
+                    f"(id SERIAL PRIMARY KEY, name VARCHAR(100))"
+                )
+            )
+            connection.commit()
+
+        def _drop_iter_base():
+            connection.execute(
+                sa.text(f"DROP TABLE IF EXISTS {_ITER_CANON_BASE_TABLE} CASCADE")
+            )
+            connection.commit()
+
+        _drop_iter_base()
+        _create_iter_base()
+        request.addfinalizer(_drop_iter_base)
+
+        metadata = sa.MetaData()
+        # Model declares the table WITH the extra `email` column.
+        sa.Table(
+            _ITER_CANON_BASE_TABLE,
+            metadata,
+            sa.Column("id", sa.Integer, primary_key=True),
+            sa.Column("name", sa.String(100)),
+            sa.Column("email", sa.String(255)),
+        )
+        # Model declares a view that references the not-yet-existing column.
+        metadata.info["sqlalchemy_utils_views"] = [
+            ViewRecord(
+                name="iter_canon_view",
+                selectable=sa.select(
+                    sa.text(f"id, name, email FROM {_ITER_CANON_BASE_TABLE}")
+                ),
+                schema=None,
+            ),
+        ]
+
+        upgrade_ops = _run_comparator(connection, metadata, schemas=[None])
+
+        view_ops = [
+            op
+            for op in upgrade_ops.ops
+            if isinstance(op, (CreateViewOp, ReplaceViewOp))
+            and op.name == "iter_canon_view"
+        ]
+        assert len(view_ops) >= 1, (
+            f"expected a CreateViewOp or ReplaceViewOp for 'iter_canon_view' "
+            f"(view references a column being added in the same migration); "
+            f"got {view_ops}; all ops: "
+            f"{[(type(o).__name__, getattr(o, 'name', None)) for o in upgrade_ops.ops]}"
         )
 
