@@ -71,6 +71,9 @@ _OUTER_SAVEPOINT = "su_view_cmp"
 # Exception types treated as expected during view canonicalization.
 _CANON_ERRORS = (sa.exc.SQLAlchemyError, OSError)
 
+# Safety cap on the iterative fixpoint canonicalization loop.
+_MAX_CANON_ITERATIONS = 10
+
 # Idempotency guard; Alembic runs single-threaded and dispatch_for is itself idempotent.
 _registered = False
 
@@ -128,6 +131,9 @@ def _apply_view_relevant_ddl(
 
     The inspector is built fresh on every call so it reflects DDL applied in
     prior iterations (a cached inspector would not see newly created tables).
+
+    Only tables whose schema matches the given *schema* parameter are
+    processed; tables in other schemas are skipped.
     """
     applied = 0
     inner_sp = f"{_OUTER_SAVEPOINT}_ddl"
@@ -150,33 +156,32 @@ def _apply_view_relevant_ddl(
                 for col in table.columns
             )
             stmt = f"CREATE TABLE {qualified} ({col_defs})"
-        else:
-            db_columns = {
-                col["name"]
-                for col in inspector.get_columns(table.name, schema=schema)
-            }
-            missing = [
-                col
-                for col in table.columns
-                if col.name not in db_columns
-            ]
-            if not missing:
-                continue
-            # One ALTER per column so a single failure does not block the rest.
-            for col in missing:
-                col_type = col.type.compile(dialect=connection.dialect)
-                stmt = (
-                    f"ALTER TABLE {qualified} ADD COLUMN "
-                    f"{preparer.quote(col.name)} {col_type}"
-                )
-                if _execute_ddl_in_savepoint(
-                    connection, inner_sp, stmt
-                ):
-                    applied += 1
+            if _execute_ddl_in_savepoint(connection, inner_sp, stmt):
+                applied += 1
             continue
 
-        if _execute_ddl_in_savepoint(connection, inner_sp, stmt):
-            applied += 1
+        db_columns = {
+            col["name"]
+            for col in inspector.get_columns(table.name, schema=schema)
+        }
+        missing = [
+            col
+            for col in table.columns
+            if col.name not in db_columns
+        ]
+        if not missing:
+            continue
+        # One ALTER per column so a single failure does not block the rest.
+        for col in missing:
+            col_type = col.type.compile(dialect=connection.dialect)
+            stmt = (
+                f"ALTER TABLE {qualified} ADD COLUMN "
+                f"{preparer.quote(col.name)} {col_type}"
+            )
+            if _execute_ddl_in_savepoint(
+                connection, inner_sp, stmt
+            ):
+                applied += 1
 
     return applied
 
@@ -189,7 +194,8 @@ def _execute_ddl_in_savepoint(
     """Execute a single DDL statement inside its own inner savepoint.
 
     Returns ``True`` if the statement was applied, ``False`` if it raised
-    a ``_CANON_ERRORS`` (the savepoint is rolled back and the failure logged).
+    a ``_CANON_ERRORS`` (the savepoint is rolled back to and released, and
+    the failure logged).
     """
     connection.execute(sa.text(f"SAVEPOINT {savepoint}"))
     try:
@@ -204,6 +210,42 @@ def _execute_ddl_in_savepoint(
         except _CANON_ERRORS:
             pass
         return False
+
+
+def _canonicalize_one_view(
+    connection: sa.engine.Connection,
+    view_record: ViewRecord,
+) -> bool:
+    """Canonicalize a single view inside its own inner savepoint.
+
+    Creates a nested savepoint ``{_OUTER_SAVEPOINT}_v``, executes the
+    CREATE statements from :func:`_build_create_sql`, and RELEASEs on
+    success. On a ``_CANON_ERRORS`` the savepoint is rolled back and
+    released (the inner rollback guard tolerates a poisoned transaction)
+    and ``False`` is returned.
+
+    The caller owns the outer savepoint and the surrounding
+    ``skipped`` / ``processed`` bookkeeping; this helper only performs the
+    per-view savepoint dance shared by the pass-1 and iterative loops.
+    """
+    inner_sp = f"{_OUTER_SAVEPOINT}_v"
+    connection.execute(sa.text(f"SAVEPOINT {inner_sp}"))
+    try:
+        for stmt in _build_create_sql(connection, view_record):
+            connection.execute(sa.text(stmt))
+        connection.execute(sa.text(f"RELEASE SAVEPOINT {inner_sp}"))
+    except _CANON_ERRORS as exc:
+        log.warning(
+            "Failed to canonicalize view '%s': %s", view_record.name, exc
+        )
+        try:
+            connection.execute(sa.text(f"ROLLBACK TO SAVEPOINT {inner_sp}"))
+            # ROLLBACK TO keeps the savepoint alive; RELEASE for reuse.
+            connection.execute(sa.text(f"RELEASE SAVEPOINT {inner_sp}"))
+        except _CANON_ERRORS:
+            pass
+        return False
+    return True
 
 
 def _canonicalize_all_views(
@@ -230,14 +272,14 @@ def _canonicalize_all_views(
     savepoint and re-canonicalizes only the skipped views:
 
     - **DDL scope** — only ``ADD COLUMN`` (nullable, no default) and
-      ``CREATE TABLE`` (empty: no indexes, constraints, foreign keys, and no
-      ``ALTER COLUMN`` type changes) are applied. This is sufficient for view
-      creation, which only needs the column to exist; full table shape is
-      the migration's job.
+      ``CREATE TABLE`` (all model columns as nullable; no indexes,
+      constraints, or foreign keys). No ``ALTER COLUMN`` type changes are
+      applied. This is sufficient for view creation, which only needs the
+      column to exist; full table shape is the migration's job.
     - **Re-canonicalization** — only views in the ``skipped`` set are retried
       after each DDL pass; successfully canonicalized views are not re-touched.
-    - **Fixpoint termination** — the loop stops as soon as a pass applies no
-      DDL and canonicalizes no new views (no progress), i.e. it terminates at
+    - **Fixpoint termination** — the loop stops as soon as a pass
+      canonicalizes no new views (no progress), i.e. it terminates at
       the fixpoint where remaining skips cannot be resolved by further DDL.
     - **Safety cap** — at most 10 iterations are attempted; if the fixpoint
       is not reached, a warning is logged and the still-skipped views remain
@@ -277,50 +319,37 @@ def _canonicalize_all_views(
     connection.execute(sa.text(f"SAVEPOINT {_OUTER_SAVEPOINT}"))
     try:
         for vr in ordered:
-            # Inner savepoint per view: RELEASE on success, ROLLBACK TO on failure.
-            inner_sp = f"{_OUTER_SAVEPOINT}_v"
-            connection.execute(sa.text(f"SAVEPOINT {inner_sp}"))
-            try:
-                for stmt in _build_create_sql(connection, vr):
-                    connection.execute(sa.text(stmt))
-                connection.execute(sa.text(f"RELEASE SAVEPOINT {inner_sp}"))
-            except _CANON_ERRORS as exc:
-                log.warning(
-                    "Failed to canonicalize view '%s': %s", vr.name, exc
-                )
-                try:
-                    connection.execute(
-                        sa.text(f"ROLLBACK TO SAVEPOINT {inner_sp}")
-                    )
-                    # ROLLBACK TO keeps the savepoint alive; RELEASE for reuse.
-                    connection.execute(
-                        sa.text(f"RELEASE SAVEPOINT {inner_sp}")
-                    )
-                except _CANON_ERRORS:
-                    pass
-                skipped.add(vr.name)
+            if _canonicalize_one_view(connection, vr):
+                processed.add(vr.name)
+                continue
 
-                # Probe the outer savepoint: a poisoned transaction would
-                # silently skip all remaining views, so break early instead.
-                try:
-                    connection.execute(sa.text("SELECT 1"))
-                except _CANON_ERRORS:
-                    log.warning(
-                        "Outer savepoint is in aborted state after failing to "
-                        "canonicalize view '%s'; aborting canonicalization of "
-                        "remaining views", vr.name
-                    )
-                    processed.add(vr.name)
-                    # Unreached views go to `skipped` to avoid false DropViewOps.
-                    for remaining_vr in ordered:
-                        if remaining_vr.name not in processed:
-                            skipped.add(remaining_vr.name)
-                            log.warning(
-                                "View %r in schema %r skipped (canonicalization aborted due to prior failure) — "
-                                "no migration op will be generated for it.",
-                                remaining_vr.name, schema,
-                            )
-                    break
+            # Failed: record BEFORE the probe so the view is retried in the
+            # iterative loop AND excluded from drop detection.
+            skipped.add(vr.name)
+
+            # Probe the outer savepoint: a poisoned transaction would
+            # silently skip all remaining views, so break early instead.
+            try:
+                connection.execute(sa.text("SELECT 1"))
+            except _CANON_ERRORS:
+                log.warning(
+                    "Outer savepoint is in aborted state after failing to "
+                    "canonicalize view '%s'; aborting canonicalization of "
+                    "remaining views", vr.name
+                )
+                processed.add(vr.name)
+                # Unreached views go to `skipped` to avoid false DropViewOps.
+                for remaining_vr in ordered:
+                    if remaining_vr.name not in processed:
+                        skipped.add(remaining_vr.name)
+                        log.warning(
+                            "View %r in schema %r skipped (canonicalization aborted due to prior failure) — "
+                            "no migration op will be generated for it.",
+                            remaining_vr.name, schema,
+                        )
+                break
+            # Not poisoned: mark processed for both success and non-poisoned
+            # failure (the True path above already continued).
             processed.add(vr.name)
 
         # Iterative fixpoint: apply view-relevant DDL from *metadata* inside
@@ -338,8 +367,7 @@ def _canonicalize_all_views(
                 outer_poisoned = True
 
             if not outer_poisoned:
-                max_iterations = 10
-                for _iteration in range(max_iterations):
+                for _iteration in range(_MAX_CANON_ITERATIONS):
                     ddl_count = _apply_view_relevant_ddl(
                         connection, metadata, schema
                     )
@@ -349,49 +377,18 @@ def _canonicalize_all_views(
                     ]
                     newly_canonicalized = 0
                     for vr in skipped_records:
-                        inner_sp = f"{_OUTER_SAVEPOINT}_v"
-                        connection.execute(
-                            sa.text(f"SAVEPOINT {inner_sp}")
-                        )
-                        try:
-                            for stmt in _build_create_sql(connection, vr):
-                                connection.execute(sa.text(stmt))
-                            connection.execute(
-                                sa.text(f"RELEASE SAVEPOINT {inner_sp}")
-                            )
-                        except _CANON_ERRORS as exc:
-                            log.warning(
-                                "Failed to re-canonicalize view '%s': %s",
-                                vr.name, exc,
-                            )
-                            try:
-                                connection.execute(
-                                    sa.text(
-                                        f"ROLLBACK TO SAVEPOINT {inner_sp}"
-                                    )
-                                )
-                                connection.execute(
-                                    sa.text(
-                                        f"RELEASE SAVEPOINT {inner_sp}"
-                                    )
-                                )
-                            except _CANON_ERRORS:
-                                pass
-                            continue
-
-                        skipped.discard(vr.name)
-                        processed.add(vr.name)
-                        newly_canonicalized += 1
+                        if _canonicalize_one_view(connection, vr):
+                            skipped.discard(vr.name)
+                            processed.add(vr.name)
+                            newly_canonicalized += 1
 
                     if newly_canonicalized == 0:
-                        break
-                    if ddl_count == 0 and newly_canonicalized == 0:
                         break
                 else:
                     log.warning(
                         "Iterative canonicalization reached max iterations "
                         "(%d) for schema %r",
-                        max_iterations, schema,
+                        _MAX_CANON_ITERATIONS, schema,
                     )
 
         # Batch-read from pg_catalog inside the outer savepoint (before
