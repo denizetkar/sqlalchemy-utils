@@ -53,6 +53,9 @@ Session.vim
 # JetBrains
 .idea/
 
+# Opencode orchestration state
+.omo/
+
 # Environments
 .env
 .venv

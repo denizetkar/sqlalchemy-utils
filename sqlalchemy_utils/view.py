@@ -1,73 +1,272 @@
+from __future__ import annotations
+
+from typing import Any
+
 import sqlalchemy as sa
 from sqlalchemy.ext import compiler
 from sqlalchemy.schema import DDLElement, PrimaryKeyConstraint
+from sqlalchemy.sql.compiler import DDLCompiler
 from sqlalchemy.sql.expression import ClauseElement, Executable
 
 from sqlalchemy_utils.functions import get_columns
 
+from sqlalchemy_utils.view_record import ViewRecord
+
+
+# ---------------------------------------------------------------------------
+# Identifier-quoting helpers (single source of truth; re-exported by
+# sqlalchemy_utils.alembic.operations and used by alembic.comparator).
+# ---------------------------------------------------------------------------
+
+def _quote_qualified_name(
+    dialect: sa.engine.Dialect, name: str, schema: str | None = None
+) -> str:
+    """Return a schema-qualified, properly quoted identifier.
+
+    When *schema* is given the result is ``"schema"."name"`` (both parts
+    quoted by the dialect's identifier preparer); otherwise just ``"name"``.
+    """
+    quote = dialect.identifier_preparer.quote
+    if schema:
+        return f"{quote(schema)}.{quote(name)}"
+    return quote(name)
+
 
 class CreateView(DDLElement):
-    def __init__(self, name, selectable, materialized=False, replace=False):
+    """DDL element for CREATE VIEW (or CREATE OR REPLACE VIEW).
+
+    :param name: Name of the view to create.
+    :param selectable: An SQLAlchemy selectable (e.g. ``select()``)
+        defining the view body.
+    :param materialized: When ``True``, emits ``CREATE MATERIALIZED VIEW``
+        (default ``False``).
+    :param replace: When ``True``, emits ``CREATE OR REPLACE VIEW``.
+        Cannot be combined with ``materialized`` (default ``False``).
+    :param schema: Keyword-only. Optional schema name; when given, the
+        view name is schema-qualified in the emitted DDL.
+    :raises ValueError: if both ``materialized`` and ``replace`` are True.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        selectable: ClauseElement,
+        materialized: bool = False,
+        replace: bool = False,
+        *,
+        schema: str | None = None,
+    ) -> None:
         if materialized and replace:
             raise ValueError('Cannot use CREATE OR REPLACE with materialized views')
         self.name = name
         self.selectable = selectable
         self.materialized = materialized
         self.replace = replace
+        self.schema = schema
 
 
 @compiler.compiles(CreateView)
-def compile_create_materialized_view(element, compiler, **kw):
+def compile_create_view(element: CreateView, compiler: DDLCompiler, **kw: object) -> str:
+    """Compile ``CreateView`` to ``CREATE [OR REPLACE] [MATERIALIZED] VIEW``."""
+    qualified = _quote_qualified_name(compiler.dialect, element.name, element.schema)
     return 'CREATE {}{}VIEW {} AS {}'.format(
         'OR REPLACE ' if element.replace else '',
         'MATERIALIZED ' if element.materialized else '',
-        compiler.dialect.identifier_preparer.quote(element.name),
+        qualified,
         compiler.sql_compiler.process(element.selectable, literal_binds=True),
     )
 
 
 class DropView(DDLElement):
-    def __init__(self, name, materialized=False, cascade=True):
+    """DDL element for DROP VIEW (or DROP MATERIALIZED VIEW).
+
+    :param name: Name of the view to drop.
+    :param materialized: When ``True``, emits ``DROP MATERIALIZED VIEW``
+        (default ``False``).
+    :param cascade: When ``True`` (default), appends ``CASCADE`` to the
+        ``DROP`` so dependent objects are removed as well.
+    :param schema: Keyword-only. Optional schema name; when given, the
+        view name is schema-qualified in the emitted DDL.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        materialized: bool = False,
+        cascade: bool = True,
+        *,
+        schema: str | None = None,
+    ) -> None:
         self.name = name
         self.materialized = materialized
         self.cascade = cascade
+        self.schema = schema
 
 
 @compiler.compiles(DropView)
-def compile_drop_materialized_view(element, compiler, **kw):
-    return 'DROP {}VIEW IF EXISTS {} {}'.format(
+def compile_drop_view(element: DropView, compiler: DDLCompiler, **kw: object) -> str:
+    """Compile ``DropView`` to ``DROP [MATERIALIZED] VIEW IF EXISTS [...]``."""
+    qualified = _quote_qualified_name(compiler.dialect, element.name, element.schema)
+    sql = 'DROP {}VIEW IF EXISTS {}'.format(
         'MATERIALIZED ' if element.materialized else '',
-        compiler.dialect.identifier_preparer.quote(element.name),
-        'CASCADE' if element.cascade else '',
+        qualified,
     )
+    if element.cascade:
+        sql += ' CASCADE'
+    return sql
 
 
 def create_table_from_selectable(
-    name, selectable, indexes=None, metadata=None, aliases=None, **kwargs
-):
+    name: str,
+    selectable: str | sa.sql.ClauseElement,
+    indexes: list[sa.Index] | None = None,
+    metadata: sa.MetaData | None = None,
+    aliases: dict[str, str] | None = None,
+    *,
+    schema: str | None = None,
+    **kwargs: Any,
+) -> sa.Table:
+    """Create a :class:`~sqlalchemy.Table` from a selectable.
+
+    Builds a table whose columns mirror the selectable's output columns.
+    If no column has ``primary_key=True``, a :class:`PrimaryKeyConstraint`
+    is added over all columns.
+
+    :param name: Table name.
+    :param selectable: A SQLAlchemy selectable (``select()``, ``text()``, etc.)
+        or a string SQL expression.
+    :param indexes: Optional list of :class:`~sqlalchemy.Index` objects.
+    :param metadata: :class:`~sqlalchemy.MetaData` to attach the table to.
+        If ``None``, the table is not attached to any metadata (used by
+        :func:`create_view` and :func:`create_materialized_view`).
+    :param aliases: Optional ``{column_name: alias}`` mapping to override
+        column keys.
+    :param schema: Keyword-only. Optional schema name.
+    :param kwargs: Additional ``Table`` constructor arguments.
+    :returns: The created :class:`~sqlalchemy.Table`.
+
+    Example::
+
+        import sqlalchemy as sa
+        from sqlalchemy_utils import create_table_from_selectable
+
+        metadata = sa.MetaData()
+        users = sa.Table(
+            "users", metadata,
+            sa.Column("id", sa.Integer, primary_key=True),
+            sa.Column("name", sa.String),
+        )
+        selectable = sa.select(users.c.id, users.c.name).where(users.c.id < 100)
+        table = create_table_from_selectable("small_ids", selectable, metadata=metadata)
+        # `table` is a sa.Table whose columns mirror the selectable's output.
+    """
     if indexes is None:
         indexes = []
     if metadata is None:
         metadata = sa.MetaData()
     if aliases is None:
         aliases = {}
+    cols = get_columns(selectable)
     args = [
         sa.Column(
             c.name, c.type, key=aliases.get(c.name, c.name), primary_key=c.primary_key
         )
-        for c in get_columns(selectable)
+        for c in cols
     ] + indexes
-    table = sa.Table(name, metadata, *args, **kwargs)
+    table = sa.Table(name, metadata, *args, schema=schema, **kwargs)
 
-    if not any([c.primary_key for c in get_columns(selectable)]):
+    if not any(c.primary_key for c in cols):
         table.append_constraint(
-            PrimaryKeyConstraint(*[c.name for c in get_columns(selectable)])
+            PrimaryKeyConstraint(*[c.name for c in cols])
         )
     return table
 
 
-def create_materialized_view(name, selectable, metadata, indexes=None, aliases=None):
-    """Create a view on a given metadata
+def _assert_clause_element(selectable: ClauseElement) -> None:
+    if isinstance(selectable, str):
+        raise TypeError(
+            "selectable must be a SQLAlchemy ClauseElement (e.g. sa.select(...) "
+            "or sa.text(...)), not a string. Wrap your SQL in sa.text('...') first."
+        )
+
+
+def _register_view_ddl(
+    metadata: sa.MetaData,
+    name: str,
+    selectable: ClauseElement,
+    materialized: bool,
+    replace: bool,
+    cascade_on_drop: bool,
+    schema: str | None,
+    table: sa.Table | None = None,
+    aliases: dict[str, str] | None = None,
+) -> None:
+    """Register CREATE/DROP DDL listeners and a ViewRecord on *metadata*.
+
+    Shared by :func:`create_view`, :func:`create_materialized_view`, and
+    :meth:`~sqlalchemy_utils.view_mixin.ViewMixin.__declare_last__` to avoid
+    triplicated listener registration and ViewRecord construction.
+
+    When *materialized* is ``True`` and *table* has indexes, a
+    metadata-scoped ``after_create`` listener is registered that creates each
+    index after the view's backing table is created. This is required because
+    the backing table is built with ``metadata=None`` (so a table-scoped
+    listener would never fire during ``metadata.create_all()``).
+    """
+    sa.event.listen(
+        metadata,
+        'after_create',
+        CreateView(
+            name,
+            selectable=selectable,
+            materialized=materialized,
+            replace=replace,
+            schema=schema,
+        ),
+    )
+    sa.event.listen(
+        metadata,
+        'before_drop',
+        DropView(
+            name,
+            materialized=materialized,
+            cascade=cascade_on_drop,
+            schema=schema,
+        ),
+    )
+
+    if materialized and table is not None and table.indexes:
+
+        @sa.event.listens_for(metadata, 'after_create')
+        def create_indexes(target: sa.MetaData, connection: sa.engine.Connection, **kw: object) -> None:
+            if target is not table:
+                return
+            for idx in table.indexes:
+                idx.create(connection)
+
+    view_records = metadata.info.setdefault('sqlalchemy_utils_views', [])
+    view_records.append(ViewRecord(
+        name=name,
+        selectable=selectable,
+        schema=schema,
+        materialized=materialized,
+        replace=replace,
+        cascade_on_drop=cascade_on_drop,
+        aliases=aliases,
+    ))
+
+
+def create_materialized_view(
+    name: str,
+    selectable: ClauseElement,
+    metadata: sa.MetaData,
+    indexes: list[sa.Index] | None = None,
+    aliases: dict[str, str] | None = None,
+    cascade_on_drop: bool = True,
+    *,
+    schema: str | None = None,
+) -> sa.Table:
+    """Create a materialized view on a given metadata
 
     :param name: The name of the view to create.
     :param selectable: An SQLAlchemy selectable e.g. a select() statement.
@@ -76,41 +275,81 @@ def create_materialized_view(name, selectable, metadata, indexes=None, aliases=N
         database being described.
     :param indexes: An optional list of SQLAlchemy Index instances.
     :param aliases:
-        An optional dictionary containing with keys as column names and values
-        as column aliases.
+        Optional ``{column_name: alias}`` mapping to override column keys.
+    :param cascade_on_drop:
+        If ``True`` the view will be dropped with ``CASCADE``,
+        deleting all dependent objects as well.
+    :param schema:
+        Keyword-only. An optional string specifying the schema (database) in
+        which the view should be created. When supplied, the view name is
+        qualified with the schema in the emitted ``CREATE``/``DROP``
+        DDL.
+    :returns: The created :class:`~sqlalchemy.Table` instance.
+    :raises TypeError: if *selectable* is a string, or *indexes* is not a list or None.
 
     Same as for ``create_view`` except that a ``CREATE MATERIALIZED VIEW``
     statement is emitted instead of a ``CREATE VIEW``.
 
+    .. note::
+        The runtime DDL path (this function, ``metadata.create_all()``, and
+        the ``CreateView`` DDL element) emits a plain
+        ``CREATE MATERIALIZED VIEW``; PostgreSQL defaults to ``WITH DATA``
+        so the materialized view is populated immediately. Only the Alembic
+        ``op.create_materialized_view`` operation supports an explicit
+        ``WITH NO DATA`` clause (via ``with_data=False``, which is also the
+        autogenerate default).
+
+    Example::
+
+        metadata = sa.MetaData()
+        create_materialized_view(
+            "user_summary",
+            sa.select(
+                sa.func.count().label("n"),
+            ).select_from(sa.text("users")),
+            metadata,
+        )
+        # Run metadata.create_all(engine) to emit the CREATE MATERIALIZED VIEW.
+        # Refresh later with refresh_materialized_view(session, "user_summary").
+
     """
+    _assert_clause_element(selectable)
+    if indexes is not None and not isinstance(indexes, list):
+        raise TypeError(
+            f"indexes must be a list or None, got {type(indexes).__name__}"
+        )
     table = create_table_from_selectable(
         name=name,
         selectable=selectable,
         indexes=indexes,
         metadata=None,
         aliases=aliases,
+        schema=schema,
     )
 
-    sa.event.listen(
-        metadata, 'after_create', CreateView(name, selectable, materialized=True)
+    _register_view_ddl(
+        metadata=metadata,
+        name=name,
+        selectable=selectable,
+        materialized=True,
+        replace=False,
+        cascade_on_drop=cascade_on_drop,
+        schema=schema,
+        table=table,
+        aliases=aliases,
     )
-
-    @sa.event.listens_for(metadata, 'after_create')
-    def create_indexes(target, connection, **kw):
-        for idx in table.indexes:
-            idx.create(connection)
-
-    sa.event.listen(metadata, 'before_drop', DropView(name, materialized=True))
     return table
 
 
 def create_view(
-    name,
-    selectable,
-    metadata,
-    cascade_on_drop=True,
-    replace=False,
-):
+    name: str,
+    selectable: ClauseElement,
+    metadata: sa.MetaData,
+    cascade_on_drop: bool = True,
+    replace: bool = False,
+    *,
+    schema: str | None = None,
+) -> sa.Table:
     """Create a view on a given metadata
 
     :param name: The name of the view to create.
@@ -118,69 +357,111 @@ def create_view(
     :param metadata:
         An SQLAlchemy Metadata instance that stores the features of the
         database being described.
-    :param cascade_on_drop: If ``True`` the view will be dropped with
+    :param cascade_on_drop:
+        If ``True`` the view will be dropped with
         ``CASCADE``, deleting all dependent objects as well.
-    :param replace: If ``True`` the view will be created with ``OR REPLACE``,
+    :param replace:
+        If ``True`` the view will be created with ``OR REPLACE``,
         replacing an existing view with the same name.
+    :param schema:
+        Keyword-only. An optional string specifying the schema (database) in
+        which the view should be created. When supplied, the view name is
+        qualified with the schema in the emitted ``CREATE``/``DROP`` DDL.
+    :returns: The created :class:`~sqlalchemy.Table` instance.
+    :raises TypeError: if *selectable* is a string — wrap in ``sa.text(...)`` first.
 
     The process for creating a view is similar to the standard way that a
-    table is constructed, except that a selectable is provided instead of
-    a set of columns. The view is created once a ``CREATE`` statement is
+    table is constructed, except that a selectable is provided instead of a
+    set of columns. The view is created once a ``CREATE`` statement is
     executed against the supplied metadata (e.g. ``metadata.create_all(..)``),
     and dropped when a ``DROP`` is executed against the metadata.
 
-    To create a view that performs basic filtering on a table. ::
+    .. note::
+        Unlike :func:`create_materialized_view`, this function does not
+        accept ``indexes`` or ``aliases`` parameters. Regular PostgreSQL
+        views do not support indexes, and column aliases can be defined
+        directly in the view's SELECT statement.
 
-        metadata = MetaData()
-        users = Table('users', metadata,
-                Column('id', Integer, primary_key=True),
-                Column('name', String),
-                Column('fullname', String),
-                Column('premium_user', Boolean, default=False),
-            )
+    Example::
 
-        premium_members = select(users).where(users.c.premium_user == True)
-        create_view('premium_users', premium_members, metadata)
+        import sqlalchemy as sa
+        from sqlalchemy_utils import create_view
 
-        metadata.create_all(engine) # View is created at this point
-
+        metadata = sa.MetaData()
+        users = sa.Table(
+            "users", metadata,
+            sa.Column("id", sa.Integer, primary_key=True),
+            sa.Column("name", sa.String),
+            sa.Column("premium_user", sa.Boolean, default=False),
+        )
+        premium_members = sa.select(users).where(users.c.premium_user == True)
+        create_view("premium_users", premium_members, metadata)
+        # Run metadata.create_all(engine) to emit the CREATE VIEW.
     """
+    _assert_clause_element(selectable)
     table = create_table_from_selectable(
-        name=name, selectable=selectable, metadata=None
+        name=name, selectable=selectable, metadata=None, schema=schema
     )
 
-    sa.event.listen(
-        metadata,
-        'after_create',
-        CreateView(name, selectable, replace=replace),
+    _register_view_ddl(
+        metadata=metadata,
+        name=name,
+        selectable=selectable,
+        materialized=False,
+        replace=replace,
+        cascade_on_drop=cascade_on_drop,
+        schema=schema,
+        table=table,
+        aliases=None,
     )
-
-    @sa.event.listens_for(metadata, 'after_create')
-    def create_indexes(target, connection, **kw):
-        for idx in table.indexes:
-            idx.create(connection)
-
-    sa.event.listen(metadata, 'before_drop', DropView(name, cascade=cascade_on_drop))
     return table
 
 
 class RefreshMaterializedView(Executable, ClauseElement):
-    inherit_cache = True
+    """Executable SQL construct for REFRESH MATERIALIZED VIEW.
 
-    def __init__(self, name, concurrently):
+    :param name: Name of the materialized view to refresh.
+    :param concurrently: When ``True``, emits
+        ``REFRESH MATERIALIZED VIEW CONCURRENTLY`` (non-blocking refresh;
+        requires a unique index on the MV). Default ``False``.
+    :param schema: Keyword-only. Optional schema name; when given, the
+        view name is schema-qualified in the emitted DDL.
+
+    ``cache_ok = True`` enables SQLAlchemy statement caching for this
+    construct.
+    """
+
+    cache_ok = True
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        concurrently: bool = False,
+        schema: str | None = None,
+    ) -> None:
         self.name = name
+        self.schema = schema
         self.concurrently = concurrently
 
 
 @compiler.compiles(RefreshMaterializedView)
-def compile_refresh_materialized_view(element, compiler):
+def compile_refresh_materialized_view(element: RefreshMaterializedView, compiler: DDLCompiler, **kw: object) -> str:
+    """Compile ``RefreshMaterializedView`` to ``REFRESH MATERIALIZED VIEW``."""
+    qualified = _quote_qualified_name(compiler.dialect, element.name, element.schema)
     return 'REFRESH MATERIALIZED VIEW {concurrently}{name}'.format(
         concurrently='CONCURRENTLY ' if element.concurrently else '',
-        name=compiler.dialect.identifier_preparer.quote(element.name),
+        name=qualified,
     )
 
 
-def refresh_materialized_view(session, name, concurrently=False):
+def refresh_materialized_view(
+    session: sa.orm.Session,
+    name: str,
+    *,
+    concurrently: bool = False,
+    schema: str | None = None,
+) -> None:
     """Refreshes an already existing materialized view
 
     :param session: An SQLAlchemy Session instance.
@@ -188,8 +469,22 @@ def refresh_materialized_view(session, name, concurrently=False):
     :param concurrently:
         Optional flag that causes the ``CONCURRENTLY`` parameter
         to be specified when the materialized view is refreshed.
+    :param schema:
+        Keyword-only. An optional string specifying the schema (database) in
+        which the materialized view resides. When supplied, the view name is
+        qualified with the schema in the emitted ``REFRESH MATERIALIZED VIEW`` DDL.
+    :returns: None
+
+    Example::
+
+        from sqlalchemy_utils import refresh_materialized_view
+        refresh_materialized_view(session, "user_summary")
+        # Concurrently refresh a materialized view in the "analytics" schema:
+        refresh_materialized_view(
+            session, "user_summary", concurrently=True, schema="analytics"
+        )
     """
     # Since session.execute() bypasses autoflush, we must manually flush in
     # order to include newly-created/modified objects in the refresh.
     session.flush()
-    session.execute(RefreshMaterializedView(name, concurrently))
+    session.execute(RefreshMaterializedView(name, concurrently=concurrently, schema=schema))

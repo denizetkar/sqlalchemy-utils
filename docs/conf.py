@@ -32,7 +32,7 @@ master_doc = "index"
 
 # General information about the project.
 project = "SQLAlchemy-Utils"
-copyright = "2013-2022, Konsta Vesterinen"
+copyright = "2013-2026, Konsta Vesterinen"
 
 version = get_version()
 release = version
@@ -45,3 +45,12 @@ exclude_patterns = ["_build"]
 # pygments_style = "sphinx"
 
 html_theme = "sphinx_rtd_theme"
+
+# -- Cross-references to other projects' docs ---------------------------------
+intersphinx_mapping = {
+    "python": ("https://docs.python.org/3", None),
+    "sqlalchemy": ("https://docs.sqlalchemy.org/en/20/", None),
+    "alembic": ("https://alembic.sqlalchemy.org/en/latest/", None),
+}
+
+nitpicky = True

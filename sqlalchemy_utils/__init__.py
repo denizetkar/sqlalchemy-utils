@@ -6,7 +6,7 @@ from .asserts import (  # noqa
     assert_non_nullable,
     assert_nullable,
 )
-from .exceptions import ImproperlyConfigured  # noqa
+from .exceptions import ImproperlyConfigured, ViewReadonlyError  # noqa
 from .expressions import Asterisk, row_to_json  # noqa
 from .functions import (  # noqa
     cast_if,
@@ -97,8 +97,20 @@ from .types import (  # noqa
 )
 from .view import (  # noqa
     create_materialized_view,
+    create_table_from_selectable,
     create_view,
     refresh_materialized_view,
 )
+from .view_mixin import ViewMixin  # noqa
+from .view_record import ViewRecord  # noqa
+try:
+    from .alembic import register_view_comparator  # noqa
+except ImportError:
+    def register_view_comparator() -> None:
+        """Register the view comparator with Alembic. Requires alembic; install with ``pip install sqlalchemy-utils[alembic]``."""
+        raise ImportError(
+            "register_view_comparator requires alembic; install with "
+            "'pip install sqlalchemy-utils[alembic]'"
+        )
 
-__version__ = '0.42.0'
+__version__ = '0.42.1'
