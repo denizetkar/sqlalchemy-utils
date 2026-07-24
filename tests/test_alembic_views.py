@@ -4712,3 +4712,267 @@ class TestIterativeCanonicalization:
             f"{[(type(o).__name__, getattr(o, 'name', None)) for o in upgrade_ops.ops]}"
         )
 
+    @pytest.mark.infrastructure
+    @pytest.mark.usefixtures("postgresql_dsn")
+    def test_iterative_canon_view_chain(self, view_cleanup_factory, request):
+        """View-on-view dependency chain: a base table gets a new column and
+        two views (one selecting from the base, one selecting from the first
+        view) both reference the new column. Both must produce Create/Replace
+        ops because the iterative canonicalization applies the column-add DDL
+        inside the savepoint before re-canonicalizing skipped views.
+        """
+        connection = view_cleanup_factory(["view_a", "view_b"])
+
+        base_table = "_iter_canon_chain_base"
+
+        def _create_chain_base():
+            connection.execute(
+                sa.text(
+                    f"CREATE TABLE IF NOT EXISTS {base_table} "
+                    f"(id SERIAL PRIMARY KEY, name VARCHAR(100))"
+                )
+            )
+            connection.commit()
+
+        def _drop_chain_base():
+            connection.execute(
+                sa.text(f"DROP TABLE IF EXISTS {base_table} CASCADE")
+            )
+            connection.commit()
+
+        _drop_chain_base()
+        _create_chain_base()
+        request.addfinalizer(_drop_chain_base)
+
+        metadata = sa.MetaData()
+        sa.Table(
+            base_table,
+            metadata,
+            sa.Column("id", sa.Integer, primary_key=True),
+            sa.Column("name", sa.String(100)),
+            sa.Column("email", sa.String(255)),
+        )
+        metadata.info["sqlalchemy_utils_views"] = [
+            ViewRecord(
+                name="view_b",
+                selectable=sa.select(
+                    sa.text(f"id, name, email FROM {base_table}")
+                ),
+                schema=None,
+            ),
+            ViewRecord(
+                name="view_a",
+                selectable=sa.select(sa.text("* FROM view_b")),
+                schema=None,
+            ),
+        ]
+
+        upgrade_ops = _run_comparator(connection, metadata, schemas=[None])
+
+        for view_name in ("view_b", "view_a"):
+            view_ops = [
+                op
+                for op in upgrade_ops.ops
+                if isinstance(op, (CreateViewOp, ReplaceViewOp))
+                and op.name == view_name
+            ]
+            assert len(view_ops) >= 1, (
+                f"expected a CreateViewOp or ReplaceViewOp for '{view_name}' "
+                f"in view chain; got {view_ops}; all ops: "
+                f"{[(type(o).__name__, getattr(o, 'name', None)) for o in upgrade_ops.ops]}"
+            )
+
+    @pytest.mark.infrastructure
+    @pytest.mark.usefixtures("postgresql_dsn")
+    def test_iterative_canon_zero_overhead(self, view_cleanup_factory, request):
+        """Zero-overhead fast path: the view canonicalizes fine on the first
+        pass (no missing-column reference), so no iterative DDL is needed.
+        Verify the base table is NOT mutated (still has exactly id, name) and
+        a CreateViewOp IS generated.
+        """
+        connection = view_cleanup_factory(["iter_canon_zo_view"])
+
+        base_table = "_iter_canon_zo_base"
+
+        def _create_zo_base():
+            connection.execute(
+                sa.text(
+                    f"CREATE TABLE IF NOT EXISTS {base_table} "
+                    f"(id SERIAL PRIMARY KEY, name VARCHAR(100))"
+                )
+            )
+            connection.commit()
+
+        def _drop_zo_base():
+            connection.execute(
+                sa.text(f"DROP TABLE IF EXISTS {base_table} CASCADE")
+            )
+            connection.commit()
+
+        _drop_zo_base()
+        _create_zo_base()
+        request.addfinalizer(_drop_zo_base)
+
+        metadata = sa.MetaData()
+        sa.Table(
+            base_table,
+            metadata,
+            sa.Column("id", sa.Integer, primary_key=True),
+            sa.Column("name", sa.String(100)),
+        )
+        metadata.info["sqlalchemy_utils_views"] = [
+            ViewRecord(
+                name="iter_canon_zo_view",
+                selectable=sa.select(
+                    sa.text(f"id, name FROM {base_table}")
+                ),
+                schema=None,
+            ),
+        ]
+
+        upgrade_ops = _run_comparator(connection, metadata, schemas=[None])
+
+        view_ops = [
+            op
+            for op in upgrade_ops.ops
+            if isinstance(op, (CreateViewOp, ReplaceViewOp))
+            and op.name == "iter_canon_zo_view"
+        ]
+        assert len(view_ops) >= 1, (
+            f"expected a CreateViewOp or ReplaceViewOp for 'iter_canon_zo_view'; "
+            f"got {view_ops}; all ops: "
+            f"{[(type(o).__name__, getattr(o, 'name', None)) for o in upgrade_ops.ops]}"
+        )
+
+        insp = sa.inspect(connection)
+        columns = {col["name"] for col in insp.get_columns(base_table)}
+        assert columns == {"id", "name"}, (
+            f"base table should still have exactly (id, name) columns after "
+            f"zero-overhead canonicalization; got {columns}"
+        )
+
+    @pytest.mark.infrastructure
+    @pytest.mark.usefixtures("postgresql_dsn")
+    def test_iterative_canon_no_progress(self, view_cleanup_factory, request):
+        """No-progress termination: the view references a non-existent
+        function that no pending DDL can fix. The comparator must terminate
+        quickly (no hang) and produce NO op for the view (no Create, Replace,
+        or Drop).
+        """
+        connection = view_cleanup_factory(["iter_canon_np_view"])
+
+        base_table = "_iter_canon_np_base"
+
+        def _create_np_base():
+            connection.execute(
+                sa.text(
+                    f"CREATE TABLE IF NOT EXISTS {base_table} "
+                    f"(id SERIAL PRIMARY KEY)"
+                )
+            )
+            connection.commit()
+
+        def _drop_np_base():
+            connection.execute(
+                sa.text(f"DROP TABLE IF EXISTS {base_table} CASCADE")
+            )
+            connection.commit()
+
+        _drop_np_base()
+        _create_np_base()
+        request.addfinalizer(_drop_np_base)
+
+        metadata = sa.MetaData()
+        sa.Table(
+            base_table,
+            metadata,
+            sa.Column("id", sa.Integer, primary_key=True),
+        )
+        metadata.info["sqlalchemy_utils_views"] = [
+            ViewRecord(
+                name="iter_canon_np_view",
+                selectable=sa.select(sa.func.nonexistent_function_12345()),
+                schema=None,
+            ),
+        ]
+
+        upgrade_ops = _run_comparator(connection, metadata, schemas=[None])
+
+        view_ops = [
+            op
+            for op in upgrade_ops.ops
+            if isinstance(op, (CreateViewOp, ReplaceViewOp, DropViewOp))
+            and op.name == "iter_canon_np_view"
+        ]
+        assert view_ops == [], (
+            f"expected NO op for 'iter_canon_np_view' (no-progress case); "
+            f"got {view_ops}; all ops: "
+            f"{[(type(o).__name__, getattr(o, 'name', None)) for o in upgrade_ops.ops]}"
+        )
+
+    @pytest.mark.infrastructure
+    @pytest.mark.usefixtures("postgresql_dsn")
+    def test_iterative_canon_materialized_view(self, view_cleanup_factory, request):
+        """Materialized view referencing a column being added in the same
+        migration. Asserts a CreateMaterializedViewOp or
+        ReplaceMaterializedViewOp is generated.
+        """
+        connection = view_cleanup_factory(["iter_canon_mv_view"])
+
+        base_table = "_iter_canon_mv_base"
+
+        def _create_mv_base():
+            connection.execute(
+                sa.text(
+                    f"CREATE TABLE IF NOT EXISTS {base_table} "
+                    f"(id SERIAL PRIMARY KEY, name VARCHAR(100))"
+                )
+            )
+            connection.commit()
+
+        def _drop_mv_base():
+            connection.execute(
+                sa.text(f"DROP TABLE IF EXISTS {base_table} CASCADE")
+            )
+            connection.commit()
+
+        _drop_mv_base()
+        _create_mv_base()
+        request.addfinalizer(_drop_mv_base)
+
+        metadata = sa.MetaData()
+        sa.Table(
+            base_table,
+            metadata,
+            sa.Column("id", sa.Integer, primary_key=True),
+            sa.Column("name", sa.String(100)),
+            sa.Column("email", sa.String(255)),
+        )
+        metadata.info["sqlalchemy_utils_views"] = [
+            ViewRecord(
+                name="iter_canon_mv_view",
+                selectable=sa.select(
+                    sa.text(f"id, name, email FROM {base_table}")
+                ),
+                schema=None,
+                materialized=True,
+            ),
+        ]
+
+        upgrade_ops = _run_comparator(connection, metadata, schemas=[None])
+
+        view_ops = [
+            op
+            for op in upgrade_ops.ops
+            if isinstance(
+                op, (CreateMaterializedViewOp, ReplaceMaterializedViewOp)
+            )
+            and op.name == "iter_canon_mv_view"
+        ]
+        assert len(view_ops) >= 1, (
+            f"expected a CreateMaterializedViewOp or "
+            f"ReplaceMaterializedViewOp for 'iter_canon_mv_view'; "
+            f"got {view_ops}; all ops: "
+            f"{[(type(o).__name__, getattr(o, 'name', None)) for o in upgrade_ops.ops]}"
+        )
+
