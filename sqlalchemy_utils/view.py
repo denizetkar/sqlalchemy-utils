@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from typing import Any
+
 import sqlalchemy as sa
 from sqlalchemy.ext import compiler
 from sqlalchemy.schema import DDLElement, PrimaryKeyConstraint
+from sqlalchemy.sql.compiler import DDLCompiler
 from sqlalchemy.sql.expression import ClauseElement, Executable
 
 from sqlalchemy_utils.functions import get_columns
@@ -63,7 +66,7 @@ class CreateView(DDLElement):
 
 
 @compiler.compiles(CreateView)
-def compile_create_view(element, compiler, **kw):
+def compile_create_view(element: CreateView, compiler: DDLCompiler, **kw: object) -> str:
     """Compile ``CreateView`` to ``CREATE [OR REPLACE] [MATERIALIZED] VIEW``."""
     qualified = _quote_qualified_name(compiler.dialect, element.name, element.schema)
     return 'CREATE {}{}VIEW {} AS {}'.format(
@@ -101,7 +104,7 @@ class DropView(DDLElement):
 
 
 @compiler.compiles(DropView)
-def compile_drop_view(element, compiler, **kw):
+def compile_drop_view(element: DropView, compiler: DDLCompiler, **kw: object) -> str:
     """Compile ``DropView`` to ``DROP [MATERIALIZED] VIEW IF EXISTS [...]``."""
     qualified = _quote_qualified_name(compiler.dialect, element.name, element.schema)
     sql = 'DROP {}VIEW IF EXISTS {}'.format(
@@ -121,7 +124,7 @@ def create_table_from_selectable(
     aliases: dict[str, str] | None = None,
     *,
     schema: str | None = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> sa.Table:
     """Create a :class:`~sqlalchemy.Table` from a selectable.
 
@@ -179,7 +182,7 @@ def create_table_from_selectable(
     return table
 
 
-def _assert_clause_element(selectable) -> None:
+def _assert_clause_element(selectable: ClauseElement) -> None:
     if isinstance(selectable, str):
         raise TypeError(
             "selectable must be a SQLAlchemy ClauseElement (e.g. sa.select(...) "
@@ -188,16 +191,16 @@ def _assert_clause_element(selectable) -> None:
 
 
 def _register_view_ddl(
-    metadata,
-    name,
-    selectable,
-    materialized,
-    replace,
-    cascade_on_drop,
-    schema,
-    table=None,
-    aliases=None,
-):
+    metadata: sa.MetaData,
+    name: str,
+    selectable: ClauseElement,
+    materialized: bool,
+    replace: bool,
+    cascade_on_drop: bool,
+    schema: str | None,
+    table: sa.Table | None = None,
+    aliases: dict[str, str] | None = None,
+) -> None:
     """Register CREATE/DROP DDL listeners and a ViewRecord on *metadata*.
 
     Shared by :func:`create_view`, :func:`create_materialized_view`, and
@@ -235,7 +238,7 @@ def _register_view_ddl(
     if materialized and table is not None and table.indexes:
 
         @sa.event.listens_for(metadata, 'after_create')
-        def create_indexes(target, connection, **kw):
+        def create_indexes(target: sa.MetaData, connection: sa.engine.Connection, **kw: object) -> None:
             if target is not table:
                 return
             for idx in table.indexes:
@@ -443,7 +446,7 @@ class RefreshMaterializedView(Executable, ClauseElement):
 
 
 @compiler.compiles(RefreshMaterializedView)
-def compile_refresh_materialized_view(element, compiler, **kw):
+def compile_refresh_materialized_view(element: RefreshMaterializedView, compiler: DDLCompiler, **kw: object) -> str:
     """Compile ``RefreshMaterializedView`` to ``REFRESH MATERIALIZED VIEW``."""
     qualified = _quote_qualified_name(compiler.dialect, element.name, element.schema)
     return 'REFRESH MATERIALIZED VIEW {concurrently}{name}'.format(
